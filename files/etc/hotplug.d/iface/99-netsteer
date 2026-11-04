@@ -1,0 +1,9 @@
+#!/bin/sh
+# 链路事件重应用 (pppoe-wan 重拨后队列重建, sysfs 复位)
+[ "$ACTION" = ifup ] || exit 0
+case "$INTERFACE" in
+	wan|pppoe-wan|lan)
+		/usr/bin/netsteer-apply >/dev/null 2>&1 &
+		;;
+esac
+exit 0

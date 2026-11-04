@@ -1,0 +1,45 @@
+#!/bin/sh
+# netsteer-apply: 按 /etc/config/netsteer 应用 RPS/RFS/XPS (幂等)
+. /lib/functions.sh
+
+LOG_TAG=netsteer
+log() { logger -t $LOG_TAG "$@"; echo "$@"; }
+
+config_load netsteer
+
+config_get enabled state enabled 1
+[ "$enabled" = "1" ] || { log "disabled in uci, skip"; exit 0; }
+
+# 全局 RFS
+config_get entries global rfs_sock_flow_entries 32768
+echo "$entries" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null \
+	&& log "rps_sock_flow_entries=$entries" || log "WARN: rps_sock_flow_entries 写入失败"
+
+apply_iface() {
+	local cfg="$1"
+	local iface rps xps flow
+	config_get iface "$cfg" iface
+	[ -n "$iface" ] || return
+	[ -d "/sys/class/net/$iface" ] || { log "skip $iface (不存在)"; return; }
+
+	config_get rps "$cfg" rps_cpus 0
+	config_get xps "$cfg" xps_cpus 0
+	config_get flow "$cfg" rfs_flow_cnt 4096
+
+	for q in /sys/class/net/$iface/queues/rx-*; do
+		[ -d "$q" ] || continue
+		echo "$rps" > "$q/rps_cpus" 2>/dev/null \
+			&& log "$iface rx($(basename $q)) rps=$rps" \
+			|| log "WARN: $iface rps 写入失败"
+		echo "$flow" > "$q/rps_flow_cnt" 2>/dev/null
+	done
+	for q in /sys/class/net/$iface/queues/tx-*; do
+		[ -d "$q" ] || continue
+		echo "$xps" > "$q/xps_cpus" 2>/dev/null \
+			&& log "$iface tx($(basename $q)) xps=$xps" \
+			|| log "WARN: $iface xps 写入失败"
+	done
+}
+
+config_foreach apply_iface interface
+exit 0

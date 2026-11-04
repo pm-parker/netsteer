@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+# netsteer: 开机应用 RPS/RFS/XPS 转向
+START=70
+
+start() {
+	/usr/bin/netsteer-apply >/dev/null 2>&1
+}
+
+boot() {
+	# 网络起来后再应用 (hotplug 也会兜底)
+	sleep 2
+	start
+}
+
+restart() { start; }
+reload() { start; }

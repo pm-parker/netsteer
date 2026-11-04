@@ -1,0 +1,20 @@
+{
+	"luci-app-netsteer": {
+		"title": "NetSteer 转向加速",
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-netsteer" ],
+			"uci": { "netsteer": true }
+		},
+		"order": 65
+	},
+	"luci-app-netsteer-main": {
+		"title": "接口转向",
+		"action": {
+			"type": "view",
+			"path": "netsteer"
+		}
+	}
+}

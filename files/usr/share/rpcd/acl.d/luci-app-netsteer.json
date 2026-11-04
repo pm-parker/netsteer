@@ -1,0 +1,21 @@
+{
+	"luci-app-netsteer": {
+		"description": "Grant access to NetSteer RPS/RFS/XPS tuning",
+		"read": {
+			"uci": [ "netsteer" ],
+			"file": {
+				"/proc/softirqs": [ "read" ],
+				"/sys/class/net/eth0/queues/*/*": [ "read" ],
+				"/sys/class/net/eth1/queues/*/*": [ "read" ],
+				"/sys/class/net/pppoe-wan/queues/*/*": [ "read" ],
+				"/proc/sys/net/core/rps_sock_flow_entries": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "netsteer" ]
+		},
+		"ubus": {
+			"file": [ "exec" ]
+		}
+	}
+}

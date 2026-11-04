@@ -2,22 +2,47 @@
 	"luci-app-netsteer": {
 		"description": "Grant access to NetSteer RPS/RFS/XPS tuning",
 		"read": {
-			"uci": [ "netsteer" ],
+			"uci": [
+				"netsteer"
+			],
 			"file": {
-				"/proc/softirqs": [ "read" ],
-				"/proc/sys/net/core/rps_sock_flow_entries": [ "read" ],
-				"/sys/class/net/eth0/queues/*/*": [ "read" ],
-				"/sys/class/net/eth1/queues/*/*": [ "read" ],
-				"/sys/class/net/pppoe-wan/queues/*/*": [ "read" ],
-				"/sys/devices/platform/*/net/*/queues/*/*": [ "read" ],
-				"/sys/devices/virtual/net/*/queues/*/*": [ "read" ],
-				"/etc/config/netsteer": [ "read" ]
+				"/proc/softirqs": [
+					"read"
+				],
+				"/proc/sys/net/core/rps_sock_flow_entries": [
+					"read"
+				],
+				"/sys/class/net/eth0/queues/*/*": [
+					"read"
+				],
+				"/sys/class/net/eth1/queues/*/*": [
+					"read"
+				],
+				"/sys/class/net/pppoe-wan/queues/*/*": [
+					"read"
+				],
+				"/sys/devices/platform/*/net/*/queues/*/*": [
+					"read"
+				],
+				"/sys/devices/virtual/net/*/queues/*/*": [
+					"read"
+				],
+				"/tmp/netsteer/state.json": [
+					"read"
+				],
+				"/etc/config/netsteer": [
+					"read"
+				]
 			}
 		},
 		"write": {
-			"uci": [ "netsteer" ],
+			"uci": [
+				"netsteer"
+			],
 			"file": {
-				"/usr/bin/netsteer-apply": [ "exec" ]
+				"/usr/bin/netsteer-apply": [
+					"exec"
+				]
 			}
 		}
 	}

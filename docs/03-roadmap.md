@@ -33,3 +33,14 @@
 4. **View 基类自动 footer**：`View.__init__` 无条件 `addFooter()`，且基类原型自带 `handleSave/handleSaveApply/handleReset`，所以所有 client view 页面右下都会渲染 Save & Apply 按钮组（即时生效型页面不需要）。视图内覆盖 `addFooter: function() { return E([]); }` 即消除。
 5. **uci 封装层勿用**：`uci.save/apply` JS 封装（unload/reload 全家桶）与 `rpc.declare` 在本环境实测挂起；用裸 `fetch('/ubus/')` 直调 `uci.set→apply{rollback:true}→confirm` + `fs.exec` 全程 ~0.2s。注意 uci.apply 前若存在**其他 config 的陈年 staged**（如 firewall），apply 会连带触发 fw4 reload 造成卡顿——排查时先 `uci changes` 看全局。
 6. **部署缓存**：改 netsteer.js 后 scp 覆盖即生效（LuCI 按 `?v=` 时间戳拉新版），验证必须真浏览器深浅两态截图，不可只看 DOM。
+
+## M5 — IRQ 亲和调度 ✅ 已部署 (2026-11-04)
+- [x] netsteer-apply 扩展: msi_irqs 动态发现 IRQ 号 (跨启动不变依赖) + smp_affinity 写后回读判成败 + /tmp/netsteer/state.json 状态输出
+- [x] A/B/C 压测定型 (20 并发 22s WAN 突发, NET_RX 增量分布):
+  - A 现状 eth0中断→C1: [10.1, 31.9, 48.5, 9.5] 集中度 48.5%
+  - B eth0→C3: [9.8, 7.0, 43.0, 40.2] 集中度 43.0% ✅ 定稿
+  - C eth0→C3+eth1→C1: [9.2, 47.1, 9.8, 33.9] 集中度 47.1%
+- [x] 定稿: eth0 IRQ→CPU3 (mask 8), eth1→CPU2 (mask 4); pairs 预设 IRQ 摆对内 (eth0→C1, eth1→C3, 未实测)
+- [x] UI: 接口卡加「中断应门 (IRQ)」行 (radio 单选, pppoe 虚拟口无), 徽标匹配纳入 IRQ, preset 切换联动
+- [ ] 整机重启后 IRQ 号重发现持久化验证 (待下次重启顺带)
+- 踩坑: msi_irqs/ 下文件名才是 IRQ 号, 文件内容是中断类型字符串 ("msix"); 20 并发压测时 NET_RX 集中度下限 ≈ WAN 流量占比 (单队列物理瓶颈)

@@ -56,6 +56,10 @@ function cpusToMask(cpus) {
 function maskLabel(mask) {
 	if (mask === 'f') return _('全核');
 	if (mask === '0') return _('关闭');
+	if (mask === '1') return _('C0');
+	if (mask === '2') return _('C1');
+	if (mask === '4') return _('C2');
+	if (mask === '8') return _('C3');
 	if (mask === '3') return _('C0+C1');
 	if (mask === 'c') return _('C2+C3');
 	return _('自定义 (%s)'.format(mask));
@@ -67,21 +71,24 @@ function fmtCount(n) {
 	return String(n);
 }
 
-/* ---- 预设定义 (applyPreset 与当前模式判定共用) ---- */
+/* ---- 预设定义 (applyPreset 与当前模式判定共用) ----
+ * irq: 硬中断应门核摆位 (实测 A/B 定型: eth0→C3 eth1→C2, 集中度 48.5%→43.0%, 四核 10/7/43/40 最均匀) */
 var PRESETS = {
 	all: {
 		label: _('全核分摊'),
 		short: _('四个核一起干活, 负载摊得最平。'),
-		desc: _('所有接口的收发负载分摊到 CPU0-3。通用推荐：高负载时最稳，单核压力最小。'),
+		desc: _('软中断分摊到 CPU0-3, 硬中断应门错开 (WAN→C3, LAN→C2)。通用推荐: 实测四核负载最均匀。'),
 		rec: true,
-		map: { eth0: 'f', eth1: 'f', pppoe_wan: 'f' }
+		map: { eth0: 'f', eth1: 'f', pppoe_wan: 'f' },
+		irq: { eth0: '8', eth1: '4' }
 	},
 	pairs: {
 		label: _('收发分对'),
 		short: _('WAN 和 LAN 各用两个核, 互不干扰。'),
-		desc: _('WAN 口用 C0+C1，LAN 口用 C2+C3，进出流量分开处理。适合路由转发为主的场景。'),
+		desc: _('WAN 口用 C0+C1, LAN 口用 C2+C3, 进出流量分开处理。适合路由转发为主的场景。'),
 		rec: false,
-		map: { eth0: '3', eth1: 'c', pppoe_wan: 'f' }
+		map: { eth0: '3', eth1: 'c', pppoe_wan: 'f' },
+		irq: { eth0: '2', eth1: '8' }
 	},
 	off: {
 		label: _('系统默认'),
@@ -92,14 +99,21 @@ var PRESETS = {
 	}
 };
 
-/* 当前系统状态匹配哪个预设: 返回 'all'|'pairs'|'off'|null(自定义) */
-function matchPreset(masks) {
+/* 当前系统状态匹配哪个预设: 返回 'all'|'pairs'|'off'|null(自定义)
+ * irq 数据缺失时只比对 RPS (向后兼容) */
+function matchPreset(masks, irq) {
 	var keys = Object.keys(PRESETS);
 	for (var i = 0; i < keys.length; i++) {
-		var m = PRESETS[keys[i]].map, hit = true;
+		var p = PRESETS[keys[i]], m = p.map, hit = true;
 		Object.keys(m).forEach(function(sec) {
 			if (masks[sec] !== m[sec]) hit = false;
 		});
+		if (hit && p.irq && irq) {
+			Object.keys(p.irq).forEach(function(dev) {
+				var got = (irq[dev] && irq[dev].affinity) || null;
+				if (got && got !== '?' && got !== p.irq[dev]) hit = false;
+			});
+		}
 		if (hit) return keys[i];
 	}
 	return null;
@@ -156,6 +170,8 @@ return view.extend({
 			tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/tx-0/xps_cpus'), null));
 		});
 		tasks.push(L.resolveDefault(fs.read('/proc/softirqs'), ''));
+		/* IRQ 现值 (由 netsteer-apply 维护: {eth0:{irq,affinity},...}) */
+		tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
 		return Promise.all(tasks);
 	},
 
@@ -218,11 +234,32 @@ return view.extend({
 	},
 
 	/* ---- 接口卡: 现值 + CPU 芯片点选 ---- */
-	renderIface: function(it, values, idx) {
+	renderIface: function(it, values, idx, state) {
 		var self = this;
 		var rpsNow = (values[idx * 2] || '0').trim();
 		var xpsNow = (values[idx * 2 + 1] || '0').trim();
 		var rpsCpus = maskToCpus(rpsNow), xpsCpus = maskToCpus(xpsNow);
+		/* IRQ 现值 (state 由 netsteer-apply 维护; pppoe 虚拟口无中断) */
+		var irqNow = (state && state[it.dev] && state[it.dev].affinity) || null;
+		var irqRow = null;
+		if (it.sec !== 'pppoe_wan') {
+			var irqOn = irqNow ? maskToCpus(irqNow) : [false, false, false, false];
+			irqRow = E('div', { 'class': 'netsteer-row' }, [
+				E('span', { 'class': 'netsteer-rowlabel' }, [
+					_('中断应门 (IRQ)'),
+					E('em', { 'class': 'netsteer-mask netsteer-irq-mask' }, irqNow ? maskLabel(irqNow) : _('—'))
+				]),
+				E('div', { 'class': 'netsteer-chips' }, [0, 1, 2, 3].map(function(i) {
+					return E('button', {
+						'class': 'netsteer-chip' + (irqOn[i] ? ' on' : ''),
+						'type': 'button',
+						'data-sec': it.sec, 'data-kind': 'irq', 'data-cpu': i,
+						'title': 'CPU%d'.format(i),
+						'click': ui.createHandlerFn(self, 'toggleCpu')
+					}, 'C%d'.format(i));
+				}))
+			]);
+		}
 		return E('div', { 'class': 'netsteer-card' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('strong', { 'class': 'netsteer-card-title' }, it.dev),
@@ -258,7 +295,8 @@ return view.extend({
 					}, 'C%d'.format(i));
 				}))
 			]),
-			E('div', { 'class': 'netsteer-foot' }, _('点选即生效'))
+			irqRow,
+			E('div', { 'class': 'netsteer-foot' }, it.sec !== 'pppoe_wan' ? _('点选即生效 · 中断行: 单队列网卡, 内核只在所选核上应门') : _('点选即生效'))
 		]);
 	},
 
@@ -266,9 +304,16 @@ return view.extend({
 	toggleCpu: function(ev) {
 		var self = this;
 		var node = ev.currentTarget;
-		node.classList.toggle('on');
 		var sec = node.getAttribute('data-sec');
 		var kind = node.getAttribute('data-kind');
+		if (kind === 'irq') {
+			/* IRQ 单选 (radio): 单队列网卡实际只在一个核应门, 点谁谁独占 */
+			document.querySelectorAll('.netsteer-chip[data-sec="%s"][data-kind="irq"]'.format(sec))
+				.forEach(function(c) { c.classList.remove('on'); });
+			node.classList.add('on');
+		} else {
+			node.classList.toggle('on');
+		}
 		var chips = document.querySelectorAll('.netsteer-chip[data-sec="%s"][data-kind="%s"]'.format(sec, kind));
 		var arr = [false, false, false, false];
 		chips.forEach(function(chip) {
@@ -289,8 +334,9 @@ return view.extend({
 			});
 	},
 
-	/* 点芯片/预设后更新「当前模式」徽标 (读真实 sysfs 运行态, 不 reload) */
+	/* 点芯片/预设后更新「当前模式」徽标 (读真实运行态: rps sysfs + IRQ state 文件) */
 	refreshBadge: function() {
+		var self = this;
 		var el = document.getElementById('netsteer-badge');
 		if (!el) return Promise.resolve();
 		var tasks = IFACES.map(function(it) {
@@ -298,16 +344,36 @@ return view.extend({
 				.then(function(v) { return ((v && v.data) ? v.data : '0').trim(); })
 				.catch(function() { return '?'; });
 		});
-		return Promise.all(tasks).then(function(masks) {
+		tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
+		return Promise.all(tasks).then(function(res) {
+			var stateTxt = res.pop();
 			var m = {};
-			IFACES.forEach(function(it, i) { m[it.sec] = masks[i]; });
-			var cur = matchPreset(m);
+			IFACES.forEach(function(it, i) { m[it.sec] = res[i]; });
+			var irq = null;
+			try { irq = JSON.parse(stateTxt || ''); } catch (e) { irq = null; }
+			var cur = matchPreset(m, irq);
 			el.textContent = _('当前: %s'.format(cur ? PRESETS[cur].label : '自定义组合'));
 			el.classList.toggle('is-custom', !cur);
 			Object.keys(PRESETS).forEach(function(name) {
 				var btn = document.querySelector('.netsteer-preset[data-preset="%s"]'.format(name));
 				if (btn) btn.classList.toggle('on', cur === name);
 			});
+			/* 就地同步 IRQ 芯片与掩码文字 (apply 后 state.json 已刷新) */
+			if (irq) self.syncIrchipsFromState(irq);
+		});
+	},
+
+	/* 按 state.json 就地同步 IRQ 行显示 (不 reload) */
+	syncIrchipsFromState: function(irq) {
+		IFACES.forEach(function(it) {
+			var st = irq[it.dev];
+			if (!st || !st.affinity) return;
+			var on = maskToCpus(st.affinity);
+			var chips = document.querySelectorAll('.netsteer-chip[data-sec="%s"][data-kind="irq"]'.format(it.sec));
+			chips.forEach(function(chip, i) { chip.classList.toggle('on', on[i]); });
+			var row = chips.length ? chips[0].closest('.netsteer-row') : null;
+			var el = row ? row.querySelector('.netsteer-irq-mask') : null;
+			if (el) el.textContent = maskLabel(st.affinity);
 		});
 	},
 
@@ -322,6 +388,10 @@ return view.extend({
 			var opt = { rps_cpus: preset.map[sec] };
 			if (sec !== 'pppoe_wan') opt.xps_cpus = preset.map[sec];
 			return { sec: sec, values: opt };
+		});
+		/* IRQ 摆位 (off 预设不含 irq 字段 = 中断不动) */
+		Object.keys(preset.irq || {}).forEach(function(dev) {
+			pairs.push({ sec: dev, values: { irq_cpus: preset.irq[dev] } });
 		});
 		return applyNow(pairs).then(function() {
 			/* 不整页 reload: 就地同步芯片高亮/掩码文字/徽标 */
@@ -352,10 +422,12 @@ return view.extend({
 
 	render: function(values) {
 		var self = this;
-		/* 当前模式判定: 三口 rps 现值 (sysfs) 匹配预设 */
+		/* 当前模式判定: 三口 rps 现值 (sysfs) + IRQ state 匹配预设 */
 		var masks = {};
 		IFACES.forEach(function(it, i) { masks[it.sec] = (values[i * 2] || '0').trim(); });
-		var cur = matchPreset(masks);
+		var state = null;
+		try { state = JSON.parse(values[IFACES.length * 2 + 1] || ''); } catch (e) { state = null; }
+		var cur = matchPreset(masks, state);
 		var curLabel = cur ? PRESETS[cur].label : _('自定义组合');
 
 		var css = E('style', { 'type': 'text/css' }, [
@@ -443,7 +515,7 @@ return view.extend({
 				]);
 			})),
 			E('div', { 'class': 'netsteer-grid' }, IFACES.map(function(it, i) {
-				return self.renderIface(it, values, i);
+				return self.renderIface(it, values, i, state);
 			})),
 			this.renderSoftirqCard(values[IFACES.length * 2] || '')
 		]);

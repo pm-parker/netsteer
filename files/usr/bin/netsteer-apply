@@ -1,9 +1,16 @@
 #!/bin/sh
-# netsteer-apply: 按 /etc/config/netsteer 应用 RPS/RFS/XPS (幂等)
+# netsteer-apply: 按 /etc/config/netsteer 应用 RPS/RFS/XPS/IRQ 亲和 (幂等)
+# 运行后写 /tmp/netsteer/state.json 供 LuCI 页面读取 IRQ 现值
 . /lib/functions.sh
 
 LOG_TAG=netsteer
 log() { logger -t $LOG_TAG "$@"; echo "$@"; }
+
+STATE_DIR=/tmp/netsteer
+STATE_FILE=$STATE_DIR/state.json
+STATE_TMP=$STATE_DIR/.state.tmp
+mkdir -p "$STATE_DIR"
+echo "{" > "$STATE_TMP"
 
 config_load netsteer
 
@@ -15,9 +22,16 @@ config_get entries global rfs_sock_flow_entries 32768
 echo "$entries" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null \
 	&& log "rps_sock_flow_entries=$entries" || log "WARN: rps_sock_flow_entries 写入失败"
 
+# 状态 JSON 追加: "iface":{"irq":"N","affinity":"X"} (逗号管理)
+state_add() {
+	local sep=""
+	[ "$(wc -c < "$STATE_TMP")" -gt 2 ] && sep=","
+	printf '%s"%s":{"irq":"%s","affinity":"%s"}' "$sep" "$1" "$2" "$3" >> "$STATE_TMP"
+}
+
 apply_iface() {
 	local cfg="$1"
-	local iface rps xps flow
+	local iface rps xps flow irq
 	config_get iface "$cfg" iface
 	[ -n "$iface" ] || return
 	[ -d "/sys/class/net/$iface" ] || { log "skip $iface (不存在)"; return; }
@@ -25,6 +39,7 @@ apply_iface() {
 	config_get rps "$cfg" rps_cpus 0
 	config_get xps "$cfg" xps_cpus 0
 	config_get flow "$cfg" rfs_flow_cnt 4096
+	config_get irq "$cfg" irq_cpus ""
 
 	for q in /sys/class/net/$iface/queues/rx-*; do
 		[ -d "$q" ] || continue
@@ -47,7 +62,50 @@ apply_iface() {
 			log "$iface tx($(basename $q)) xps 不可写 (驱动不暴露/只读), 跳过"
 		fi
 	done
+
+	# ---- IRQ 亲和 (单队列网卡: 内核实际只在掩码所含核中选一个应门) ----
+	# 动态发现: MSI-X 设备优先, 兜底 /proc/interrupts 按设备名匹配 (IRQ 号跨启动会变)
+	local irq_out="" n
+	# msi_irqs/ 下的文件名 = IRQ 号 (文件内容是中断类型字符串如 "msix", 不能 cat)
+	for n in /sys/class/net/$iface/device/msi_irqs/*; do
+		[ -f "$n" ] || continue
+		irq_out="$irq_out ${n##*/}"
+	done
+	[ -z "$(echo $irq_out | tr -d ' ')" ] && \
+		irq_out=$(grep -E ":[[:space:][:digit:]]+ .*$iface\$" /proc/interrupts 2>/dev/null | cut -d: -f1 | tr -d ' ')
+
+	local first=1
+	for n in $irq_out; do
+		[ -n "$n" ] || continue
+		local aff_file="/proc/irq/$n/smp_affinity"
+		[ -e "$aff_file" ] || { log "$iface irq$n 不存在, 跳过"; continue; }
+		if [ -n "$irq" ]; then
+			local before after
+			before=$(cat "$aff_file" 2>/dev/null)
+			echo "$irq" > "$aff_file" 2>/dev/null
+			after=$(cat "$aff_file" 2>/dev/null)
+			# 写后回读判成败 (managed IRQ 可能拒写)
+			if [ "$after" = "$irq" ]; then
+				log "$iface irq$n irq=$irq"
+			else
+				log "WARN: $iface irq$n 写入失败 (before=$before after=$after), 保持原值"
+			fi
+		fi
+		local cur
+		cur=$(cat "$aff_file" 2>/dev/null)
+		[ -z "$cur" ] && cur="?"
+		if [ "$first" = "1" ]; then
+			state_add "$iface" "$n" "$cur"
+			first=0
+		else
+			# 同设备多 IRQ: 后续中断号以 irqN 为键追加
+			state_add "irq$n" "$n" "$cur"
+		fi
+	done
 }
 
 config_foreach apply_iface interface
+
+echo "}" >> "$STATE_TMP"
+mv "$STATE_TMP" "$STATE_FILE"
 exit 0

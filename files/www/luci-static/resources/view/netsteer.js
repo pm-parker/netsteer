@@ -85,7 +85,7 @@ var PRESETS = {
 	pairs: {
 		label: _('收发分对'),
 		short: _('WAN 和 LAN 各用两个核, 互不干扰。'),
-		desc: _('WAN 口用 C0+C1, LAN 口用 C2+C3, 进出流量分开处理。适合路由转发为主的场景。'),
+		desc: _('WAN 口用 C0+C1, LAN 口用 C2+C3。实测集中度 47% (全核分摊 44%), 高负载场景不如全核分摊均匀, 适合想按口隔离试玩的场景。'),
 		rec: false,
 		map: { eth0: '3', eth1: 'c', pppoe_wan: 'f' },
 		irq: { eth0: '2', eth1: '8' }
@@ -172,6 +172,9 @@ return view.extend({
 		tasks.push(L.resolveDefault(fs.read('/proc/softirqs'), ''));
 		/* IRQ 现值 (由 netsteer-apply 维护: {eth0:{irq,affinity},...}) */
 		tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
+		/* 守卫记录: 值变化时间线 + 漂移事件列表 */
+		tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/history.log'), null));
+		tasks.push(L.resolveDefault(fs.list('/etc/netsteer/incidents'), []));
 		return Promise.all(tasks);
 	},
 
@@ -230,6 +233,72 @@ return view.extend({
 				old.parentNode.replaceChild(self.renderSoftirqCard(text || ''), old);
 		}).catch(function(e) {
 			ui.showModal(_('出错'), E('p', {}, String(e)));
+		});
+	},
+
+	/* ---- 运行守卫卡: 值变化时间线 + 漂移事件 (netsteer-check 每分钟产出) ---- */
+	renderGuardCard: function(historyText, incidents) {
+		var self = this;
+		var lines = (historyText || '').trim().split('\n').filter(function(l) { return l; });
+		var tail = lines.slice(-5).reverse();  /* 最新在上 */
+		var incList = (Array.isArray(incidents) ? incidents : [])
+			.sort(function(a, b) { return (b.name || '').localeCompare(a.name || ''); });
+		var nInc = incList.length;
+
+		var rows = tail.length
+			? tail.map(function(l) {
+				var sp = l.indexOf(' ');
+				return E('div', { 'class': 'netsteer-log-row' }, [
+					E('span', { 'class': 'netsteer-log-t' }, l.slice(0, sp)),
+					E('span', { 'class': 'netsteer-log-v' }, l.slice(sp + 1))
+				]);
+			})
+			: [ E('span', { 'class': 'netsteer-note' }, _('暂无记录')) ];
+
+		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-guard-card' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('strong', { 'class': 'netsteer-card-title' }, _('运行守卫')),
+				E('button', {
+					'class': 'netsteer-minibtn',
+					'type': 'button',
+					'click': ui.createHandlerFn(self, 'refreshGuard')
+				}, _('刷新'))
+			]),
+			E('div', { 'class': 'netsteer-conc' }, [
+				nInc > 0
+					? E('span', { 'class': 'netsteer-big is-bad' }, '%d'.format(nInc))
+					: E('span', { 'class': 'netsteer-big is-ok' }, '0'),
+				E('span', { 'class': 'netsteer-note' },
+					nInc > 0
+						? _('次参数漂移 — 已全部自动恢复, 现场证据已留档')
+						: _('次参数漂移 — 系统在自动校验, 当前一切正常'))
+			]),
+			E('div', { 'class': 'netsteer-log' },
+				[ E('div', { 'class': 'netsteer-log-row netsteer-log-head' }, [
+					E('span', { 'class': 'netsteer-log-t' }, _('时间')),
+					E('span', { 'class': 'netsteer-log-v' }, _('参数值 (收包分核 / 中断应门)'))
+				]) ].concat(rows)),
+			nInc > 0
+				? E('div', { 'class': 'netsteer-log' }, incList.slice(0, 5).map(function(f) {
+					return E('div', { 'class': 'netsteer-log-row' }, [
+						E('span', { 'class': 'netsteer-log-t' }, (f.name || '').replace(/^incident-/, '').replace(/\.log$/, '')),
+						E('span', { 'class': 'netsteer-log-v' }, _('漂移现场 (系统日志快照)'))
+					]);
+				}))
+				: '',
+			E('div', { 'class': 'netsteer-foot' }, _('每分钟自动校验配置与实际运行值, 发现被意外改动立即恢复并留痕'))
+		]);
+	},
+
+	refreshGuard: function() {
+		var self = this;
+		return Promise.all([
+			L.resolveDefault(fs.read('/tmp/netsteer/history.log'), null),
+			L.resolveDefault(fs.list('/etc/netsteer/incidents'), [])
+		]).then(function(r) {
+			var old = document.getElementById('netsteer-guard-card');
+			if (old && old.parentNode)
+				old.parentNode.replaceChild(self.renderGuardCard(r[0], r[1]), old);
 		});
 	},
 
@@ -486,7 +555,14 @@ return view.extend({
 			'.netsteer-stack-seg:hover{filter:brightness(1.12)}',
 			'.netsteer-legend{display:flex;gap:1.1em;margin-top:.7em;flex-wrap:wrap}',
 			'.netsteer-legend-item{display:inline-flex;align-items:center;gap:.35em;font-size:var(--fs-sm,12px);color:var(--text-3,#5f666f)}',
-			'.netsteer-dot{display:inline-block;width:.7em;height:.7em;border-radius:2px}'
+			'.netsteer-dot{display:inline-block;width:.7em;height:.7em;border-radius:2px}',
+
+			/* 守卫记录日志行 */
+			'.netsteer-log{margin:.5em 0;border-top:1px solid var(--line-2,#e3e6ea);padding-top:.5em}',
+			'.netsteer-log-row{display:flex;gap:1em;font-family:var(--mono,ui-monospace,monospace);font-size:var(--fs-sm,12px);padding:.18em 0}',
+			'.netsteer-log-head{color:var(--text-3,#5f666f);font-family:inherit}',
+			'.netsteer-log-t{min-width:5.5em;color:var(--text-3,#5f666f)}',
+			'.netsteer-log-v{color:var(--text-2,#4a515a)}'
 		].join(''));
 
 		return E('div', {}, [
@@ -517,7 +593,8 @@ return view.extend({
 			E('div', { 'class': 'netsteer-grid' }, IFACES.map(function(it, i) {
 				return self.renderIface(it, values, i, state);
 			})),
-			this.renderSoftirqCard(values[IFACES.length * 2] || '')
+			this.renderSoftirqCard(values[IFACES.length * 2] || ''),
+			this.renderGuardCard(values[IFACES.length * 2 + 2], values[IFACES.length * 2 + 3])
 		]);
 	}
 });

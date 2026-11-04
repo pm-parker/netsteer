@@ -61,6 +61,7 @@ return view.extend({
 
 	/* ---- 接口卡片: 现值 + CPU 芯片点选 ---- */
 	renderIface: function(it, values, idx) {
+		var self = this;
 		var rpsNow = (values[idx * 2] || '0').trim();
 		var xpsNow = (values[idx * 2 + 1] || '0').trim();
 		var rpsCpus = maskToCpus(rpsNow), xpsCpus = maskToCpus(xpsNow);
@@ -76,7 +77,7 @@ return view.extend({
 						'class': 'netsteer-chip' + (on ? ' on' : ''),
 						'type': 'button',
 						'data-sec': it.sec, 'data-kind': 'rps', 'data-cpu': i,
-						'click': ui.createHandlerFn(this, 'toggleCpu')
+						'click': ui.createHandlerFn(self, 'toggleCpu')
 					}, 'C%d'.format(i));
 				}))
 			]),
@@ -87,7 +88,7 @@ return view.extend({
 						'class': 'netsteer-chip' + (on ? ' on' : ''),
 						'type': 'button',
 						'data-sec': it.sec, 'data-kind': 'xps', 'data-cpu': i,
-						'click': ui.createHandlerFn(this, 'toggleCpu')
+						'click': ui.createHandlerFn(self, 'toggleCpu')
 					}, 'C%d'.format(i));
 				}))
 			])

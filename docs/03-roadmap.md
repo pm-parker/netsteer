@@ -1,7 +1,7 @@
 # 路线图
 
 ## M1 — 内核应用层（先见效）
-- [x] /etc/config/netsteer 默认配置
+- [x] netsteer-detect 首装自动生成配置（无默认硬编码, 第 i 物理口中断→C(NCPU-1-i) 错开）
 - [x] netsteer-apply 脚本（幂等 + 写后回读验证）
 - [x] init.d + hotplug.d 双保险
 - [x] 上机验证：sysfs 生效 + 重启存活 + /proc/softirqs 计数分布变化

@@ -1,6 +1,6 @@
 {
 	"admin/services/netsteer": {
-		"title": "NetSteer 转向加速",
+		"title": "网络分核加速 NetSteer",
 		"order": 65,
 		"action": {
 			"type": "view",

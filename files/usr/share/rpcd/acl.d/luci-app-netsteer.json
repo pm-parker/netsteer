@@ -12,13 +12,10 @@
 				"/proc/sys/net/core/rps_sock_flow_entries": [
 					"read"
 				],
-				"/sys/class/net/eth0/queues/*/*": [
+				"/sys/devices/system/cpu/online": [
 					"read"
 				],
-				"/sys/class/net/eth1/queues/*/*": [
-					"read"
-				],
-				"/sys/class/net/pppoe-wan/queues/*/*": [
+				"/sys/class/net/*/queues/*/*": [
 					"read"
 				],
 				"/sys/devices/platform/*/net/*/queues/*/*": [

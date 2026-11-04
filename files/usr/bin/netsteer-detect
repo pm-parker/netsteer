@@ -1,0 +1,44 @@
+#!/bin/sh
+# netsteer-detect: 首装探测 — 无配置时自动发现物理口并生成默认配置
+# 规则: 物理口 (sysfs 有 device/) 逐口配置; 第 i 个物理口中断 → C(NCPU-1-i) 错开
+# pppoe-wan 若存在则一并纳入; 已有非空配置则跳过 (不覆盖用户配置)
+[ -s /etc/config/netsteer ] && exit 0
+
+NCPU=$(ls -d /sys/devices/system/cpu/cpu[0-9]* 2>/dev/null | wc -l)
+[ "$NCPU" -ge 1 ] || NCPU=1
+FULL=$(printf '%x' $(( (1 << NCPU) - 1 )))
+
+touch /etc/config/netsteer
+i=0
+for d in /sys/class/net/*; do
+	n=${d##*/}
+	[ "$n" = "lo" ] && continue
+	[ -d "$d/device" ] || continue          # 只调物理口
+	sec=$(echo "$n" | tr '-' '_')
+	k=$(( NCPU - 1 - i ))
+	[ "$k" -lt 0 ] && k=$(( i % NCPU ))     # 物理口多于核时回绕
+	IRQ=$(printf '%x' $(( 1 << k )))
+	uci -q batch <<-EOF
+set netsteer.$sec=interface
+set netsteer.$sec.iface='$n'
+set netsteer.$sec.rps_cpus='$FULL'
+set netsteer.$sec.xps_cpus='$FULL'
+set netsteer.$sec.rfs_flow_cnt='4096'
+set netsteer.$sec.irq_cpus='$IRQ'
+EOF
+	i=$(( i + 1 ))
+done
+
+# pppoe 拨号口 (虚拟口: 无中断, 只做 RPS/RFS)
+[ -d /sys/class/net/pppoe-wan ] && uci -q batch <<-EOF
+set netsteer.pppoe_wan=interface
+set netsteer.pppoe_wan.iface='pppoe-wan'
+set netsteer.pppoe_wan.rps_cpus='$FULL'
+set netsteer.pppoe_wan.rfs_flow_cnt='4096'
+set netsteer.pppoe_wan.virtual='1'
+set netsteer.pppoe_wan.note='PPPoE 拨号口 · 重拨自动保持'
+EOF
+
+uci commit netsteer
+logger -t netsteer "detect: 生成配置 ($i 个物理口, NCPU=$NCPU, full=$FULL)"
+exit 0

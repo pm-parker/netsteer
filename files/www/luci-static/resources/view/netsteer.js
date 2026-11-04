@@ -1,5 +1,6 @@
 /* NetSteer — 网络分核加速 (LuCI 视图)
  * 视觉: 全量跟随 Vantage 主题变量，深浅模式自动适配
+ * 通用性: CPU 核数与接口列表运行时探测 (任意 ARM/x86 设备可用)
  */
 'use strict';
 'require view';
@@ -31,38 +32,42 @@ function applyNow(pairs) {
 		});
 	});
 	return chain
-		.then(function() { return ubusCall('uci', 'apply', { timeout: 90, rollback: true }); })
-		.then(function() { return ubusCall('uci', 'confirm', {}); })
-		.then(function() { return fs.exec('/usr/bin/netsteer-apply'); })
+		.then(function() {
+			/* uci apply 在无实际变更时返回 NO_DATA ([5]) — 容忍 (配置已 staged, 直接落盘即可) */
+			return ubusCall('uci', 'apply', { timeout: 90, rollback: true })
+				.then(function() { return ubusCall('uci', 'confirm', {}); })
+				.catch(function() { /* 无变更或 apply 不适用: 跳过确认窗口 */ });
+		})
+		.then(function() { return fs.exec('/usr/bin/netsteer-apply'); });
 }
 
-/* 接口 → uci section 名映射 (uci section 名不含连字符) */
-var IFACES = [
-	{ dev: 'eth0',      sec: 'eth0',      note: 'WAN 物理口' },
-	{ dev: 'eth1',      sec: 'eth1',      note: 'LAN 物理口' },
-	{ dev: 'pppoe-wan', sec: 'pppoe_wan', note: 'PPPoE 拨号口 · 重拨自动保持' }
-];
+/* ---- 运行时环境 (load 阶段填充; 渲染/事件全部引用这两个全局) ---- */
+var NCPU = 4;            /* CPU 核数 */
+var IFACES = [];         /* [{dev, sec, note, virtual}] 从 uci 读 */
+function cpuRange() {
+	var a = [];
+	for (var i = 0; i < NCPU; i++) a.push(i);
+	return a;
+}
+function fullMask() { return (NCPU >= 32 ? 0xffffffff : (1 << NCPU) - 1).toString(16); }
 
 function maskToCpus(mask) {
 	var m = parseInt(mask, 16) || 0;
-	return [0, 1, 2, 3].map(function(i) { return (m & (1 << i)) !== 0; });
+	return cpuRange().map(function(i) { return (m & (1 << i)) !== 0; });
 }
-
 function cpusToMask(cpus) {
 	var m = cpus.reduce(function(acc, on, i) { return acc | (on ? (1 << i) : 0); }, 0);
 	return m.toString(16);
 }
-
 function maskLabel(mask) {
-	if (mask === 'f') return _('全核');
-	if (mask === '0') return _('关闭');
-	if (mask === '1') return _('C0');
-	if (mask === '2') return _('C1');
-	if (mask === '4') return _('C2');
-	if (mask === '8') return _('C3');
-	if (mask === '3') return _('C0+C1');
-	if (mask === 'c') return _('C2+C3');
-	return _('自定义 (%s)'.format(mask));
+	if (mask === '0' || mask === '' || mask == null) return _('关闭');
+	var v = parseInt(mask, 16) || 0;
+	if (v === ((1 << NCPU) - 1)) return _('全核');
+	var on = cpuRange().filter(function(i) { return (v >> i) & 1; });
+	if (!on.length) return _('关闭');
+	if (on.length === 1) return 'C%d'.format(on[0]);
+	if (on.length <= 3) return on.map(function(i) { return 'C%d'.format(i); }).join('+');
+	return _('%d 核 (%s)'.format(on.length, mask));
 }
 
 function fmtCount(n) {
@@ -71,47 +76,71 @@ function fmtCount(n) {
 	return String(n);
 }
 
-/* ---- 预设定义 (applyPreset 与当前模式判定共用) ----
- * irq: 硬中断应门核摆位 (实测 A/B 定型: eth0→C3 eth1→C2, 集中度 48.5%→43.0%, 四核 10/7/43/40 最均匀) */
-var PRESETS = {
-	all: {
-		label: _('全核分摊'),
-		short: _('四个核一起干活，负载摊得最平。'),
-		desc: _('软中断分摊到 CPU0-3, 硬中断应门错开 (WAN→C3, LAN→C2)。通用推荐: 实测四核负载最均匀。'),
-		rec: true,
-		map: { eth0: 'f', eth1: 'f', pppoe_wan: 'f' },
-		irq: { eth0: '8', eth1: '4' }
-	},
-	pairs: {
-		label: _('收发分对'),
-		short: _('WAN 和 LAN 各用两个核，互不干扰。'),
-		desc: _('WAN 口用 C0+C1, LAN 口用 C2+C3。实测集中度 47% (全核分摊 44%), 高负载场景不如全核分摊均匀，适合想按口隔离试玩的场景。'),
-		rec: false,
-		map: { eth0: '3', eth1: 'c', pppoe_wan: 'f' },
-		irq: { eth0: '2', eth1: '8' }
-	},
-	off: {
-		label: _('系统默认'),
-		short: _('关掉分摊，恢复出厂行为。'),
-		desc: _('负载回到单个核心处理。仅用于排障对比效果，日常不建议。'),
-		rec: false,
-		map: { eth0: '0', eth1: '0', pppoe_wan: '0' }
+/* ---- 预设 (按核数与接口动态构建) ----
+ * 第 i 个物理口中断 → C(NCPU-1-i) 错开应门; pairs 仅在 ≥2 物理口且 ≥2 核时出现 */
+function getPresets() {
+	var full = fullMask(), half = Math.floor(NCPU / 2);
+	var lo = ((1 << half) - 1).toString(16);                     /* 低半区 C0..C(h-1) */
+	var hi = ((1 << NCPU) - (1 << half)).toString(16);           /* 高半区 C(h)..C(N-1) */
+	var phys = IFACES.filter(function(it) { return !it.virtual; });
+	var map = {}, irqMap = {};
+	IFACES.forEach(function(it) { map[it.sec] = full; });
+	phys.forEach(function(it, i) {
+		irqMap[it.sec] = (1 << ((NCPU - 1 - i) % NCPU)).toString(16);
+	});
+	var presets = {
+		all: {
+			label: _('全核分摊'),
+			short: _('所有核一起干活，负载摊得最平。'),
+			desc: _('软中断分摊到全部 %d 核，硬中断错开应门。通用推荐：负载最均匀。'.format(NCPU)),
+			rec: true,
+			map: map,
+			irq: irqMap
+		},
+		off: {
+			label: _('系统默认'),
+			short: _('关掉分摊，恢复出厂行为。'),
+			desc: _('负载回到单个核心处理。仅用于排障对比效果，日常不建议。'),
+			rec: false,
+			map: (function() { var m = {}; IFACES.forEach(function(it) { m[it.sec] = '0'; }); return m; })()
+		}
+	};
+	if (phys.length >= 2 && half >= 1) {
+		var pmap = {}, pirq = {};
+		IFACES.forEach(function(it) {
+			/* 虚拟口 (pppoe 等) 是物理流量的封装层, 保持全核参与, 不限进半区 */
+			pmap[it.sec] = it.virtual ? full : ((it === phys[0]) ? lo : hi);
+		});
+		phys.forEach(function(it) {
+			pirq[it.sec] = (1 << ((it === phys[0]) ? (half - 1) : (NCPU - 1))).toString(16);
+		});
+		presets.pairs = {
+			label: _('收发分对'),
+			short: _('WAN 和 LAN 各用一半核，互不干扰。'),
+			desc: _('WAN 口用低半区核，LAN 口用高半区核。隔离性强，高负载均匀度通常不如全核分摊。'),
+			rec: false,
+			map: pmap,
+			irq: pirq
+		};
 	}
-};
+	return presets;
+}
 
 /* 当前系统状态匹配哪个预设: 返回 'all'|'pairs'|'off'|null(自定义)
  * irq 数据缺失时只比对 RPS (向后兼容) */
 function matchPreset(masks, irq) {
+	var PRESETS = getPresets();
 	var keys = Object.keys(PRESETS);
 	for (var i = 0; i < keys.length; i++) {
-		var p = PRESETS[keys[i]], m = p.map, hit = true;
-		Object.keys(m).forEach(function(sec) {
-			if (masks[sec] !== m[sec]) hit = false;
+		var p = PRESETS[keys[i]], hit = true;
+		Object.keys(p.map).forEach(function(sec) {
+			if (masks[sec] !== p.map[sec]) hit = false;
 		});
 		if (hit && p.irq && irq) {
-			Object.keys(p.irq).forEach(function(dev) {
-				var got = (irq[dev] && irq[dev].affinity) || null;
-				if (got && got !== '?' && got !== p.irq[dev]) hit = false;
+			Object.keys(p.irq).forEach(function(sec2) {
+				var it = IFACES.filter(function(x) { return x.sec === sec2; })[0];
+				var got = (it && irq[it.dev] && irq[it.dev].affinity) || null;
+				if (got && got !== '?' && got !== p.irq[sec2]) hit = false;
 			});
 		}
 		if (hit) return keys[i];
@@ -119,7 +148,7 @@ function matchPreset(masks, irq) {
 	return null;
 }
 
-/* /proc/softirqs → { rx: [c0..c3], tx: [c0..c3] } */
+/* /proc/softirqs → { rx: [c0..], tx: [c0..] } */
 function parseSoftirq(text) {
 	function row(name) {
 		var m = (text || '').match(name + ':\\s+([\\s\\d]+)');
@@ -128,7 +157,7 @@ function parseSoftirq(text) {
 	return { rx: row('NET_RX'), tx: row('NET_TX') };
 }
 
-/* 堆叠条 (Memory 卡风格): 段色 --v-chart-1..4, hover 原生 title */
+/* 堆叠条 (Memory 卡风格): 段色循环 --v-chart-1..5, 点按/悬停看明细 */
 function stackedBar(counts, unit) {
 	var sum = counts.reduce(function(a, b) { return a + b; }, 0);
 	var el = E('div', { 'class': 'netsteer-stack', 'role': 'img' });
@@ -141,7 +170,7 @@ function stackedBar(counts, unit) {
 		var pct = Math.max(1.5, Math.round(c * 1000 / sum) / 10);
 		el.appendChild(E('div', {
 			'class': 'netsteer-stack-seg',
-			'style': 'width:%s%%;background:var(--v-chart-%d)'.format(pct, i + 1),
+			'style': 'width:%s%%;background:var(--v-chart-%d)'.format(pct, (i % 5) + 1),
 			'title': 'CPU%d · %s%s · %s%%'.format(i, fmtCount(c), unit, pct),
 			'click': function() {
 				ui.showModal(_('CPU%d 明细').format(i), [
@@ -154,39 +183,80 @@ function stackedBar(counts, unit) {
 }
 
 function legend() {
-	return E('div', { 'class': 'netsteer-legend' }, [0, 1, 2, 3].map(function(i) {
+	return E('div', { 'class': 'netsteer-legend' }, cpuRange().map(function(i) {
 		return E('span', { 'class': 'netsteer-legend-item' }, [
-			E('i', { 'class': 'netsteer-dot', 'style': 'background:var(--v-chart-%d)'.format(i + 1) }),
+			E('i', { 'class': 'netsteer-dot', 'style': 'background:var(--v-chart-%d)'.format((i % 5) + 1) }),
 			'CPU%d'.format(i)
 		]);
 	}));
 }
 
+/* cpu online ("0-3"/"0-7") → 核数 */
+function parseCpuRange(txt) {
+	var m = (txt || '0-3').trim().match(/(\d+)-(\d+)/);
+	if (m) return Math.min(32, +m[2] - +m[1] + 1);
+	var single = (txt || '').trim().split(/[\s,]+/).filter(Boolean);
+	return single.length || 4;
+}
+
+/* uci get 结果 → IFACES; 读不到时退回经典三口 */
+function buildIfaces(uciRes) {
+	var out = [];
+	var vals = (uciRes && uciRes.values) || null;
+	if (vals) {
+		Object.keys(vals).forEach(function(sec) {
+			var s = vals[sec];
+			if (s['.type'] !== 'interface') return;
+			out.push({
+				dev: s.iface || sec,
+				sec: sec,
+				note: s.note || '',
+				virtual: !!s.virtual
+			});
+		});
+	}
+	if (!out.length) {
+		out = [
+			{ dev: 'eth0',      sec: 'eth0',      note: 'WAN 物理口', virtual: false },
+			{ dev: 'eth1',      sec: 'eth1',      note: 'LAN 物理口', virtual: false },
+			{ dev: 'pppoe-wan', sec: 'pppoe_wan', note: 'PPPoE 拨号口 · 重拨自动保持', virtual: true }
+		];
+	}
+	return out;
+}
+
 return view.extend({
-	/* 本页所有改动即时生效，无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
+	/* 本页所有改动即时生效, 无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
 	addFooter: function() {
 		return E([]);
 	},
 
 	load: function() {
-		var tasks = [];
-		IFACES.forEach(function(it) {
-			tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/rx-0/rps_cpus'), null));
-			tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/tx-0/xps_cpus'), null));
+		/* 先探测环境 (核数 + uci 接口表), 再按接口数读运行态
+		 * values 布局: [0]=meta, [1+2i]=rps, [2+2i]=xps, [1+2N]=softirqs, [2+2N]=state.json */
+		return Promise.all([
+			L.resolveDefault(fs.read('/sys/devices/system/cpu/online'), '0-3'),
+			ubusCall('uci', 'get', { config: 'netsteer' }).catch(function() { return null; })
+		]).then(function(meta) {
+			var cpuTxt = (meta[0] && meta[0].data) ? meta[0].data : meta[0];
+			NCPU = parseCpuRange(typeof cpuTxt === 'string' ? cpuTxt : '0-3');
+			IFACES = buildIfaces(meta[1]);
+			var autotuneDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.autotune_done);
+			var tasks = [ Promise.resolve({ ncpu: NCPU, ifaces: IFACES, autotuneDone: autotuneDone }) ];
+			IFACES.forEach(function(it) {
+				tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/rx-0/rps_cpus'), null));
+				tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/tx-0/xps_cpus'), null));
+			});
+			tasks.push(L.resolveDefault(fs.read('/proc/softirqs'), ''));
+			tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
+			return Promise.all(tasks);
 		});
-		tasks.push(L.resolveDefault(fs.read('/proc/softirqs'), ''));
-		/* IRQ 现值 (由 netsteer-apply 维护: {eth0:{irq,affinity},...}) */
-		tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
-		/* 守卫记录: 值变化时间线 + 漂移事件列表 */
-		tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/history.log'), null));
-		tasks.push(L.resolveDefault(fs.list('/etc/netsteer/incidents'), []));
-		return Promise.all(tasks);
 	},
 
 	/* ---- 软中断分布卡 (首页 Memory 卡同款: 大数字 + 堆叠条 + 图例) ---- */
 	renderSoftirqCard: function(text) {
 		var d = parseSoftirq(text);
-		var rx = d.rx.slice(0, 4), tx = d.tx.slice(0, 4);
+		var rx = d.rx.slice(0, NCPU), tx = d.tx.slice(0, NCPU);
 		var rxSum = rx.reduce(function(a, b) { return a + b; }, 0);
 		var conc = null, concCpu = null;
 		if (rxSum > 0) {
@@ -195,8 +265,9 @@ return view.extend({
 			conc = Math.round(rx[maxI] * 100 / rxSum);
 			concCpu = maxI;
 		}
-		/* 均衡时四核各 ~25%; >45% 视为明显集中 */
-		var concCls = (conc === null) ? '' : (conc > 45 ? ' is-bad' : ' is-ok');
+		/* 均衡时各核 ~100/N%; 超过 1.8 倍视为明显集中 */
+		var warnLine = Math.round(180 / NCPU);
+		var concCls = (conc === null) ? '' : (conc > warnLine ? ' is-bad' : ' is-ok');
 		return E('div', { 'class': 'netsteer-card netsteer-softirq', 'id': 'netsteer-softirq-card' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('strong', { 'class': 'netsteer-card-title' }, _('软中断负载分布')),
@@ -213,7 +284,7 @@ return view.extend({
 				E('span', { 'class': 'netsteer-note' },
 					conc === null
 						? _('开机以来暂无收包计数')
-						: _('收包负载集中在 CPU%d。四核分摊生效时应接近 25%%；越集中说明分摊越需要调整。'.format(concCpu)))
+						: _('收包负载集中在 CPU%d。%d 核分摊生效时应接近 %d%%；越集中越需要调整。'.format(concCpu, NCPU, Math.round(100 / NCPU))))
 			]),
 			E('div', { 'class': 'netsteer-sq-row' }, [
 				E('span', { 'class': 'netsteer-sq-label' }, _('收包 NET_RX')),
@@ -241,90 +312,24 @@ return view.extend({
 		});
 	},
 
-	/* ---- 运行守卫卡: 值变化时间线 + 漂移事件 (netsteer-check 每分钟产出) ---- */
-	renderGuardCard: function(historyText, incidents) {
-		var self = this;
-		var lines = (historyText || '').trim().split('\n').filter(function(l) { return l; });
-		var tail = lines.slice(-5).reverse();  /* 最新在上 */
-		var incList = (Array.isArray(incidents) ? incidents : [])
-			.sort(function(a, b) { return (b.name || '').localeCompare(a.name || ''); });
-		var nInc = incList.length;
-
-		var rows = tail.length
-			? tail.map(function(l) {
-				var sp = l.indexOf(' ', l.indexOf(' ') + 1);  /* 时间列 = "MM-DD HH:MM" */
-				if (sp < 0) sp = l.indexOf(' ');
-				return E('div', { 'class': 'netsteer-log-row' }, [
-					E('span', { 'class': 'netsteer-log-t' }, l.slice(0, sp)),
-					E('span', { 'class': 'netsteer-log-v' }, l.slice(sp + 1))
-				]);
-			})
-			: [ E('span', { 'class': 'netsteer-note' }, _('暂无记录')) ];
-
-		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-guard-card' }, [
-			E('div', { 'class': 'netsteer-card-head' }, [
-				E('strong', { 'class': 'netsteer-card-title' }, _('运行守卫')),
-				E('button', {
-					'class': 'netsteer-minibtn',
-					'type': 'button',
-					'click': ui.createHandlerFn(self, 'refreshGuard')
-				}, _('刷新'))
-			]),
-			E('div', { 'class': 'netsteer-conc' }, [
-				nInc > 0
-					? E('span', { 'class': 'netsteer-big is-bad' }, '%d'.format(nInc))
-					: E('span', { 'class': 'netsteer-big is-ok' }, '0'),
-				E('span', { 'class': 'netsteer-note' },
-					nInc > 0
-						? _('次参数漂移 — 已全部自动恢复，现场证据已留档')
-						: _('次参数漂移 — 正在自动校验，当前一切正常'))
-			]),
-			E('div', { 'class': 'netsteer-log' },
-				[ E('div', { 'class': 'netsteer-log-row netsteer-log-head' }, [
-					E('span', { 'class': 'netsteer-log-t' }, _('时间')),
-					E('span', { 'class': 'netsteer-log-v' }, _('参数值 (收包分核 / 中断应门)'))
-				]) ].concat(rows)),
-			nInc > 0
-				? E('div', { 'class': 'netsteer-log' }, incList.slice(0, 5).map(function(f) {
-					return E('div', { 'class': 'netsteer-log-row' }, [
-						E('span', { 'class': 'netsteer-log-t' }, (f.name || '').replace(/^incident-/, '').replace(/\.log$/, '')),
-						E('span', { 'class': 'netsteer-log-v' }, _('漂移现场 (系统日志快照)'))
-					]);
-				}))
-				: '',
-			E('div', { 'class': 'netsteer-foot' }, _('每分钟自动校验配置与实际运行值，发现被意外改动立即恢复并留痕'))
-		]);
-	},
-
-	refreshGuard: function() {
-		var self = this;
-		return Promise.all([
-			L.resolveDefault(fs.read('/tmp/netsteer/history.log'), null),
-			L.resolveDefault(fs.list('/etc/netsteer/incidents'), [])
-		]).then(function(r) {
-			var old = document.getElementById('netsteer-guard-card');
-			if (old && old.parentNode)
-				old.parentNode.replaceChild(self.renderGuardCard(r[0], r[1]), old);
-		});
-	},
-
 	/* ---- 接口卡: 现值 + CPU 芯片点选 ---- */
 	renderIface: function(it, values, idx, state) {
 		var self = this;
-		var rpsNow = (values[idx * 2] || '0').trim();
-		var xpsNow = (values[idx * 2 + 1] || '0').trim();
+		var rpsNow = ((values[idx * 2] || '0') + '').trim() || '0';
+		var xpsNow = ((values[idx * 2 + 1] || '0') + '').trim() || '0';
 		var rpsCpus = maskToCpus(rpsNow), xpsCpus = maskToCpus(xpsNow);
-		/* IRQ 现值 (state 由 netsteer-apply 维护; pppoe 虚拟口无中断) */
+		/* IRQ 现值: state.json 由 netsteer-apply 维护, 只给有硬件中断的口写记录
+		 * (虚拟口/未应用时无记录 → 占位行) */
 		var irqNow = (state && state[it.dev] && state[it.dev].affinity) || null;
-		var irqRow = null;
-		if (it.sec !== 'pppoe_wan') {
-			var irqOn = irqNow ? maskToCpus(irqNow) : [false, false, false, false];
+		var irqRow;
+		if (irqNow) {
+			var irqOn = irqNow ? maskToCpus(irqNow) : cpuRange().map(function() { return false; });
 			irqRow = E('div', { 'class': 'netsteer-row' }, [
 				E('span', { 'class': 'netsteer-rowlabel' }, [
 					_('中断应门 (IRQ)'),
 					E('em', { 'class': 'netsteer-mask netsteer-irq-mask' }, irqNow ? maskLabel(irqNow) : _('—'))
 				]),
-				E('div', { 'class': 'netsteer-chips' }, [0, 1, 2, 3].map(function(i) {
+				E('div', { 'class': 'netsteer-chips' }, cpuRange().map(function(i) {
 					return E('button', {
 						'class': 'netsteer-chip' + (irqOn[i] ? ' on' : ''),
 						'type': 'button',
@@ -333,6 +338,13 @@ return view.extend({
 						'click': ui.createHandlerFn(self, 'toggleCpu')
 					}, 'C%d'.format(i));
 				}))
+			]);
+		} else {
+			irqRow = E('div', { 'class': 'netsteer-row' }, [
+				E('span', { 'class': 'netsteer-rowlabel' }, [
+					_('中断应门 (IRQ)'),
+					E('em', { 'class': 'netsteer-mask' }, it.virtual ? _('虚拟接口 · 无硬件中断') : _('—'))
+				])
 			]);
 		}
 		return E('div', { 'class': 'netsteer-card' }, [
@@ -370,13 +382,8 @@ return view.extend({
 					}, 'C%d'.format(i));
 				}))
 			]),
-			irqRow !== null ? irqRow : E('div', { 'class': 'netsteer-row' }, [
-				E('span', { 'class': 'netsteer-rowlabel' }, [
-					_('中断应门 (IRQ)'),
-					E('em', { 'class': 'netsteer-mask' }, _('虚拟接口 · 无硬件中断'))
-				])
-			]),
-			E('div', { 'class': 'netsteer-foot' }, it.sec !== 'pppoe_wan' ? _('点选即生效 · 中断行: 单队列网卡，内核只在所选核上应门') : _('点选即生效'))
+			irqRow,
+			E('div', { 'class': 'netsteer-foot' }, !it.virtual ? _('点选即生效 · 中断行： 单队列网卡，内核只在所选核上应门') : _('点选即生效'))
 		]);
 	},
 
@@ -395,7 +402,7 @@ return view.extend({
 			node.classList.toggle('on');
 		}
 		var chips = document.querySelectorAll('.netsteer-chip[data-sec="%s"][data-kind="%s"]'.format(sec, kind));
-		var arr = [false, false, false, false];
+		var arr = cpuRange().map(function() { return false; });
 		chips.forEach(function(chip) {
 			if (chip.classList.contains('on'))
 				arr[+chip.getAttribute('data-cpu')] = true;
@@ -420,9 +427,8 @@ return view.extend({
 		var el = document.getElementById('netsteer-badge');
 		if (!el) return Promise.resolve();
 		var tasks = IFACES.map(function(it) {
-			return ubusCall('file', 'read', { path: '/sys/class/net/' + it.dev + '/queues/rx-0/rps_cpus' })
-				.then(function(v) { return ((v && v.data) ? v.data : '0').trim(); })
-				.catch(function() { return '?'; });
+			return L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/rx-0/rps_cpus'), '0')
+				.then(function(v) { return ((v && v.data) ? v.data : String(v || '0')).trim(); });
 		});
 		tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
 		return Promise.all(tasks).then(function(res) {
@@ -432,6 +438,7 @@ return view.extend({
 			var irq = null;
 			try { irq = JSON.parse(stateTxt || ''); } catch (e) { irq = null; }
 			var cur = matchPreset(m, irq);
+			var PRESETS = getPresets();
 			el.textContent = _('当前: %s'.format(cur ? PRESETS[cur].label : '自定义组合'));
 			el.classList.toggle('is-custom', !cur);
 			Object.keys(PRESETS).forEach(function(name) {
@@ -457,31 +464,28 @@ return view.extend({
 		});
 	},
 
-	/* ---- 预设切换 ---- */
-	applyPreset: function(ev) {
-		/* LuCI createHandlerFn 契约: fn(预绑定参数..., ev) — 事件恒在最后; 从 ev.currentTarget 读属性 */
+	/* ---- 预设切换 (按名) ---- */
+	applyPresetByName: function(name, silent) {
 		var self = this;
-		var name = ev && ev.currentTarget ? ev.currentTarget.getAttribute('data-preset') : null;
+		var PRESETS = getPresets();
 		var preset = PRESETS[name];
 		if (!preset) return Promise.resolve();
-		var pairs = Object.keys(preset.map).map(function(sec) {
-			var opt = { rps_cpus: preset.map[sec] };
-			if (sec !== 'pppoe_wan') opt.xps_cpus = preset.map[sec];
-			return { sec: sec, values: opt };
+		var pairs = IFACES.map(function(it) {
+			var opt = { rps_cpus: preset.map[it.sec] };
+			if (!it.virtual) opt.xps_cpus = preset.map[it.sec];
+			return { sec: it.sec, values: opt };
 		});
 		/* IRQ 摆位 (off 预设不含 irq 字段 = 中断不动) */
-		Object.keys(preset.irq || {}).forEach(function(dev) {
-			pairs.push({ sec: dev, values: { irq_cpus: preset.irq[dev] } });
+		Object.keys(preset.irq || {}).forEach(function(sec) {
+			pairs.push({ sec: sec, values: { irq_cpus: preset.irq[sec] } });
 		});
 		return applyNow(pairs).then(function() {
 			/* 不整页 reload: 就地同步芯片高亮/掩码文字/徽标 */
-			var names = { eth0: 0, eth1: 1, pppoe_wan: 2 };
-			Object.keys(preset.map).forEach(function(sec) {
-				var it = IFACES[names[sec]];
+			IFACES.forEach(function(it) {
 				['rps', 'xps'].forEach(function(kind) {
-					if (sec === 'pppoe_wan' && kind === 'xps') return;
-					var mask = preset.map[sec];
-					var chips = document.querySelectorAll('.netsteer-chip[data-sec="%s"][data-kind="%s"]'.format(sec, kind));
+					if (it.virtual && kind === 'xps') return;
+					var mask = preset.map[it.sec];
+					var chips = document.querySelectorAll('.netsteer-chip[data-sec="%s"][data-kind="%s"]'.format(it.sec, kind));
 					var on = maskToCpus(mask);
 					chips.forEach(function(chip, i) {
 						chip.classList.toggle('on', on[i]);
@@ -491,22 +495,208 @@ return view.extend({
 					if (maskLabelEl) maskLabelEl.textContent = maskLabel(mask);
 				});
 			});
-			ui.showModal(_('已切换: %s'.format(preset.label)), E('p', { 'class': 'netsteer-note' }, preset.desc));
-			window.setTimeout(function() { ui.hideModal(); }, 2200);
+			if (!silent) {
+				ui.showModal(_('已切换: %s'.format(preset.label)), E('p', { 'class': 'netsteer-note' }, preset.desc));
+				window.setTimeout(function() { ui.hideModal(); }, 2200);
+			}
 			self.refreshBadge();
-		})
-		.catch(function(e) {
+		});
+	},
+
+	applyPreset: function(ev) {
+		var name = ev && ev.currentTarget ? ev.currentTarget.getAttribute('data-preset') : null;
+		return this.applyPresetByName(name, false)
+			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
+	/* ---- 智能测速: 由本页面发起真实下载穿越路由器, 采样各配置下的软中断集中度 ---- */
+	sampleSoftirq: function(seconds) {
+		function read() {
+			return fs.read('/proc/softirqs').then(function(t) {
+				var d = parseSoftirq(t || '');
+				return d.rx.slice(0, NCPU);
+			});
+		}
+		var ctl = new AbortController();
+		for (var i = 0; i < 6; i++) {
+			fetch('https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe', { mode: 'no-cors', signal: ctl.signal, cache: 'no-store' }).catch(function() {});
+		}
+		var a;
+		return read().then(function(v0) {
+			a = v0;
+			return new Promise(function(resolve) { setTimeout(resolve, seconds * 1000); });
+		}).then(function() {
+			return read().then(function(b) {
+				ctl.abort();
+				var delta = cpuRange().map(function(i) { return Math.max(0, (b[i] || 0) - (a[i] || 0)); });
+				var total = delta.reduce(function(x, y) { return x + y; }, 0);
+				if (total < 100000) return { ok: false, reason: _('采样期间流量不足') };
+				var maxI = 0;
+				delta.forEach(function(c, i) { if (c > delta[maxI]) maxI = i; });
+				return { ok: true, conc: Math.round(delta[maxI] * 100 / total), cpu: maxI, total: total };
+			});
+		});
+	},
+
+	markAutotuneDone: function() {
+		/* global section 可能已存在 (apply 用它存 rfs_sock_flow_entries, type=steering) — 不动 .type */
+		return ubusCall('uci', 'set', { config: 'netsteer', section: 'global', values: { autotune_done: '1' } })
+			.catch(function() {
+				return ubusCall('uci', 'add', { config: 'netsteer', type: 'netsteer', name: 'global', values: { autotune_done: '1' } });
+			})
+			.then(function() { return ubusCall('uci', 'commit', { config: 'netsteer' }); })
+			.catch(function() {});
+	},
+
+	runAutotune: function() {
+		var self = this;
+		var PRESETS = getPresets();
+		var seq = ['all'];
+		if (PRESETS.pairs) seq.push('pairs');
+		var results = {};
+
+		function setStatus(txt) {
+			var el = document.getElementById('netsteer-tune-status');
+			if (el) el.textContent = txt;
+		}
+
+		ui.showModal(_('智能测速推荐'), [
+			E('p', { 'class': 'netsteer-note' }, _('依次试用候选方案，用真实下载流量测量各方案下的负载分布，完成后推荐最均匀的一个。测速期间配置会被临时切换，结束后自动恢复。整个过程约半分钟，期间请保持本页面打开。')),
+			E('p', { 'id': 'netsteer-tune-status' }, _('准备中…'))
+		]);
+
+		/* 记录测速前配置 (测完无论成败恢复, 防中途关页面停在测试值) */
+		return ubusCall('uci', 'get', { config: 'netsteer' }).then(function(res) {
+			var saved = {};
+			var vals = (res && res.values) || {};
+			Object.keys(vals).forEach(function(sec) {
+				var s = vals[sec];
+				if (s['.type'] !== 'interface') return;
+				saved[sec] = { rps_cpus: s.rps_cpus, xps_cpus: s.xps_cpus, irq_cpus: s.irq_cpus };
+			});
+			return saved;
+		}).then(function(saved) {
+			function restore() {
+				var pairs = Object.keys(saved).map(function(sec) { return { sec: sec, values: saved[sec] }; });
+				return applyNow(pairs).then(function() { self.refreshBadge(); }).catch(function() {});
+			}
+			var chain = Promise.resolve();
+			seq.forEach(function(name) {
+				chain = chain.then(function() {
+					setStatus(_('正在测: %s … (约 15 秒)'.format(PRESETS[name].label)));
+					return self.applyPresetByName(name, true)
+						.then(function() { return new Promise(function(r) { setTimeout(r, 1200); }); })
+						.then(function() { return self.sampleSoftirq(12); })
+						.then(function(r) { results[name] = r; });
+				});
+			});
+			return chain.then(function() {
+				return restore().then(function() {
+					var rows = seq.filter(function(n) { return results[n] && results[n].ok; });
+					if (!rows.length) {
+						ui.showModal(_('测速未完成'), E('p', { 'class': 'netsteer-note' }, _('采样期间流量不足，请稍后在网络使用高峰期重试，或直接选择"全核分摊"。(配置已恢复)')));
+						self.markAutotuneDone();
+						return;
+					}
+					rows.sort(function(x, y) { return results[x].conc - results[y].conc; });
+					var best = rows[0];
+					var table = E('table', { 'class': 'netsteer-tune-table' }, [
+						E('tr', {}, [ E('th', {}, _('方案')), E('th', {}, _('集中度')), E('th', {}, _('评价')) ])
+					]);
+					rows.forEach(function(n, i) {
+						var r = results[n];
+						table.appendChild(E('tr', {}, [
+							E('td', {}, PRESETS[n].label + (n === best ? ' ★' : '')),
+							E('td', {}, '%d%%'.format(r.conc)),
+							E('td', {}, i === 0 ? _('最均匀，推荐') : _('略集中'))
+						]));
+					});
+					ui.showModal(_('测速结果'), [
+						E('p', { 'class': 'netsteer-note' }, _('数值 = 收包负载最大单核占比，越低越均匀（%d 核理论最优 %d%%）。测速配置已恢复为测速前的状态。'.format(NCPU, Math.round(100 / NCPU)))),
+						table,
+						E('div', { 'class': 'right' }, [
+							E('button', {
+								'class': 'btn cbi-button-neutral',
+								'click': function() { ui.hideModal(); self.markAutotuneDone(); }
+							}, _('保持测前配置')),
+							' ',
+							E('button', {
+								'class': 'btn cbi-button-positive important',
+								'click': function() {
+									ui.hideModal();
+									self.markAutotuneDone();
+									self.applyPresetByName(best, false);
+								}
+							}, _('采纳推荐 (%s)'.format(PRESETS[best].label)))
+						])
+					]);
+				});
+			}).catch(function(e) {
+				return restore().then(function() {
+					ui.showModal(_('出错'), E('p', {}, String(e) + ' (配置已恢复)'));
+				});
+			});
+		}).catch(function(e) {
 			ui.showModal(_('出错'), E('p', {}, String(e)));
 		});
 	},
 
+	autotuneAsk: function() {
+		/* 首次使用: 询问是否自动测速 */
+		var self = this;
+		ui.showModal(_('首次使用建议'), [
+			E('p', { 'class': 'netsteer-note' }, _('检测到首次使用。建议跑一次智能测速：用真实流量测量各方案的负载分布，自动推荐最适合本机的方案（约半分钟）。')),
+			E('div', { 'class': 'right' }, [
+				E('button', {
+					'class': 'btn cbi-button-neutral',
+					'click': function() { ui.hideModal(); self.markAutotuneDone(); }
+				}, _('稍后再说')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button-positive important',
+					'click': function() { ui.hideModal(); self.runAutotune(); }
+				}, _('开始测速'))
+			])
+		]);
+	},
+
+	/* 问号浮窗: 原理与用法 */
+	toggleHelp: function(ev) {
+		var old = document.getElementById('netsteer-help-pop');
+		if (old) { old.remove(); return; }
+		var pop = E('div', { 'id': 'netsteer-help-pop', 'class': 'netsteer-card netsteer-help-pop' }, [
+			E('strong', {}, _('它解决什么问题')),
+			E('p', { 'class': 'netsteer-note' }, _('路由器每个数据包都要 CPU 处理。系统默认压在单个核心——高速下载、多设备并发时单核打满，表现为网速上不去、网页卡顿、延迟波动。')),
+			E('strong', {}, _('它做什么')),
+			E('p', { 'class': 'netsteer-note' }, _('基于内核 RPS / RFS / XPS 机制，把网络负载分摊到全部 %d 个核心：吞吐更高，高峰期更流畅。'.format(NCPU))),
+			E('strong', {}, _('怎么用')),
+			E('p', { 'class': 'netsteer-note' }, _('选一个方案立即生效；断电重启自动恢复；随时可切回系统默认。逐核点选可自定义。'))
+		]);
+		document.body.appendChild(pop);
+		var btn = ev.currentTarget;
+		var x = btn.getBoundingClientRect();
+		pop.style.left = Math.max(12, Math.min(x.left - 260, window.innerWidth - 320)) + 'px';
+		pop.style.top = (x.bottom + 8 + window.scrollY) + 'px';
+		function close(e) {
+			if (!pop.contains(e.target) && e.target !== btn) {
+				pop.remove();
+				document.removeEventListener('click', close);
+			}
+		}
+		setTimeout(function() { document.addEventListener('click', close); }, 50);
+	},
+
 	render: function(values) {
 		var self = this;
-		/* 当前模式判定: 三口 rps 现值 (sysfs) + IRQ state 匹配预设 */
+		/* meta 在 values[0] (load 阶段已填 NCPU/IFACES) */
+		var meta = values[0];
+		NCPU = meta.ncpu; IFACES = meta.ifaces;
+		var PRESETS = getPresets();
+		/* 当前模式判定: 各口 rps 现值 (sysfs) + IRQ state 匹配预设 */
 		var masks = {};
-		IFACES.forEach(function(it, i) { masks[it.sec] = (values[i * 2] || '0').trim(); });
+		IFACES.forEach(function(it, i) { masks[it.sec] = ((values[1 + i * 2] || '0') + '').trim(); });
 		var state = null;
-		try { state = JSON.parse(values[IFACES.length * 2 + 1] || ''); } catch (e) { state = null; }
+		try { state = JSON.parse(values[2 + IFACES.length * 2] || ''); } catch (e) { state = null; }
 		var cur = matchPreset(masks, state);
 		var curLabel = cur ? PRESETS[cur].label : _('自定义组合');
 
@@ -518,19 +708,25 @@ return view.extend({
 			'.netsteer-note{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);font-weight:400}',
 			'.netsteer-foot{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);margin-top:var(--sp-2,8px)}',
 
-			/* 头部说明 */
-			'.netsteer-lede{max-width:64em;color:var(--text-2,#4a515a);font-size:var(--fs-md,14px);line-height:1.65;margin:.4em 0}',
-			'.netsteer-lede strong{color:var(--text,#14171a);font-weight:600}',
-			'.netsteer-tech{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);margin:.2em 0 1em 0}',
+			/* 头部说明 (一句话 + 问号浮窗) */
+			'.netsteer-lede{max-width:64em;color:var(--text-2,#4a515a);font-size:var(--fs-md,14px);line-height:1.6;margin:.3em 0 .1em 0;display:flex;align-items:center;gap:.45em}',
+			'.netsteer-help{flex:none;width:1.35em;height:1.35em;border-radius:50%;border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-3,#5f666f);font-size:12px;font-weight:700;line-height:1.3;cursor:pointer;padding:0}',
+			'.netsteer-help:hover{border-color:var(--accent,#c8f031);color:var(--text,#14171a)}',
+			'.netsteer-help-pop{position:absolute;z-index:200;max-width:300px;margin:0;display:flex;flex-direction:column;gap:.1em}',
+			'.netsteer-help-pop strong{font-size:var(--fs-sm,12px);color:var(--text,#14171a);margin-top:.5em}',
+			'.netsteer-help-pop p{margin:.1em 0}',
 
-			/* 徽标 (accent-soft 底，不再大色块) */
+			/* 徽标 (accent-soft 底, 不再大色块) */
 			'.netsteer-badge{display:inline-flex;align-items:center;gap:.4em;padding:.22em .85em;border-radius:999px;border:1px solid var(--accent,#c8f031);background:var(--accent-soft,rgba(122,163,0,.13));color:var(--text,#14171a);font-size:var(--fs-sm,12px);font-weight:600}',
 			'.netsteer-badge.is-custom{border-color:var(--line-2,#c1c7ce);background:var(--s3,#eef0f3);color:var(--text-2,#4a515a)}',
 			'.netsteer-badge::before{content:"";width:.5em;height:.5em;border-radius:50%;background:var(--accent,#c8f031)}',
 			'.netsteer-badge.is-custom::before{background:var(--text-3,#5f666f)}',
 
+			/* 状态条 */
+			'.netsteer-statusbar{display:flex;align-items:center;gap:var(--sp-3,12px);margin-bottom:var(--sp-3,12px);flex-wrap:wrap}',
+
 			/* 预设卡 */
-			'.netsteer-presets{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--sp-3,12px);margin:.6em 0 1em 0}',
+			'.netsteer-presets{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:var(--sp-3,12px);margin:.6em 0 1em 0}',
 			'.netsteer-preset{display:block;text-align:left;background:var(--s1,#f8f9fa);border:1px solid var(--line,#d6dade);border-radius:var(--r,6px);padding:var(--sp-3,12px) var(--sp-4,16px);cursor:pointer;font:inherit;color:var(--text-2,#4a515a);transition:border-color .15s,background .15s}',
 			'.netsteer-preset:hover{border-color:var(--line-2,#c1c7ce)}',
 			'.netsteer-preset.on{border-color:var(--accent,#c8f031);background:var(--accent-soft,rgba(122,163,0,.13))}',
@@ -541,11 +737,11 @@ return view.extend({
 			'.netsteer-tag{font-size:.72em;font-weight:600;padding:.1em .5em;border-radius:999px;background:var(--accent,#c8f031);color:var(--accent-ink,#151b00)}',
 
 			/* 接口卡行 + 芯片 */
-			'.netsteer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--sp-3,12px);margin:.6em 0 1.2em 0}',
+			'.netsteer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:var(--sp-3,12px);margin:.6em 0 1.2em 0}',
 			'.netsteer-row{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2,8px);margin:.5em 0}',
 			'.netsteer-rowlabel{display:flex;flex-direction:column;gap:.15em;font-size:var(--fs-sm,12px);color:var(--text-2,#4a515a)}',
 			'.netsteer-mask{font-style:normal;font-family:var(--mono,ui-monospace,monospace);font-size:.92em;color:var(--text-3,#5f666f)}',
-			'.netsteer-chips{display:flex;gap:.3em}',
+			'.netsteer-chips{display:flex;flex-wrap:wrap;gap:.3em}',
 			'.netsteer-chip{min-width:2.3em;padding:.28em .5em;border-radius:999px;border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-3,#5f666f);cursor:pointer;font-size:var(--fs-sm,12px);font-family:var(--mono,ui-monospace,monospace);transition:all .15s}',
 			'.netsteer-chip:hover{border-color:var(--accent,#c8f031)}',
 			'.netsteer-chip.on{background:var(--accent-soft,rgba(122,163,0,.13));border-color:var(--accent,#c8f031);color:var(--text,#14171a);font-weight:600}',
@@ -568,15 +764,10 @@ return view.extend({
 			'.netsteer-legend-item{display:inline-flex;align-items:center;gap:.35em;font-size:var(--fs-sm,12px);color:var(--text-3,#5f666f)}',
 			'.netsteer-dot{display:inline-block;width:.7em;height:.7em;border-radius:2px}',
 
-			/* 状态条 */
-			'.netsteer-statusbar{display:flex;align-items:center;gap:var(--sp-3,12px);margin-bottom:var(--sp-3,12px)}',
-
-			/* 守卫记录日志行 */
-			'.netsteer-log{margin:.5em 0;border-top:1px solid var(--line-2,#e3e6ea);padding-top:.5em}',
-			'.netsteer-log-row{display:flex;gap:1em;font-family:var(--mono,ui-monospace,monospace);font-size:var(--fs-sm,12px);padding:.18em 0}',
-			'.netsteer-log-head{color:var(--text-3,#5f666f);font-family:inherit}',
-			'.netsteer-log-t{min-width:5.5em;color:var(--text-3,#5f666f)}',
-			'.netsteer-log-v{color:var(--text-2,#4a515a)}',
+			/* 测速结果表 */
+			'.netsteer-tune-table{width:100%;border-collapse:collapse;margin:.6em 0}',
+			'.netsteer-tune-table th,.netsteer-tune-table td{padding:.35em .6em;border-bottom:1px solid var(--line-2,#e3e6ea);font-size:var(--fs-sm,12px);text-align:left}',
+			'.netsteer-tune-table th{color:var(--text-3,#5f666f);font-weight:600}',
 
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
 			'@media (max-width: 640px){',
@@ -585,27 +776,28 @@ return view.extend({
 			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
 			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',
 			'.netsteer-sq-row{grid-template-columns:6.2em 1fr 3.8em;gap:8px}',
-			'.netsteer-log-v{white-space:normal;word-break:break-all}',
 			'.netsteer-lede{font-size:13px;line-height:1.55}',
-			'.netsteer-tech{font-size:11px}',
 			'.netsteer-big{font-size:22px}',
 			'.netsteer-conc{margin:.1em 0 .6em 0}',
 			'h2{font-size:20px}',
 			'}'
 		].join(''));
 
-		return E('div', { 'class': 'netsteer-root' }, [
+		var root = E('div', { 'class': 'netsteer-root' }, [
 			css,
 			E('h2', {}, _('网络分核加速')),
-			E('p', { 'class': 'netsteer-lede' }, _(
-				'路由器收发的每个数据包都要占用 CPU 处理。系统默认把这份负载压在单个核心上——' +
-				'高速下载、多设备并发时单核容易打满，表现为网速上不去、网页卡顿、延迟波动。' +
-				'NetSteer 把网络负载均匀分摊到全部四个核心：转发吞吐更高，高峰期依然流畅，CPU 占用更平均。')),
-			E('p', { 'class': 'netsteer-tech' }, _(
-				'基于内核 RPS / RFS / XPS 机制 · 点选即时生效、断电重启自动恢复 · 随时可切回系统默认')),
+			E('p', { 'class': 'netsteer-lede' }, [
+				E('span', {}, _('把网络负载摊到全部 %d 个核心，多设备高速下载时不掉速、不卡顿。'.format(NCPU))),
+				E('button', { 'class': 'netsteer-help', 'type': 'button', 'title': _('了解原理与用法'), 'click': ui.createHandlerFn(this, 'toggleHelp') }, '?')
+			]),
 			E('div', { 'class': 'netsteer-card netsteer-statusbar' }, [
 				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前: %s'.format(curLabel))),
-				E('span', { 'class': 'netsteer-note' }, _('下面选择一个方案，或逐核自定义'))
+				E('button', {
+					'class': 'netsteer-minibtn',
+					'type': 'button',
+					'click': ui.createHandlerFn(this, 'runAutotune')
+				}, _('智能测速推荐')),
+				E('span', { 'class': 'netsteer-note' }, _('选一个方案，或逐核自定义'))
 			]),
 			E('div', { 'class': 'netsteer-presets' }, Object.keys(PRESETS).map(function(name) {
 				var p = PRESETS[name];
@@ -620,10 +812,15 @@ return view.extend({
 				]);
 			})),
 			E('div', { 'class': 'netsteer-grid' }, IFACES.map(function(it, i) {
-				return self.renderIface(it, values, i, state);
+				return self.renderIface(it, values.slice(1), i, state);
 			})),
-			this.renderSoftirqCard(values[IFACES.length * 2] || ''),
-			this.renderGuardCard(values[IFACES.length * 2 + 2], values[IFACES.length * 2 + 3])
+			this.renderSoftirqCard(values[1 + IFACES.length * 2] || '')
 		]);
+
+		/* 首次使用: 自动询问智能测速 */
+		if (!meta.autotuneDone)
+			window.setTimeout(function() { self.autotuneAsk(); }, 800);
+
+		return root;
 	}
 });

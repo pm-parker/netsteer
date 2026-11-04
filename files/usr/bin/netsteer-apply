@@ -9,8 +9,10 @@ log() { logger -t $LOG_TAG "$@"; echo "$@"; }
 STATE_DIR=/tmp/netsteer
 STATE_FILE=$STATE_DIR/state.json
 STATE_TMP=$STATE_DIR/.state.tmp
+STATE_TXT=$STATE_DIR/state.txt
 mkdir -p "$STATE_DIR"
 echo "{" > "$STATE_TMP"
+: > "$STATE_TXT"
 
 config_load netsteer
 
@@ -74,7 +76,7 @@ apply_iface() {
 	[ -z "$(echo $irq_out | tr -d ' ')" ] && \
 		irq_out=$(grep -E ":[[:space:][:digit:]]+ .*$iface\$" /proc/interrupts 2>/dev/null | cut -d: -f1 | tr -d ' ')
 
-	local first=1
+	local first=1 first_irq_no="" first_aff=""
 	for n in $irq_out; do
 		[ -n "$n" ] || continue
 		local aff_file="/proc/irq/$n/smp_affinity"
@@ -97,11 +99,18 @@ apply_iface() {
 		if [ "$first" = "1" ]; then
 			state_add "$iface" "$n" "$cur"
 			first=0
+			first_irq_no="$n"
+			first_aff="$cur"
 		else
 			# 同设备多 IRQ: 后续中断号以 irqN 为键追加
 			state_add "irq$n" "$n" "$cur"
 		fi
 	done
+
+	# 通用状态行 (netsteer-check 比对用; 无硬编码接口/IRQ)
+	printf 'netsteer %s %s rps %s' "$cfg" "$iface" "$rps" >> "$STATE_TXT"
+	[ -n "$first_irq_no" ] && printf ' irq %s %s' "$first_irq_no" "$first_aff" >> "$STATE_TXT"
+	echo >> "$STATE_TXT"
 }
 
 config_foreach apply_iface interface

@@ -1,8 +1,10 @@
 #!/bin/sh /etc/rc.common
-# netsteer: 开机应用 RPS/RFS/XPS 转向
+# netsteer: 开机应用 RPS/RFS/XPS 转向 (首装自动探测生成配置)
 START=70
 
 start() {
+	# 无配置时自动探测接口生成 (已有配置则跳过)
+	/usr/bin/netsteer-detect >/dev/null 2>&1
 	/usr/bin/netsteer-apply >/dev/null 2>&1
 }
 

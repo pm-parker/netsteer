@@ -1,5 +1,5 @@
 /* NetSteer — 网络分核加速 (LuCI 视图)
- * 视觉: 全量跟随 Vantage 主题变量, 深浅模式自动适配
+ * 视觉: 全量跟随 Vantage 主题变量，深浅模式自动适配
  */
 'use strict';
 'require view';
@@ -7,7 +7,7 @@
 'require uci';
 'require ui';
 
-/* 直调 ubus 的轻量应用链 (rpc.declare 在本环境调用挂起, 改用裸 fetch /ubus/) */
+/* 直调 ubus 的轻量应用链 (rpc.declare 在本环境调用挂起，改用裸 fetch /ubus/) */
 function ubusCall(obj, method, params) {
 	var sid = (window.L && L.env && L.env.sessionid) || '00000000000000000000000000000000';
 	return fetch('/ubus/', {
@@ -76,7 +76,7 @@ function fmtCount(n) {
 var PRESETS = {
 	all: {
 		label: _('全核分摊'),
-		short: _('四个核一起干活, 负载摊得最平。'),
+		short: _('四个核一起干活，负载摊得最平。'),
 		desc: _('软中断分摊到 CPU0-3, 硬中断应门错开 (WAN→C3, LAN→C2)。通用推荐: 实测四核负载最均匀。'),
 		rec: true,
 		map: { eth0: 'f', eth1: 'f', pppoe_wan: 'f' },
@@ -84,15 +84,15 @@ var PRESETS = {
 	},
 	pairs: {
 		label: _('收发分对'),
-		short: _('WAN 和 LAN 各用两个核, 互不干扰。'),
-		desc: _('WAN 口用 C0+C1, LAN 口用 C2+C3。实测集中度 47% (全核分摊 44%), 高负载场景不如全核分摊均匀, 适合想按口隔离试玩的场景。'),
+		short: _('WAN 和 LAN 各用两个核，互不干扰。'),
+		desc: _('WAN 口用 C0+C1, LAN 口用 C2+C3。实测集中度 47% (全核分摊 44%), 高负载场景不如全核分摊均匀，适合想按口隔离试玩的场景。'),
 		rec: false,
 		map: { eth0: '3', eth1: 'c', pppoe_wan: 'f' },
 		irq: { eth0: '2', eth1: '8' }
 	},
 	off: {
 		label: _('系统默认'),
-		short: _('关掉分摊, 恢复出厂行为。'),
+		short: _('关掉分摊，恢复出厂行为。'),
 		desc: _('负载回到单个核心处理。仅用于排障对比效果，日常不建议。'),
 		rec: false,
 		map: { eth0: '0', eth1: '0', pppoe_wan: '0' }
@@ -142,7 +142,12 @@ function stackedBar(counts, unit) {
 		el.appendChild(E('div', {
 			'class': 'netsteer-stack-seg',
 			'style': 'width:%s%%;background:var(--v-chart-%d)'.format(pct, i + 1),
-			'title': 'CPU%d · %s%s · %s%%'.format(i, fmtCount(c), unit, pct)
+			'title': 'CPU%d · %s%s · %s%%'.format(i, fmtCount(c), unit, pct),
+			'click': function() {
+				ui.showModal(_('CPU%d 明细').format(i), [
+					E('p', {}, '%s%s · %s%%'.format(fmtCount(c), unit, pct))
+				]);
+			}
 		}));
 	});
 	return el;
@@ -158,7 +163,7 @@ function legend() {
 }
 
 return view.extend({
-	/* 本页所有改动即时生效, 无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
+	/* 本页所有改动即时生效，无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
 	addFooter: function() {
 		return E([]);
 	},
@@ -221,7 +226,7 @@ return view.extend({
 				E('span', { 'class': 'netsteer-sq-total' }, fmtCount(tx.reduce(function(a, b) { return a + b; }, 0)))
 			]),
 			legend(),
-			E('div', { 'class': 'netsteer-foot' }, _('开机以来累计 · 悬停色块看各核明细'))
+			E('div', { 'class': 'netsteer-foot' }, _('开机以来累计 · 点按或悬停色块查看各核明细'))
 		]);
 	},
 
@@ -247,7 +252,8 @@ return view.extend({
 
 		var rows = tail.length
 			? tail.map(function(l) {
-				var sp = l.indexOf(' ');
+				var sp = l.indexOf(' ', l.indexOf(' ') + 1);  /* 时间列 = "MM-DD HH:MM" */
+				if (sp < 0) sp = l.indexOf(' ');
 				return E('div', { 'class': 'netsteer-log-row' }, [
 					E('span', { 'class': 'netsteer-log-t' }, l.slice(0, sp)),
 					E('span', { 'class': 'netsteer-log-v' }, l.slice(sp + 1))
@@ -270,8 +276,8 @@ return view.extend({
 					: E('span', { 'class': 'netsteer-big is-ok' }, '0'),
 				E('span', { 'class': 'netsteer-note' },
 					nInc > 0
-						? _('次参数漂移 — 已全部自动恢复, 现场证据已留档')
-						: _('次参数漂移 — 系统在自动校验, 当前一切正常'))
+						? _('次参数漂移 — 已全部自动恢复，现场证据已留档')
+						: _('次参数漂移 — 正在自动校验，当前一切正常'))
 			]),
 			E('div', { 'class': 'netsteer-log' },
 				[ E('div', { 'class': 'netsteer-log-row netsteer-log-head' }, [
@@ -286,7 +292,7 @@ return view.extend({
 					]);
 				}))
 				: '',
-			E('div', { 'class': 'netsteer-foot' }, _('每分钟自动校验配置与实际运行值, 发现被意外改动立即恢复并留痕'))
+			E('div', { 'class': 'netsteer-foot' }, _('每分钟自动校验配置与实际运行值，发现被意外改动立即恢复并留痕'))
 		]);
 	},
 
@@ -364,8 +370,13 @@ return view.extend({
 					}, 'C%d'.format(i));
 				}))
 			]),
-			irqRow,
-			E('div', { 'class': 'netsteer-foot' }, it.sec !== 'pppoe_wan' ? _('点选即生效 · 中断行: 单队列网卡, 内核只在所选核上应门') : _('点选即生效'))
+			irqRow !== null ? irqRow : E('div', { 'class': 'netsteer-row' }, [
+				E('span', { 'class': 'netsteer-rowlabel' }, [
+					_('中断应门 (IRQ)'),
+					E('em', { 'class': 'netsteer-mask' }, _('虚拟接口 · 无硬件中断'))
+				])
+			]),
+			E('div', { 'class': 'netsteer-foot' }, it.sec !== 'pppoe_wan' ? _('点选即生效 · 中断行: 单队列网卡，内核只在所选核上应门') : _('点选即生效'))
 		]);
 	},
 
@@ -376,7 +387,7 @@ return view.extend({
 		var sec = node.getAttribute('data-sec');
 		var kind = node.getAttribute('data-kind');
 		if (kind === 'irq') {
-			/* IRQ 单选 (radio): 单队列网卡实际只在一个核应门, 点谁谁独占 */
+			/* IRQ 单选 (radio): 单队列网卡实际只在一个核应门，点谁谁独占 */
 			document.querySelectorAll('.netsteer-chip[data-sec="%s"][data-kind="irq"]'.format(sec))
 				.forEach(function(c) { c.classList.remove('on'); });
 			node.classList.add('on');
@@ -512,7 +523,7 @@ return view.extend({
 			'.netsteer-lede strong{color:var(--text,#14171a);font-weight:600}',
 			'.netsteer-tech{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);margin:.2em 0 1em 0}',
 
-			/* 徽标 (accent-soft 底, 不再大色块) */
+			/* 徽标 (accent-soft 底，不再大色块) */
 			'.netsteer-badge{display:inline-flex;align-items:center;gap:.4em;padding:.22em .85em;border-radius:999px;border:1px solid var(--accent,#c8f031);background:var(--accent-soft,rgba(122,163,0,.13));color:var(--text,#14171a);font-size:var(--fs-sm,12px);font-weight:600}',
 			'.netsteer-badge.is-custom{border-color:var(--line-2,#c1c7ce);background:var(--s3,#eef0f3);color:var(--text-2,#4a515a)}',
 			'.netsteer-badge::before{content:"";width:.5em;height:.5em;border-radius:50%;background:var(--accent,#c8f031)}',
@@ -562,10 +573,24 @@ return view.extend({
 			'.netsteer-log-row{display:flex;gap:1em;font-family:var(--mono,ui-monospace,monospace);font-size:var(--fs-sm,12px);padding:.18em 0}',
 			'.netsteer-log-head{color:var(--text-3,#5f666f);font-family:inherit}',
 			'.netsteer-log-t{min-width:5.5em;color:var(--text-3,#5f666f)}',
-			'.netsteer-log-v{color:var(--text-2,#4a515a)}'
+			'.netsteer-log-v{color:var(--text-2,#4a515a)}',
+
+			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
+			'@media (max-width: 640px){',
+			'.netsteer-root{padding-bottom:96px}',
+			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
+			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',
+			'.netsteer-sq-row{grid-template-columns:6.2em 1fr 3.8em;gap:8px}',
+			'.netsteer-log-v{white-space:normal;word-break:break-all}',
+			'.netsteer-lede{font-size:13px;line-height:1.55}',
+			'.netsteer-tech{font-size:11px}',
+			'.netsteer-big{font-size:22px}',
+			'.netsteer-conc{margin:.1em 0 .6em 0}',
+			'h2{font-size:20px}',
+			'}'
 		].join(''));
 
-		return E('div', {}, [
+		return E('div', { 'class': 'netsteer-root' }, [
 			css,
 			E('h2', {}, _('网络分核加速')),
 			E('p', { 'class': 'netsteer-lede' }, _(

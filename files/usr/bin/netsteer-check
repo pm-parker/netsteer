@@ -1,0 +1,26 @@
+#!/bin/sh
+# netsteer-check: 校验运行态与 uci 一致, 漂移才重应用 (供 cron 5 分钟轮询; 幂等轻量)
+# 一致时静默退出, 不刷日志
+RPS_LIST="eth0 eth1 pppoe-wan"
+IRQ_MAP="eth0:104 eth1:105"
+
+drift=""
+for d in $RPS_LIST; do
+	want=$(uci -q get netsteer.$d.rps_cpus 2>/dev/null || uci -q get netsteer.$(echo $d | tr - _).rps_cpus)
+	got=$(cat /sys/class/net/$d/queues/rx-0/rps_cpus 2>/dev/null)
+	[ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ] && drift="$drift $d.rps($want≠$got)"
+done
+
+for pair in $IRQ_MAP; do
+	d=${pair%%:*}; n=${pair##*:}
+	want=$(uci -q get netsteer.$d.irq_cpus 2>/dev/null)
+	got=$(cat /proc/irq/$n/smp_affinity 2>/dev/null)
+	[ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ] && drift="$drift $d.irq($want≠$got)"
+done
+
+if [ -n "$drift" ]; then
+	logger -t netsteer "检测到漂移:$drift — 重应用"
+	/usr/bin/netsteer-apply >/dev/null 2>&1
+	logger -t netsteer "自愈完成"
+fi
+exit 0

@@ -9,6 +9,8 @@
 				"/sys/class/net/eth0/queues/*/*": [ "read" ],
 				"/sys/class/net/eth1/queues/*/*": [ "read" ],
 				"/sys/class/net/pppoe-wan/queues/*/*": [ "read" ],
+				"/sys/devices/platform/*/net/*/queues/*/*": [ "read" ],
+				"/sys/devices/virtual/net/*/queues/*/*": [ "read" ],
 				"/etc/config/netsteer": [ "read" ]
 			}
 		},

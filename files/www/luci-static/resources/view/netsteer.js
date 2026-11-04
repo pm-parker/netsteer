@@ -568,6 +568,9 @@ return view.extend({
 			'.netsteer-legend-item{display:inline-flex;align-items:center;gap:.35em;font-size:var(--fs-sm,12px);color:var(--text-3,#5f666f)}',
 			'.netsteer-dot{display:inline-block;width:.7em;height:.7em;border-radius:2px}',
 
+			/* 状态条 */
+			'.netsteer-statusbar{display:flex;align-items:center;gap:var(--sp-3,12px);margin-bottom:var(--sp-3,12px)}',
+
 			/* 守卫记录日志行 */
 			'.netsteer-log{margin:.5em 0;border-top:1px solid var(--line-2,#e3e6ea);padding-top:.5em}',
 			'.netsteer-log-row{display:flex;gap:1em;font-family:var(--mono,ui-monospace,monospace);font-size:var(--fs-sm,12px);padding:.18em 0}',
@@ -578,6 +581,7 @@ return view.extend({
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
 			'@media (max-width: 640px){',
 			'.netsteer-root{padding-bottom:96px}',
+			'.netsteer-statusbar{flex-direction:column;align-items:flex-start;gap:6px}',
 			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
 			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',
 			'.netsteer-sq-row{grid-template-columns:6.2em 1fr 3.8em;gap:8px}',
@@ -599,7 +603,7 @@ return view.extend({
 				'NetSteer 把网络负载均匀分摊到全部四个核心：转发吞吐更高，高峰期依然流畅，CPU 占用更平均。')),
 			E('p', { 'class': 'netsteer-tech' }, _(
 				'基于内核 RPS / RFS / XPS 机制 · 点选即时生效、断电重启自动恢复 · 随时可切回系统默认')),
-			E('div', { 'class': 'netsteer-card', 'style': 'display:flex;align-items:center;gap:var(--sp-3,12px);margin-bottom:var(--sp-3,12px)' }, [
+			E('div', { 'class': 'netsteer-card netsteer-statusbar' }, [
 				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前: %s'.format(curLabel))),
 				E('span', { 'class': 'netsteer-note' }, _('下面选择一个方案，或逐核自定义'))
 			]),

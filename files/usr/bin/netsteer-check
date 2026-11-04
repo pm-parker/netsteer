@@ -1,25 +1,36 @@
 #!/bin/sh
-# netsteer-check: 校验运行态与 uci 一致, 漂移才重应用 (供 cron 5 分钟轮询; 幂等轻量)
-# 一致时静默退出, 不刷日志
-RPS_LIST="eth0 eth1 pppoe-wan"
-IRQ_MAP="eth0:104 eth1:105"
+# netsteer-check: 值记录仪 + 漂移自愈 + 现场抓取 (cron 每分钟)
+# 值无变化: 只在变化时记 history (变化行即证据); 漂移: logger + logread 存证 + 重应用
+STATE_DIR=/tmp/netsteer
+HIST=$STATE_DIR/history.log
+mkdir -p "$STATE_DIR"
 
+now=$(date "+%m-%d %H:%M")
+cur=$(printf "e0=%s e1=%s pw=%s i104=%s i105=%s" \
+	"$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus 2>/dev/null)" \
+	"$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus 2>/dev/null)" \
+	"$(cat /sys/class/net/pppoe-wan/queues/rx-0/rps_cpus 2>/dev/null)" \
+	"$(cat /proc/irq/104/smp_affinity 2>/dev/null)" \
+	"$(cat /proc/irq/105/smp_affinity 2>/dev/null)")
+
+last=$(tail -1 "$HIST" 2>/dev/null | cut -d' ' -f3-)
+[ "$cur" != "$last" ] && echo "$now $cur" >> "$HIST"
+# 轮转: 超 3000 行留尾部 1000
+[ "$(wc -l < "$HIST" 2>/dev/null)" -gt 3000 ] && tail -1000 "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
+
+# 漂移判定: 运行态 vs uci
 drift=""
-for d in $RPS_LIST; do
-	want=$(uci -q get netsteer.$d.rps_cpus 2>/dev/null || uci -q get netsteer.$(echo $d | tr - _).rps_cpus)
-	got=$(cat /sys/class/net/$d/queues/rx-0/rps_cpus 2>/dev/null)
-	[ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ] && drift="$drift $d.rps($want≠$got)"
-done
-
-for pair in $IRQ_MAP; do
-	d=${pair%%:*}; n=${pair##*:}
-	want=$(uci -q get netsteer.$d.irq_cpus 2>/dev/null)
-	got=$(cat /proc/irq/$n/smp_affinity 2>/dev/null)
-	[ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ] && drift="$drift $d.irq($want≠$got)"
-done
+w=$(uci -q get netsteer.eth0.rps_cpus);  g=$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus 2>/dev/null);  [ -n "$w" ] && [ -n "$g" ] && [ "$w" != "$g" ] && drift="$drift eth0.rps($w≠$g)"
+w=$(uci -q get netsteer.eth1.rps_cpus);  g=$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus 2>/dev/null);  [ -n "$w" ] && [ -n "$g" ] && [ "$w" != "$g" ] && drift="$drift eth1.rps($w≠$g)"
+w=$(uci -q get netsteer.pppoe_wan.rps_cpus); g=$(cat /sys/class/net/pppoe-wan/queues/rx-0/rps_cpus 2>/dev/null); [ -n "$w" ] && [ -n "$g" ] && [ "$w" != "$g" ] && drift="$drift pppoe.rps($w≠$g)"
+w=$(uci -q get netsteer.eth0.irq_cpus);  g=$(cat /proc/irq/104/smp_affinity 2>/dev/null);  [ -n "$w" ] && [ -n "$g" ] && [ "$w" != "$g" ] && drift="$drift eth0.irq($w≠$g)"
+w=$(uci -q get netsteer.eth1.irq_cpus);  g=$(cat /proc/irq/105/smp_affinity 2>/dev/null);  [ -n "$w" ] && [ -n "$g" ] && [ "$w" != "$g" ] && drift="$drift eth1.irq($w≠$g)"
 
 if [ -n "$drift" ]; then
-	logger -t netsteer "检测到漂移:$drift — 重应用"
+	logger -t netsteer "漂移:$drift — 存证+重应用"
+	inc="$STATE_DIR/incident-$(date "+%m%d-%H%M%S").log"
+	{ echo "== $now 漂移:$drift"; echo "== 同窗口系统日志 (找真凶)"; logread 2>/dev/null | tail -60; echo "== history 近 10 行"; tail -10 "$HIST"; } > "$inc"
+	logger -t netsteer "现场已存 $inc"
 	/usr/bin/netsteer-apply >/dev/null 2>&1
 	logger -t netsteer "自愈完成"
 fi

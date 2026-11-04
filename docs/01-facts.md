@@ -15,9 +15,18 @@
 | RFS | 同一流哈希到同一核，保缓存局部性（配合 RPS） | /proc/sys/net/core/rps_sock_flow_entries（全局）+ queues/rx-*/rps_flow_cnt（每队列） |
 | XPS | 发送侧同理念分摊 | /sys/class/net/<if>/queues/tx-*/xps_cpus |
 
+### XPS 在 R5C 上不可用（2026-11-04 真机实证）
+- tx-0 目录存在但 xps_cpus 为 sysfs 幻影属性：`stat` 可见、`open` ENOENT、写静默失败
+- `[ -e ]` 探测会误判存在 → 唯一可靠判据 = **写后回读比对**（apply 脚本已按此实现）
+- 结论：rk3568 GMAC 驱动不暴露 XPS，UI 芯片保留（其他硬件/未来驱动可用），apply 如实上报"不可写, 跳过"
+
 - pppoe-wan 是虚拟设备，有自己的 queues 目录，老系统实践经验是 pppoe 层 RPS 全核
 - sysfs 值重启/链路事件会丢 → 必须 init + hotplug 双保险持久化
 - 验证手段：/proc/softirqs 各核 NET_RX/NET_TX 计数前后对比 + 饱和压测
+
+### RPS 生效实测（12s 窗口，ping fnos 40 包 + 背景流量）
+- 基线：CPU1 4.7 亿 / CPU2 3.0 亿 / CPU0 4900 万 / CPU3 2.4 万（严重偏斜，CPU3 形同虚设）
+- RPS=f 后增量：CPU0 +39k / CPU1 +146k / CPU2 +116k / CPU3 +33k → 四核全部吃到收包软中断
 
 ## 平台机制（LuCI ucode 应用解剖，从 luci-app-sqm 实测）
 

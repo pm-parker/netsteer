@@ -4,20 +4,20 @@ config netsteer 'state'
 config steering 'global'
 	option rfs_sock_flow_entries '32768'
 
-# 预设: all=全核(f) / pairs=收发分对(eth0=3,eth1=c) / off=0
-config interface
+# 命名 section (eth0/eth1/pppoe_wan), 供 LuCI 视图 uci.set 直写
+config interface 'eth0'
 	option iface 'eth0'
 	option rps_cpus 'f'
 	option xps_cpus 'f'
 	option rfs_flow_cnt '4096'
 
-config interface
+config interface 'eth1'
 	option iface 'eth1'
 	option rps_cpus 'f'
 	option xps_cpus 'f'
 	option rfs_flow_cnt '4096'
 
-config interface
+config interface 'pppoe_wan'
 	option iface 'pppoe-wan'
 	option rps_cpus 'f'
 	option xps_cpus '0'

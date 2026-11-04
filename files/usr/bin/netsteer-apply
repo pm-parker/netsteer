@@ -28,6 +28,10 @@ apply_iface() {
 
 	for q in /sys/class/net/$iface/queues/rx-*; do
 		[ -d "$q" ] || continue
+		if [ ! -e "$q/rps_cpus" ]; then
+			log "$iface rx($(basename $q)) rps 不适用 (驱动未暴露)"
+			continue
+		fi
 		echo "$rps" > "$q/rps_cpus" 2>/dev/null \
 			&& log "$iface rx($(basename $q)) rps=$rps" \
 			|| log "WARN: $iface rps 写入失败"
@@ -35,9 +39,13 @@ apply_iface() {
 	done
 	for q in /sys/class/net/$iface/queues/tx-*; do
 		[ -d "$q" ] || continue
-		echo "$xps" > "$q/xps_cpus" 2>/dev/null \
-			&& log "$iface tx($(basename $q)) xps=$xps" \
-			|| log "WARN: $iface xps 写入失败"
+		echo "$xps" > "$q/xps_cpus" 2>/dev/null
+		# sysfs 幻影属性防御: stat 可见但 open ENOENT — 唯一可靠判据 = 写后回读
+		if [ "$(cat "$q/xps_cpus" 2>/dev/null)" = "$xps" ]; then
+			log "$iface tx($(basename $q)) xps=$xps"
+		else
+			log "$iface tx($(basename $q)) xps 不可写 (驱动不暴露/只读), 跳过"
+		fi
 	done
 }
 

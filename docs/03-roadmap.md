@@ -1,10 +1,10 @@
 # 路线图
 
 ## M1 — 内核应用层（先见效）
-- [ ] /etc/config/netsteer 默认配置
-- [ ] netsteer-apply 脚本（幂等）
-- [ ] init.d + hotplug.d 双保险
-- [ ] 上机验证：sysfs 生效 + 重启存活 + /proc/softirqs 计数分布变化
+- [x] /etc/config/netsteer 默认配置
+- [x] netsteer-apply 脚本（幂等 + 写后回读验证）
+- [x] init.d + hotplug.d 双保险
+- [x] 上机验证：sysfs 生效 + 重启存活 + /proc/softirqs 计数分布变化
 - 验收：压测前完成部署，作为 flowtable 压测的前置调优
 
 ## M2 — LuCI 页面 MVP

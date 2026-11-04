@@ -28,7 +28,10 @@ w=$(uci -q get netsteer.eth1.irq_cpus);  g=$(cat /proc/irq/105/smp_affinity 2>/d
 
 if [ -n "$drift" ]; then
 	logger -t netsteer "漂移:$drift — 存证+重应用"
-	inc="$STATE_DIR/incident-$(date "+%m%d-%H%M%S").log"
+	# 现场证据写持久层 (/etc/netsteer/incidents): 路由器重启后仍可查 (logread 本身是内存的)
+	INC_DIR=/etc/netsteer/incidents
+	mkdir -p "$INC_DIR"
+	inc="$INC_DIR/incident-$(date "+%m%d-%H%M%S").log"
 	{ echo "== $now 漂移:$drift"; echo "== 同窗口系统日志 (找真凶)"; logread 2>/dev/null | tail -60; echo "== history 近 10 行"; tail -10 "$HIST"; } > "$inc"
 	logger -t netsteer "现场已存 $inc"
 	/usr/bin/netsteer-apply >/dev/null 2>&1

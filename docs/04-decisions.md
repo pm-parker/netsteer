@@ -21,3 +21,9 @@
 - 实测 init 的 conf_rule_add 支持 int_addr 字段 → 原生设备级 ACL，无需防火墙挡 SSDP
 - 白名单：微服 .123 / 摄像头 .187 / 网心云 .175
 - miniupnpd init 无 respawn 是自启失败的病根 → 补 respawn 参数
+
+## D6：menu.d JSON 顶层 key 必须挂 admin/ 树（2026-11-04 真机事故）
+- 症状：根命名空间节点（"luci-app-netsteer-main"）→ 免登录直通渲染 + 成为 firstchild 兜底 + 永不进侧边栏，用户访问 192.168.11.1 直接落单页无菜单
+- 机理：LuCI ucode dispatcher 只对 `admin/...` 前缀节点做登录墙；acl.d 的顶层 key（如 "luci-app-netsteer"）是 ACL 组名，与菜单路径无关，depends.acl 引用的是组名
+- 修正：单页 app 用 `"admin/services/netsteer"` 单节点 + depends（acl + uci），无需 firstchild 包装
+- 附带教训：`node --check` 只保语法，this 绑定丢失（map 回调里 createHandlerFn(this,...)）和 menu 挂载错误这类运行时/结构错误必须真机渲染验证；LuCI session 绑定创建者 IP，从 CLI 建的会话无法给别的 IP 的浏览器用

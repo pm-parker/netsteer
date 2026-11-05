@@ -83,17 +83,19 @@ jobs:
           tar xzf "$TOOLS/t.apk" -C "$TOOLS" sbin/apk.static
           chmod +x "$TOOLS/sbin/apk.static"
           "$TOOLS/sbin/apk.static" verify --allow-untrusted release-dist/*.apk
+      - name: Resolve release notes body
+        run: |
+          set -e
+          # 发版说明: release-notes/<tag>.md 存在则用之(拼接安装模板), 否则回退纯模板
+          if [ -f "release-notes/${GITHUB_REF_NAME}.md" ]; then
+            echo "Using release-notes/${GITHUB_REF_NAME}.md"
+            { cat "release-notes/${GITHUB_REF_NAME}.md"; echo; echo "---"; echo; cat release-notes/_template.md; } > /tmp/release-body.md
+          else
+            echo "WARN: no release-notes/${GITHUB_REF_NAME}.md — using install template only"
+            cp release-notes/_template.md /tmp/release-body.md
+          fi
       - name: Attach all arch builds to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release-dist/*.apk
-          body: |
-            Download the .apk matching your device architecture (check `/etc/apk/arch` on the router).
-
-            Install (OpenWrt 24.10+/25.12):
-            ```
-            apk add --allow-untrusted /tmp/luci-app-netsteer-*.apk
-            ```
-
-            Built automatically by CI from this tag — unit tests + 4-arch build matrix.
-            Every package is verified with `apk verify` before it is attached.
+          body_path: /tmp/release-body.md

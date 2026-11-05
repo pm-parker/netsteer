@@ -1,0 +1,91 @@
+#!/bin/sh
+# netsteer-audit: 网络环境体检 — 采集 QoS/加速链路事实, 输出 JSON (只读, 不改任何配置)
+# 三层事实: 依赖层 (哪些能力装了没装) / 配置层 (uci 状态) / 运行层 (tc 实测)
+# 冲突判定与方案推荐在前端纯函数 (可单测), 本脚本只供事实。
+
+SQM_ENABLED=0; SQM_SCRIPT="-"; SQM_QDISC="-"; SQM_DL="-"; SQM_UL="-"
+SECTION_TYPE="none"
+CAKE_RUNNING=0; CAKE_DROP=-1; CAKE_OVER=-1
+FLOW_OFF=0; FLOW_HW=0
+P2P_ACTIVE=0; P2P_IP="-"
+SAMPLE_KBPS=-1
+IRQB=0
+
+# ---- 依赖层: 每项能力检测 (installed=1/0) ----
+DEP_SQM_SCRIPTS=0; DEP_SQM_LUCI=0; DEP_KMOD_CAKE=0; DEP_TC=0; DEP_NFT=0
+[ -f /usr/lib/sqm/run.sh ] && DEP_SQM_SCRIPTS=1
+[ -f /www/luci-static/resources/view/network/sqm.js ] && DEP_SQM_LUCI=1
+grep -q '^sch_cake' /proc/modules 2>/dev/null && DEP_KMOD_CAKE=1
+command -v tc >/dev/null 2>&1 && DEP_TC=1
+# busybox 内置 tc 也算 (applet 探测)
+tc qdisc show dev lo >/dev/null 2>&1 && DEP_TC=1
+command -v nft >/dev/null 2>&1 && DEP_NFT=1
+
+# 源配置: luci/packages feed 是否配置 (决定能否在线补依赖)
+FEED_LUCI=0; FEED_PKGS=0
+grep -rq 'luci/packages' /etc/apk/repositories.d/ 2>/dev/null && FEED_LUCI=1
+grep -rqE 'packages/aarch64_generic/packages|packages/packages\.adb' /etc/apk/repositories.d/ 2>/dev/null && FEED_PKGS=1
+# kmods feed (cake 模块来源)
+FEED_KMODS=0
+grep -rq 'kmods' /etc/apk/repositories.d/ 2>/dev/null && FEED_KMODS=1
+
+jstr() { printf '"%s"' "$(echo "$1" | sed 's/"/\\"/g')"; }
+
+# ---- SQM (uci + tc 运行态双证) ----
+sqm_sec=$(uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d. -f2 | cut -d= -f1)
+[ -n "$sqm_sec" ] && {
+	SECTION_TYPE=$(uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d= -f2)
+	[ "$(uci -q get sqm.$sqm_sec.enabled 2>/dev/null)" = "1" ] && SQM_ENABLED=1
+	SQM_SCRIPT=$(uci -q get sqm.$sqm_sec.script 2>/dev/null || echo "-")
+	SQM_QDISC=$(uci -q get sqm.$sqm_sec.qdisc 2>/dev/null || echo "-")
+	SQM_DL=$(uci -q get sqm.$sqm_sec.download 2>/dev/null || echo "-")
+	SQM_UL=$(uci -q get sqm.$sqm_sec.upload 2>/dev/null || echo "-")
+}
+tc qdisc show dev pppoe-wan 2>/dev/null | grep -q cake && CAKE_RUNNING=1
+if [ "$CAKE_RUNNING" = "1" ]; then
+	CAKE_DROP=$(tc -s qdisc show dev pppoe-wan 2>/dev/null | grep -o 'dropped [0-9]*' | head -1 | awk '{print $2}')
+	CAKE_OVER=$(tc -s qdisc show dev pppoe-wan 2>/dev/null | grep -o 'overlimits [0-9]*' | head -1 | awk '{print $2}')
+	[ -z "$CAKE_DROP" ] && CAKE_DROP=-1
+	[ -z "$CAKE_OVER" ] && CAKE_OVER=-1
+fi
+
+# ---- flow offloading (uci firewall defaults) ----
+[ "$(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)" = "1" ] && FLOW_OFF=1
+[ "$(uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)" = "1" ] && FLOW_HW=1
+
+# ---- P2P 直通 ----
+p2p_json=$(/usr/bin/netsteer-p2p status 2>/dev/null || echo '{}')
+P2P_ACTIVE=$(echo "$p2p_json" | grep -o '"active":[01]' | cut -d: -f2)
+P2P_IP=$(echo "$p2p_json" | grep -o '"dest_ip":"[^"]*"' | cut -d'"' -f4)
+[ -z "$P2P_ACTIVE" ] && P2P_ACTIVE=0
+[ -z "$P2P_IP" ] && P2P_IP="-"
+
+# ---- 上行实测 (pppoe-wan TX, 3 秒采样) ----
+WAN_IF=$(ip route show default 2>/dev/null | head -1 | grep -o 'dev [a-z0-9-]*' | awk '{print $2}')
+[ -z "$WAN_IF" ] && WAN_IF=pppoe-wan
+tx1=$(cat /sys/class/net/$WAN_IF/statistics/tx_bytes 2>/dev/null || echo 0)
+sleep 3
+tx2=$(cat /sys/class/net/$WAN_IF/statistics/tx_bytes 2>/dev/null || echo 0)
+[ "$tx2" -gt "$tx1" ] 2>/dev/null && SAMPLE_KBPS=$(( (tx2 - tx1) * 8 / 3 / 1000 ))
+
+# ---- 静态租约 (P2P 设备是否有绑定) ----
+lease_ips=$(uci -q show dhcp 2>/dev/null | grep "@host\[" | grep "\.ip=" | cut -d"'" -f2 | tr '\n' ' ')
+[ -z "$lease_ips" ] && lease_ips="-"
+
+# ---- irqbalance ----
+ls /etc/init.d/irqbalance >/dev/null 2>&1 && /etc/init.d/irqbalance enabled 2>/dev/null && IRQB=1
+
+# ---- 可用 qdisc 模块 ----
+mods=$(grep -oE '^sch_[a-z_]*' /proc/modules 2>/dev/null | sed 's/sch_//' | tr '\n' ' ')
+
+echo "{"
+echo "  \"deps\": {\"sqm_scripts\":$DEP_SQM_SCRIPTS, \"sqm_luci\":$DEP_SQM_LUCI, \"kmod_cake\":$DEP_KMOD_CAKE, \"tc\":$DEP_TC, \"nft\":$DEP_NFT, \"feed_luci\":$FEED_LUCI, \"feed_packages\":$FEED_PKGS, \"feed_kmods\":$FEED_KMODS},"
+echo "  \"sqm\": {\"enabled\":$SQM_ENABLED, \"section_type\":\"$SECTION_TYPE\", \"script\":\"$SQM_SCRIPT\", \"qdisc\":\"$SQM_QDISC\", \"download\":\"$SQM_DL\", \"upload\":\"$SQM_UL\", \"cake_running\":$CAKE_RUNNING, \"drop\":$CAKE_DROP, \"overlimit\":$CAKE_OVER},"
+echo "  \"offload\": {\"flow\":$FLOW_OFF, \"hw\":$FLOW_HW},"
+echo "  \"p2p\": {\"active\":$P2P_ACTIVE, \"ip\":\"$P2P_IP\"},"
+echo "  \"uplink_sample_kbps\":$SAMPLE_KBPS,"
+echo "  \"static_leases\":\"$lease_ips\","
+echo "  \"irqbalance\":$IRQB,"
+echo "  \"qdisc_mods\":\"$mods\","
+echo "  \"wan_if\":\"$WAN_IF\""
+echo "}"

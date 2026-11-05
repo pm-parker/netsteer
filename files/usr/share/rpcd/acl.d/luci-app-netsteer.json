@@ -57,6 +57,9 @@
         ],
         "/usr/bin/netsteer-mode": [
           "exec"
+        ],
+        "/usr/bin/netsteer-irq": [
+          "exec"
         ]
       }
     }

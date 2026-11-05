@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -32,7 +32,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -126,6 +126,29 @@ eq(api.p2pValidPort('abc'), false, 'p2p port reject NaN');
 eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启 · 192.168.11.175', 'p2p status on label');
 eq(api.p2pStatusMeta({active:0}).cls, ' is-custom', 'p2p status off cls');
 eq(api.p2pStatusMeta(null).label, '已关闭', 'p2p status null label');
+
+// ---------- IRQ 亲和 + 对比增量 ----------
+eq(api.parseIrqList('[{"irq":"104","dev":"eth0","affinity":"8","counts":"123"}]').length, 1, 'parseIrqList 1 行');
+eq(api.parseIrqList('[{"irq":"104","dev":"eth0","affinity":"8"},{}]').length, 1, 'parseIrqList 坏行丢弃');
+eq(api.parseIrqList('not json').length, 0, 'parseIrqList 非 JSON → []');
+eq(api.parseIrqList('').length, 0, 'parseIrqList 空 → []');
+eq(api.irqMaskOfCpu(0), '1', 'mask cpu0=1');
+eq(api.irqMaskOfCpu(3), '8', 'mask cpu3=8');
+// deltaSoftirq: 基线 rx=[100,0,0,0], 现 rx=[100,50,0,0] → Δ=[0,50,0,0] 集中100% CPU1
+const SB1 = '            NET_RX:  100 0 0 0\n            NET_TX:  0 10 0 0';
+const SC1 = '            NET_RX:  100 50 0 0\n            NET_TX:  0 15 0 0';
+let dd = api.deltaSoftirq(SB1, SC1);
+eq(dd.total, 50, 'delta total=50');
+eq(dd.rxConc, 100, 'delta 全部新包在 CPU1');
+eq(dd.concCpu, 1, 'delta concCpu=1');
+eq(dd.tx[1], 5, 'delta tx[1]=5');
+// 零流量窗口
+let dz = api.deltaSoftirq(SC1, SC1);
+eq(dz.total, 0, 'delta 无新包 → 0');
+eq(dz.rxConc, null, 'delta 无新包 → conc null');
+// 计数回绕保护 (负值钳 0)
+let dn = api.deltaSoftirq(SC1, SB1);
+eq(dn.total, 0, 'delta 负增量钳 0');
 
 // ---------- Tab 结构 ----------
 const TABS = api.tabStructure();

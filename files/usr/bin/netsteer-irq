@@ -1,0 +1,76 @@
+#!/bin/sh
+# netsteer-irq: 网卡中断 (IRQ) 亲和查询/设置 — 软中断 Tab 的后端薄壳
+#   netsteer-irq get              → JSON [{irq, dev, affinity, counts}]
+#   netsteer-irq set <irq> <mask> → 写 smp_affinity + 回读判成败 + 同步 uci 持久
+# 掩码格式与 /proc/irq/N/smp_affinity 一致 (十六进制, 如 8=CPU3, f=CPU0-3)
+# 注意: managed IRQ 内核可能拒写 — 以回读为准, 拒写不视为脚本失败 (返回实际状态)
+
+NCPU=$(grep -c ^processor /proc/cpuinfo)
+
+find_dev_irqs() { # → "irq:dev" 行列表 (msi_irqs 优先, /proc/interrupts 兜底, 全局去重)
+	{
+		for d in /sys/class/net/*; do
+			dev=${d##*/}
+			[ "$dev" = "lo" ] && continue
+			# 跳过逻辑口 (pppoe/vlan 等): 无 device/ 链接
+			[ -e "$d/device" ] || continue
+			for n in "$d"/device/msi_irqs/*; do
+				[ -e "$n" ] || continue
+				echo "${n##*/}:$dev"
+			done
+		done
+		# 兜底: /proc/interrupts 行尾设备名匹配 (无 msi_irqs 的老网卡)
+		grep -E ':[[:space:][:digit:]]+ .*(eth|wan|lan)[0-9]+$' /proc/interrupts 2>/dev/null \
+			| awk '{gsub(/:/,"",$1); print $1":"$NF}'
+	} | awk -F: '!seen[$1]++' | sort -n -t: -k1,1
+}
+
+cmd_get() {
+	echo "["
+	sep=""
+	find_dev_irqs | while IFS=: read -r irq dev; do
+		[ -e "/proc/irq/$irq/smp_affinity" ] || continue
+		aff=$(cat /proc/irq/$irq/smp_affinity 2>/dev/null | tr -d '[:space:]')
+		cnt=$(awk -v i="$irq" '$1==i":" {for(k=2;k<=NF;k++) s+=$k; print s; exit}' /proc/interrupts 2>/dev/null)
+		[ -z "$cnt" ] && cnt=0
+		printf '%s{"irq":"%s","dev":"%s","affinity":"%s","counts":"%s"}' "$sep" "$irq" "$dev" "$aff" "$cnt"
+		sep=","
+	done
+	echo "]"
+}
+
+cmd_set() { # set <irq> <mask>
+	irq="$1"; mask="$2"
+	aff="/proc/irq/$irq/smp_affinity"
+	[ -e "$aff" ] || { echo "{\"ok\":0,\"error\":\"irq $irq not found\"}"; exit 1; }
+	case "$mask" in
+		'' | *[!0-9a-fA-F]*) echo "{\"ok\":0,\"error\":\"bad mask '$mask'\"}"; exit 1 ;;
+	esac
+	before=$(cat "$aff" 2>/dev/null | tr -d '[:space:]')
+	echo "$mask" > "$aff" 2>/dev/null
+	after=$(cat "$aff" 2>/dev/null | tr -d '[:space:]')
+	# 找设备名, 同步 uci netsteer (持久: netsteer-apply 重放时保持一致)
+	dev=$(grep -E "^[[:space:]]*$irq:" /proc/interrupts 2>/dev/null | awk '{print $NF}' | head -1)
+	uci_ok=0
+	if [ -n "$dev" ]; then
+		sec=$(uci -q show netsteer 2>/dev/null | grep "iface='$dev'" | cut -d. -f2 | cut -d= -f1 | head -1)
+		if [ -n "$sec" ]; then
+			uci set netsteer.$sec.irq_cpus="$mask"
+			uci commit netsteer
+			uci_ok=1
+		fi
+	fi
+	if [ "$after" = "$mask" ]; then
+		logger -t netsteer-irq "irq$irq ($dev) $before -> $mask (uci_sync=$uci_ok)"
+		echo "{\"ok\":1,\"irq\":\"$irq\",\"dev\":\"$dev\",\"before\":\"$before\",\"after\":\"$after\",\"uci_sync\":$uci_ok}"
+	else
+		logger -t netsteer-irq "irq$irq ($dev) write rejected (before=$before want=$mask after=$after)"
+		echo "{\"ok\":0,\"irq\":\"$irq\",\"dev\":\"$dev\",\"before\":\"$before\",\"after\":\"$after\",\"error\":\"kernel rejected (managed IRQ?)\"}"
+	fi
+}
+
+case "${1:-}" in
+	get) cmd_get ;;
+	set) shift; cmd_set "$@" ;;
+	*) echo "Usage: netsteer-irq {get|set <irq> <hexmask>}" >&2; exit 1 ;;
+esac

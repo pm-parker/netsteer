@@ -211,6 +211,42 @@ function p2pStatusMeta(st) {
 }
 
 /* ---- 网络体检: 依赖矩阵 + 冲突检测 + 两档方案构建 (纯函数层) ---- */
+function parseIrqList(txt) {
+	/* netsteer-irq get JSON → [{irq,dev,affinity,counts}] (容错: 坏行丢弃) */
+	try {
+		var a = JSON.parse((txt || '').trim());
+		if (!Array.isArray(a)) return [];
+		return a.filter(function(x) { return x && x.irq && x.dev; })
+			.map(function(x) { return { irq: String(x.irq), dev: String(x.dev),
+				affinity: String(x.affinity || '0'), counts: +x.counts || 0 }; });
+	} catch (e) { return []; }
+}
+function irqMaskOfCpu(cpu) { /* cpu index → hex mask string */ return (1 << cpu).toString(16); }
+function deltaSoftirq(baseText, curText) {
+	/* 两次 /proc/softirqs 快照 → 增量分布 {rx:[], tx:[], rxConc, baseRxConc} */
+	var b = parseSoftirq(baseText), c = parseSoftirq(curText);
+	var n = Math.max(b.rx.length, c.rx.length);
+	var rx = [], tx = [], i, sum = 0;
+	for (i = 0; i < n; i++) {
+		var d = ((c.rx[i] || 0) - (b.rx[i] || 0)); if (d < 0) d = 0;
+		rx.push(d); sum += d;
+	}
+	for (i = 0; i < n; i++) {
+		var t = ((c.tx[i] || 0) - (b.tx[i] || 0)); if (t < 0) t = 0;
+		tx.push(t);
+	}
+	var maxI = 0, bSum = 0, bMax = 0, bMaxI = 0;
+	rx.forEach(function(v, k) { if (v > rx[maxI]) maxI = k; });
+	b.rx.forEach(function(v, k) { bSum += v; if (v > bMax) { bMax = v; bMaxI = k; } });
+	return {
+		rx: rx, tx: tx,
+		total: sum,
+		rxConc: sum > 0 ? Math.round(rx[maxI] * 100 / sum) : null,
+		concCpu: sum > 0 ? maxI : null,
+		baseRxConc: bSum > 0 ? Math.round(b.rx[bMaxI] * 100 / bSum) : null
+	};
+}
+
 function tabStructure() {
 	/* 横向 Tab 分组: 卡片归类唯一 (单测校验) */
 	return [
@@ -417,7 +453,99 @@ return view.extend({
 	},
 
 	/* ---- 软中断分布卡 (首页 Memory 卡同款: 大数字 + 堆叠条 + 图例) ---- */
-	renderSoftirqCard: function(text) {
+		/* ---- IRQ 亲和设置卡: 每 IRQ 一行, CPU 芯片点选掩码, 应用后行内反馈 ---- */
+	renderIrqCard: function(irqJson) {
+		var self = this;
+		var list = parseIrqList(irqJson);
+		var kids = [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('strong', { 'class': 'netsteer-card-title' }, _('中断亲和设置')),
+				E('button', {
+					'class': 'netsteer-minibtn', 'type': 'button',
+					'click': ui.createHandlerFn(this, 'reloadIrqCard')
+				}, _('刷新'))
+			]),
+			E('p', { 'class': 'netsteer-note' }, _('网卡中断固定由哪些核处理。单队列网卡内核只在掩码中选一个核应门 — 把 eth0/eth1 的中断错开到不同核，配合 RPS 分摊可避免两块网卡挤同一个核。点选 CPU 芯片组合掩码后应用；改变即时生效并写入持久配置。'))
+		];
+		if (!list.length) {
+			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'color:#d35400' },
+				_('未发现网卡中断（虚拟机或 USB 网卡场景常见 — 后者中断常挂在 USB 控制器下）。')));
+		}
+		list.forEach(function(it) {
+			var chips = cpuRange().map(function(cpu) {
+				var m = irqMaskOfCpu(cpu);
+				var on = ((parseInt(it.affinity, 16) >> cpu) & 1) === 1;
+				return E('button', {
+					'class': 'netsteer-chip' + (on ? ' on' : ''),
+					'type': 'button',
+					'data-irq': it.irq, 'data-cpu': cpu,
+					'click': function(ev) { ev.target.classList.toggle('on'); }
+				}, 'C' + cpu);
+			});
+			kids.push(E('div', { 'class': 'netsteer-card', 'style': 'margin:8px 0', 'id': 'netsteer-irq-row-' + it.irq }, [
+				E('div', { 'style': 'display:flex;justify-content:space-between;align-items:center;gap:8px' }, [
+					E('span', {}, [ E('strong', {}, _('IRQ %s').format(it.irq)), ' · ' + it.dev ]),
+					E('span', { 'class': 'netsteer-note' }, _('累计 %s 次').format(fmtCount(it.counts)))
+				]),
+				E('div', { 'class': 'netsteer-row', 'style': 'margin:.5em 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap' },
+					chips.concat([
+						E('button', {
+							'class': 'netsteer-minibtn', 'type': 'button',
+							'click': ui.createHandlerFn(self, 'applyIrqMask', it.irq)
+						}, _('应用'))
+					])),
+				E('p', { 'class': 'netsteer-note', 'id': 'netsteer-irq-res-' + it.irq, 'style': 'margin:2px 0 0 0' }, '')
+			]));
+		});
+		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-irq-card' }, kids);
+	},
+
+	reloadIrqCard: function() {
+		var self = this;
+		return fs.exec('/usr/bin/netsteer-irq', ['get']).then(function(r) {
+			var old = document.getElementById('netsteer-irq-card');
+			if (old && old.parentNode)
+				old.parentNode.replaceChild(self.renderIrqCard((r && r.stdout) || ''), old);
+		});
+	},
+
+	applyIrqMask: function(irq, ev) {
+		var self = this;
+		var row = document.getElementById('netsteer-irq-row-' + irq);
+		var mask = 0;
+		if (row) row.querySelectorAll('.netsteer-chip.on').forEach(function(ch) {
+			mask |= (1 << (+ch.getAttribute('data-cpu')));
+		});
+		var res = document.getElementById('netsteer-irq-res-' + irq);
+		if (!mask) {
+			if (res) { res.style.color = '#c0392b'; res.textContent = _('至少选一个 CPU'); }
+			return;
+		}
+		var hex = mask.toString(16);
+		if (res) { res.style.color = '#2471a3'; res.textContent = _('应用中…'); }
+		return fs.exec('/usr/bin/netsteer-irq', ['set', irq, hex]).then(function(r) {
+			var out = {};
+			try { out = JSON.parse(((r && r.stdout) || '').trim()); } catch (e) {}
+			/* 先 reload 拿新卡, 再往新卡的反馈位写结果 (旧节点已被替换) */
+			return self.reloadIrqCard().then(function() {
+				var r2 = document.getElementById('netsteer-irq-res-' + irq);
+				if (!r2) return;
+				if (out.ok) {
+					r2.style.color = '#1e8449';
+					r2.textContent = _('✓ 已生效: %s → %s%s').format(out.before || '?', out.after || hex,
+						out.uci_sync ? '（已持久化）' : '');
+				} else {
+					r2.style.color = '#c0392b';
+					r2.textContent = _('✗ %s（掩码保持 %s）').format(out.error || 'failed', out.after || out.before || '?');
+				}
+			});
+		}).catch(function(e) {
+			var r3 = document.getElementById('netsteer-irq-res-' + irq);
+			if (r3) { r3.style.color = '#c0392b'; r3.textContent = String(e); }
+		});
+	},
+
+renderSoftirqCard: function(text) {
 		var d = parseSoftirq(text);
 		var rx = d.rx.slice(0, NCPU), tx = d.tx.slice(0, NCPU);
 		var rxSum = rx.reduce(function(a, b) { return a + b; }, 0);
@@ -438,7 +566,13 @@ return view.extend({
 					'class': 'netsteer-minibtn',
 					'type': 'button',
 					'click': ui.createHandlerFn(this, 'refreshSoftirq')
-				}, _('刷新'))
+				}, _('刷新')),
+				E('button', {
+					'class': 'netsteer-minibtn',
+					'type': 'button',
+					'id': 'netsteer-irq-delta-btn',
+					'click': ui.createHandlerFn(this, 'toggleSoftirqDelta')
+				}, _('开始对比'))
 			]),
 			E('div', { 'class': 'netsteer-conc' }, [
 				conc === null
@@ -470,6 +604,66 @@ return view.extend({
 			var old = document.getElementById('netsteer-softirq-card');
 			if (old && old.parentNode)
 				old.parentNode.replaceChild(self.renderSoftirqCard(text || ''), old);
+		}).catch(function(e) {
+			ui.showModal(_('出错'), E('p', {}, String(e)));
+		});
+	},
+
+	/* ---- 对比模式: 基线快照 → 增量分布 (验证调整效果的呈现方式) ---- */
+	toggleSoftirqDelta: function(ev) {
+		var self = this;
+		var btn = document.getElementById('netsteer-irq-delta-btn');
+		if (!this._softirqBaseline) {
+			return fs.read('/proc/softirqs').then(function(text) {
+				self._softirqBaseline = { text: text || '', t: Date.now() };
+				if (btn) { btn.textContent = _('查看变化'); }
+				var card = document.getElementById('netsteer-softirq-card');
+				if (card) {
+					var foot = card.querySelector('.netsteer-foot');
+					var tip = document.getElementById('netsteer-irq-delta-tip');
+					if (!tip && foot) {
+						tip = E('p', { 'class': 'netsteer-note', 'id': 'netsteer-irq-delta-tip',
+							'style': 'color:#2471a3;margin:4px 0 0 0' });
+						foot.parentNode.insertBefore(tip, foot);
+					}
+					if (tip) tip.textContent = _('✓ 基线已记录 — 现在去调整 IRQ 亲和或跑一段流量，再点「查看变化」');
+				}
+			});
+		}
+		var base = this._softirqBaseline;
+		return fs.read('/proc/softirqs').then(function(text) {
+			var cur = text || '';
+			var d = deltaSoftirq(base.text, cur);
+			var secs = Math.max(1, Math.round((Date.now() - base.t) / 1000));
+			self._softirqBaseline = null;
+			if (btn) { btn.textContent = _('开始对比'); }
+			var tip = document.getElementById('netsteer-irq-delta-tip');
+			if (tip) {
+				if (d.total === 0) {
+					tip.style.color = '#d35400';
+					tip.textContent = _('窗口 %d 秒内没有新收包 — 期间跑点流量再对比').format(secs);
+				} else {
+					tip.style.color = '#1e8449';
+					tip.textContent = _('窗口 %d 秒: 新增 %s 个收包 → %d%% 集中在 CPU%d（此前全程集中度 %s）')
+						.format(secs, fmtCount(d.total), d.rxConc, d.concCpu,
+							d.baseRxConc === null ? '—' : d.baseRxConc + '%');
+				}
+			}
+			/* 增量条替换 NET_RX 行的堆叠 (直观看到"新流量"的分布) */
+			var card = document.getElementById('netsteer-softirq-card');
+			if (card && d.total > 0) {
+				var rows = card.querySelectorAll('.netsteer-sq-row');
+				if (rows[0]) {
+					var lbl = rows[0].querySelector('.netsteer-sq-label');
+					var total = rows[0].querySelector('.netsteer-sq-total');
+					var barWrap = rows[0].querySelector('.netsteer-stack');
+					if (lbl && total && barWrap && barWrap.parentNode) {
+						lbl.textContent = _('收包增量 Δ');
+						barWrap.parentNode.replaceChild(stackedBar(d.rx.slice(0, NCPU), ' 包'), barWrap);
+						total.textContent = fmtCount(d.total);
+					}
+				}
+			}
 		}).catch(function(e) {
 			ui.showModal(_('出错'), E('p', {}, String(e)));
 		});
@@ -1222,8 +1416,16 @@ return view.extend({
 			}))
 		]);
 		var panelIrq = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-irq' }, [
-			this.renderSoftirqCard(values[1 + IFACES.length * 2] || '')
+			this.renderSoftirqCard(values[1 + IFACES.length * 2] || ''),
+			E('div', { 'id': 'netsteer-irq-card-slot' }, [ this.renderIrqCard('') ]),
+			E('p', { 'class': 'netsteer-foot' }, _(''))
 		]);
+		/* IRQ 列表异步填入 (不阻塞首屏) */
+		var self2 = this;
+		fs.exec('/usr/bin/netsteer-irq', ['get']).then(function(r) {
+			var slot = document.getElementById('netsteer-irq-card-slot');
+			if (slot) slot.replaceChildren(self2.renderIrqCard((r && r.stdout) || ''));
+		});
 		var panelSmart = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-smart' }, [
 			this.renderP2PCard(values[3 + IFACES.length * 2]),
 			this.renderAuditCard()

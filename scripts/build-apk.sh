@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build-apk.sh — build luci-app-netsteer .apk (APKv3/ADB) from files/
-# Usage: ./scripts/build-apk.sh [version] [arch]   (defaults: 1.10.0, aarch64_generic)
+# Usage: ./scripts/build-apk.sh [version] [arch]   (defaults: 1.11.0, aarch64_generic)
 # Requires: curl, tar, python3 (for file permission fixups); downloads apk-tools-static on first run.
 set -euo pipefail
 

@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -32,7 +32,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -274,6 +274,30 @@ eq(h2.note.includes('kmods'), true, 'installHint feed note names missing feed');
 // modeScore 排序稳定性: throughput 在无 sqm 时排名高于 steering
 let sc1 = api.modeScore({id:'throughput'}, m2), sc2 = api.modeScore({id:'steering'}, m2);
 eq(sc1 < sc2, true, 'score: throughput < steering when no sqm');
+
+// benchFromUci: uci bench 节 → 基线对象 (数值化/缺节容错)
+const boff = { '.type':'bench', '.name':'bench_off', mode:'off', latency_ms:'5.7', rx_bps:'106', tx_bps:'0', ts:'1793902007' };
+const bon  = { '.type':'bench', '.name':'bench_on',  mode:'p2p', latency_ms:'5.1', rx_bps:'147', tx_bps:'0', ts:'1793902121' };
+const bf = api.benchFromUci({ bench_off: boff, bench_on: bon });
+eq(bf.off.latency_ms, 5.7, 'bench: latency 字符串数值化');
+eq(bf.on.rx_bps, 147, 'bench: rx 数值化');
+eq(bf.off.ts, 1793902007, 'bench: ts 数值化');
+eq(bf.mode, null, 'bench: mode 恒 null (现读 status)');
+// 缺一侧 → 另一侧仍在
+const bf1 = api.benchFromUci({ bench_off: boff });
+eq(bf1.off.latency_ms, 5.7, 'bench: 仅 off 侧');
+eq(bf1.on, null, 'bench: on 侧 null');
+// ts 缺失的节视为未建立
+const bf2 = api.benchFromUci({ bench_off: { mode:'off', latency_ms:'5', ts:'' }, bench_on: bon });
+eq(bf2.off, null, 'bench: 无 ts 视为未建立');
+eq(bf2.on.ts, 1793902121, 'bench: on 侧仍有效');
+// 全缺 → null
+eq(api.benchFromUci({}), null, 'bench: 空配置 → null');
+eq(api.benchFromUci(null), null, 'bench: null 配置 → null');
+// 非法数字 → 0
+const bf3 = api.benchFromUci({ bench_off: { mode:'off', latency_ms:'abc', rx_bps:'x', ts:'123' } });
+eq(bf3.off.latency_ms, 0, 'bench: 非法数字守卫 → 0');
+eq(bf3.off.rx_bps, 0, 'bench: 非法 rx → 0');
 
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail ? 1 : 0);

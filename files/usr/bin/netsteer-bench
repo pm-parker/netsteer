@@ -1,0 +1,81 @@
+#!/bin/sh
+# netsteer-bench: 真实 A/B 基线测量 (延迟 + 吞吐), 供总开关增益对比
+# 用法: netsteer-bench [seconds]        # 默认 12s
+# 输出 JSON {mode, latency_ms, rx_bps, tx_bps, window_s, ts}
+# 结果存 /tmp/netsteer/bench-<mode>.json (off / 各模式名)
+SEC="${1:-8}"
+TARGET="223.5.5.5"
+DIR="/tmp/netsteer"
+mkdir -p "$DIR"
+F1="$DIR/.bench-snap1"; F2="$DIR/.bench-snap2"
+
+MODE="$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)"
+
+# bg: 脱离会话后台测量 (供 netsteer-mode 调用, 不占 rpcd 管道)
+if [ "${1:-}" = "bg" ]; then
+	setsid /usr/bin/netsteer-bench 8 </dev/null >/dev/null 2>&1 &
+	exit 0
+fi
+
+# read: 汇总两基线 (供前端一次拉取)
+if [ "${1:-}" = "read" ]; then
+	ON=""
+	for m in "$MODE" p2p standard throughput latency steering; do
+		[ -n "$m" ] && [ -f "$DIR/bench-$m.json" ] && { ON="$(cat "$DIR/bench-$m.json")"; break; }
+	done
+	OFF=""
+	[ -f "$DIR/bench-off.json" ] && OFF="$(cat "$DIR/bench-off.json")"
+	echo "{\"off\":${OFF:-null},\"on\":${ON:-null},\"mode\":\"$MODE\"}"
+	exit 0
+fi
+
+# ---- 延迟基线: ping 序列取平均 (只统计正常回包) ----
+LAT_MS=""
+RTTS="$(ping -c 10 -i 1 -w 12 "$TARGET" 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)"
+if [ -n "$RTTS" ]; then
+	SUM=0; N=0
+	for rtt in $RTTS; do
+		SUM=$(awk -v a="$SUM" -v b="$rtt" 'BEGIN{printf "%.3f", a+b}')
+		N=$((N + 1))
+	done
+	[ "$N" -gt 0 ] && LAT_MS=$(awk -v s="$SUM" -v n="$N" 'BEGIN{printf "%.1f", s/n}')
+fi
+
+# ---- 吞吐采样: /proc/net/dev 两次差分 (只算物理口 eth*, 排除 pppoe 重复计费) ----
+snap() {
+	awk -F'[: ]+' '/^ *(eth[0-9]+|pppoe[-A-Za-z0-9_]+):/ { gsub(/^ +/, "", $1); print $1, $2, $10 }' /proc/net/dev
+}
+snap > "$F1"
+T1=$(date +%s)
+sleep "$SEC"
+snap > "$F2"
+T2=$(date +%s)
+DT=$((T2 - T1))
+[ "$DT" -le 0 ] && DT=1
+
+eval "$(awk -v dt="$DT" '
+	NR == FNR { r1[$1] = $2; t1[$1] = $3; next }
+	($1 in r1) && $1 ~ /^eth[0-9]+$/ {
+		drx = $2 - r1[$1]; dtx = $3 - t1[$1];
+		if (drx < 0) drx = 0; if (dtx < 0) dtx = 0;
+		rx += drx; tx += dtx;
+	}
+	END { printf "rx_bps=%d\ntx_bps=%d\n", int(rx * 8 / dt), int(tx * 8 / dt) }
+' "$F1" "$F2")"
+
+TS=$(date +%s)
+OUT="{\"mode\":\"$MODE\",\"latency_ms\":${LAT_MS:-null},\"rx_bps\":${rx_bps:-0},\"tx_bps\":${tx_bps:-0},\"window_s\":$DT,\"ts\":$TS}"
+echo "$OUT" > "$DIR/bench-$MODE.json"
+# 同步写 uci (前端用 uci 通道读, 避开 rpcd exec 并发问题)
+case "$MODE" in
+	off) SIDE="bench_off" ;;
+	*)   SIDE="bench_on" ;;
+esac
+uci -q set netsteer.$SIDE="bench"
+uci -q set netsteer.$SIDE.mode="$MODE"
+uci -q set netsteer.$SIDE.latency_ms="${LAT_MS:-0}"
+uci -q set netsteer.$SIDE.rx_bps="${rx_bps:-0}"
+uci -q set netsteer.$SIDE.tx_bps="${tx_bps:-0}"
+uci -q set netsteer.$SIDE.ts="$TS"
+uci -q commit netsteer
+echo "$OUT"

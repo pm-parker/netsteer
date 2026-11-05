@@ -23,6 +23,20 @@ function ubusCall(obj, method, params) {
 	  });
 }
 
+/* bench 基线 uci 节 → {off, on, mode:null}; 无任何基线数据时返 null */
+function benchFromUci(cfg) {
+	if (!cfg) return null;
+	var num = function(v) { var n = +v; return isFinite(n) ? n : 0; };
+	var pick = function(sec) {
+		var s = cfg[sec];
+		if (!s || !s.ts) return null;
+		return { mode: s.mode, latency_ms: num(s.latency_ms), rx_bps: num(s.rx_bps), tx_bps: num(s.tx_bps), ts: num(s.ts) };
+	};
+	var off = pick('bench_off'), on = pick('bench_on');
+	if (!off && !on) return null;
+	return { off: off, on: on, mode: null };
+}
+
 /* 一条龙: 逐项 uci set → apply → confirm → 跑 apply 脚本 (全程 ~0.2s) */
 function applyNow(pairs) {
 	var chain = Promise.resolve();
@@ -564,6 +578,135 @@ return view.extend({
 		return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 	},
 
+	/* 加速总开关: 一键启停全部优化 + 真实 A/B 基线增益 (关闭态基线 vs 开启态实测) */
+	renderMaster: function() {
+		var el = E('div', { 'class': 'vt-tile ns-master', 'id': 'ns-master' }, [
+			E('div', { 'class': 'vt-tile-head' }, [
+				E('span', { 'class': 'vt-tile-title' }, _('加速总开关')),
+				E('span', { 'class': 'vt-hint ns-master-state' }, _('读取中…'))
+			]),
+			E('div', { 'class': 'ns-master-body' }, [
+				E('button', { 'type': 'button', 'class': 'ns-toggle', 'id': 'ns-toggle' }, [
+					E('span', { 'class': 'ns-toggle-knob' })
+				]),
+				E('div', { 'class': 'ns-master-info' }, [
+					E('p', { 'class': 'ns-master-desc' }, _('开启后应用 cake 整形 + 全核分摊 + P2P 直通；关闭则恢复系统默认，用于建立对比基线。')),
+					E('p', { 'class': 'ns-master-gain', 'id': 'ns-master-gain' }, '')
+				])
+			])
+		]);
+		var selfM = this;
+		/* 状态 + 基线一次拉齐 (bench 基线走 uci 通道, 稳定秒回) */
+		Promise.all([
+			fs.exec('/usr/bin/netsteer-mode', ['status']).then(function(r) { try { return JSON.parse((r.stdout || '').trim()); } catch (e) { return { mode: null, prev: 'p2p' }; } }),
+			selfM.uciNetsteer().then(function(c) { return benchFromUci(c); }).catch(function() { return null; })
+		]).then(function(res) { selfM.paintMaster(el, res[0], res[1]); });
+		el.querySelector('#ns-toggle').addEventListener('click', function() { selfM.confirmToggle(el); });
+		return el;
+	},
+
+	uciNetsteer: function() {
+		return ubusCall('uci', 'get', { config: 'netsteer' }).then(function(sec) {
+			return (sec && sec.values) || null;
+		});
+	},
+
+	paintMaster: function(el, st, bench) {
+		if (!el || !document.getElementById('ns-master')) return;
+		var on = st && st.mode && st.mode !== 'off';
+		var knob = el.querySelector('.ns-toggle');
+		if (knob) knob.classList.toggle('on', !!on);
+		var stateEl = el.querySelector('.ns-master-state');
+		if (stateEl) stateEl.textContent = on
+			? _('已开启 · %s').format(st.mode.toUpperCase())
+			: _('已关闭 · 基线模式');
+		var gainEl = el.querySelector('#ns-master-gain');
+		if (gainEl) {
+			var off = bench && bench.off, cur = bench && bench.on;
+			if (off && cur && cur.latency_ms != null && off.latency_ms != null) {
+				var dLat = off.latency_ms - cur.latency_ms;
+				var latPct = off.latency_ms > 0 ? Math.round(dLat / off.latency_ms * 100) : 0;
+				var g = [];
+				if (off.latency_ms > 0 && cur.latency_ms > 0) {
+					if (latPct === 0) {
+						g.push(_('延迟持平（%s ms）').format(cur.latency_ms.toFixed(1)));
+					} else {
+						g.push(dLat >= 0
+							? _('延迟 ↓%d%%（%s → %s ms）').format(latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1))
+							: _('延迟 ↑%d%%（%s → %s ms）').format(-latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1)));
+					}
+				}
+				if (off.rx_bps > 1e5 && cur.rx_bps > 1e5) { /* 双侧都有实流量才比吞吐 */
+					var tPct = Math.round((cur.rx_bps - off.rx_bps) / off.rx_bps * 100);
+					g.push(tPct >= 0 ? _('吞吐 +%d%%').format(tPct) : _('吞吐 %d%%').format(tPct));
+				}
+				gainEl.textContent = g.length ? _('实测增益（vs 关闭基线）：') + g.join(' · ') : _('基线已存，增益待流量上来后重测');
+				gainEl.classList.add('ns-has-gain');
+			} else if (on) {
+				gainEl.textContent = _('增益基线未建立：关闭一次总开关自动测量基线，再开启后显示真实差值');
+			} else {
+				gainEl.textContent = _('基线模式中 — 约 20 秒完成基线测量');
+			}
+		}
+	},
+
+	confirmToggle: function(el) {
+		var selfC = this;
+		var knob = el.querySelector('.ns-toggle');
+		var turnOn = !knob.classList.contains('on');
+		var bodyMsg = turnOn
+			? _('确认开启？将应用上次的加速方案（整形 + 分核 + P2P 直通），切换有几秒瞬断，完成后自动测量增益。')
+			: _('确认关闭？将停用全部优化（关闭 cake 整形/分核/P2P 直通）回到系统默认，用于建立对比基线 — 约 20 秒。');
+		var modal = E('div', { 'class': 'modal' }, [
+			E('p', { 'class': 'ns-modal-title' }, turnOn ? _('开启加速') : _('关闭加速（建立基线）')),
+			E('p', { 'class': 'ns-modal-body' }, bodyMsg),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': function() { document.body.removeChild(modal); } }, _('取消')),
+				E('button', { 'class': 'btn important', 'click': function() {
+					document.body.removeChild(modal);
+					selfC.applyMaster(el, turnOn);
+				} }, _('确认'))
+			])
+		]);
+		document.body.appendChild(modal);
+	},
+
+	applyMaster: function(el, turnOn) {
+		var selfA = this;
+		var stateEl = el.querySelector('.ns-master-state');
+		var gainEl = el.querySelector('#ns-master-gain');
+		if (stateEl) stateEl.textContent = _('执行中，请稍候…');
+		if (gainEl) gainEl.textContent = '';
+		var t0 = Math.floor(Date.now() / 1000) - 5;
+		fs.exec('/usr/bin/netsteer-mode', ['status']).then(function(r0) {
+			var st0 = null; try { st0 = JSON.parse((r0.stdout || '').trim()); } catch (e) {}
+			var prev = (st0 && st0.prev) || 'p2p';
+			return fs.exec('/usr/bin/netsteer-mode', turnOn ? [prev] : ['off']);
+		}).then(function(r1) {
+			/* 基线测量由 netsteer-mode 后台 spawn (不占 rpcd exec 通道) */
+			if (stateEl) stateEl.textContent = _('测量基线中（约 20 秒）…');
+			/* 轮询读结果: 新 bench 文件落盘即刷新增益 */
+			var tries = 0;
+			var timer = window.setInterval(function() {
+				tries++;
+				selfA.uciNetsteer().then(function(c) {
+					var b = benchFromUci(c);
+					var side = turnOn ? (b && b.on) : (b && b.off);
+					if (b && side && side.ts >= t0) {
+						window.clearInterval(timer);
+						fs.exec('/usr/bin/netsteer-mode', ['status']).then(function(r3) {
+							var st = null; try { st = JSON.parse((r3.stdout || '').trim()); } catch (e) {}
+							selfA.paintMaster(el, st, b);
+						});
+					}
+				}).catch(function() {});
+				if (tries > 15) window.clearInterval(timer);
+			}, 6000);
+		}).catch(function(err) {
+			if (stateEl) stateEl.textContent = _('操作失败：%s').format(String(err && err.message || err).slice(0, 80));
+		});
+	},
+
 	/* 路径图: 互联网 → WAN → 核心(CPU×N) → LAN → 内网, 粒子沿贝塞尔流动 */
 	renderWires: function() {
 		var self = this;
@@ -602,17 +745,19 @@ return view.extend({
 			var t2 = mk('text', { x: n.x + n.w/2, y: narrow ? 69 : 74, 'text-anchor': 'middle', 'class': 'ns-node-s' });
 			t2.textContent = n.s;
 			g.appendChild(t1); g.appendChild(t2);
-			/* 路由核心: 叠加路由器图标 (机身居中上方, 主题色描边) */
+			/* 路由核心: 路由器图标放左侧 (主题色描边, 原生 24px) */
 			if (n.id === 'cpu') {
 				var ib = mk('g', { 'class': 'ns-node-ico',
-					transform: 'translate(' + (n.x + n.w/2 - 7) + ',' + (narrow ? 30 : 33) + ') scale(0.58)' });
+					transform: 'translate(' + (narrow ? n.x + 8 : n.x + 16) + ',' + (narrow ? 42 : 47) + ') scale(1)' });
 				ROUTER_ICON.forEach(function(d) {
 					ib.appendChild(mk('path', { d: d, 'class': 'ns-node-ico-p' }));
 				});
 				g.appendChild(ib);
-				/* 图标放在标题上方, 标题下移一行 */
-				t1.setAttribute('y', narrow ? 62 : 66);
-				t2.setAttribute('y', narrow ? 77 : 82);
+				/* 文字改左对齐, 让出图标位 */
+				t1.setAttribute('x', narrow ? n.x + 38 : n.x + 48);
+				t1.setAttribute('text-anchor', 'start');
+				t2.setAttribute('x', narrow ? n.x + 38 : n.x + 48);
+				t2.setAttribute('text-anchor', 'start');
 			}
 			svg.appendChild(g);
 		});
@@ -680,6 +825,12 @@ return view.extend({
 	/* 吞吐量时序卡: 上下行双曲线 (5s 采样, 90 点窗), SVG 面积图 */
 	renderTraffic: function() {
 		this._series = { rx: [], tx: [], last: null };
+		this._benchOff = null;
+		var selfT = this;
+		selfT.uciNetsteer().then(function(c) {
+			var b = benchFromUci(c);
+			if (b && b.off && b.off.rx_bps > 0) selfT._benchOff = b.off.rx_bps;
+		}).catch(function() {});
 		var svgNS2 = 'http://www.w3.org/2000/svg';
 		var svg = document.createElementNS(svgNS2, 'svg');
 		svg.setAttribute('viewBox', '0 0 640 130');
@@ -709,7 +860,8 @@ return view.extend({
 			]),
 			E('div', { 'class': 'ns-traffic-nums' }, [
 				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:var(--vt-chart-1,var(--accent,#3563e9))' }), E('span', { 'class': 'vt-hint' }, _('下行')), E('b', { 'class': 'vt-tn ns-num-rx' }, '—') ]),
-				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-chart-2,#2a78d6) 0 5px,transparent 5px 8px)' }), E('span', { 'class': 'vt-hint' }, _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ])
+				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-chart-2,#2a78d6) 0 5px,transparent 5px 8px)' }), E('span', { 'class': 'vt-hint' }, _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ]),
+				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-accent,#c8f031) 0 2px,transparent 2px 6px)' }), E('span', { 'class': 'vt-hint' }, _('vs 基线')) ])
 			]),
 			svg,
 			E('div', { 'class': 'vt-hint ns-traffic-foot' }, _('基线建立中 — 约 10 秒后出现第一条曲线'))
@@ -764,7 +916,7 @@ return view.extend({
 			return out;
 		};
 		var peak = niceCeil(Math.max(1e5,
-			seriesStatsMax(st.rx), seriesStatsMax(st.tx)) * 1.05);
+			seriesStatsMax(st.rx) || 0, seriesStatsMax(st.tx) || 0) * 1.05);
 		var line = function(s) {
 			return s.filter(function(x) { return x.length > 1; }).map(function(x) {
 				return 'M' + x.map(function(pt) { return pt[0] + ' ' + pt[1]; }).join('L');
@@ -796,7 +948,7 @@ return view.extend({
 			[['-7.5m', 4], ['-3.5m', 320], ['now', 632]].forEach(function(pair) {
 				var tx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
 				tx.setAttribute('x', pair[1]); tx.setAttribute('y', 128);
-				tx.setAttribute('text-anchor', pair[1] > 600 ? 'end' : 'middle');
+				tx.setAttribute('text-anchor', pair[1] > 600 ? 'end' : (pair[1] < 20 ? 'start' : 'middle'));
 				tx.setAttribute('class', 'ns-axis-x');
 				tx.textContent = pair[0];
 				grid.appendChild(tx);
@@ -810,6 +962,39 @@ return view.extend({
 		});
 		var ycapEl = grid.querySelector('[data-role="peak"]');
 		if (ycapEl) ycapEl.textContent = fmtBps(peak);
+		/* 增益层: vs 关闭基线的差值线 (真实测量, 正=超出基线的吞吐) */
+		var gl = svg.querySelector('.ns-gain-line'), gz = svg.querySelector('.ns-gain-zero');
+		var benchOff = this._benchOff;
+		if (benchOff) {
+			var y0 = H - Math.min(1, self._benchOff / peak) * (H - 8) - 2;
+			if (!gz) {
+				gz = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+				gz.setAttribute('class', 'ns-gain-zero');
+				gz.setAttribute('x1', 0); gz.setAttribute('x2', 640);
+				svg.appendChild(gz);
+			}
+			gz.setAttribute('y1', Math.round(y0)); gz.setAttribute('y2', Math.round(y0));
+			if (!gl) {
+				gl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+				gl.setAttribute('class', 'ns-gain-line');
+				svg.appendChild(gl);
+			}
+			/* 差值序列: y = y0 - (rx - base)/peak*(H-8), clamp */
+			var gsegs = [];
+			var curG = null;
+			st.rx.forEach(function(p, idx) {
+				if (p[1] == null) { curG = null; return; }
+				var span2 = st.rx[st.rx.length-1][0] - st.rx[0][0] || 1;
+				var x = (p[0] - st.rx[0][0]) / span2 * W;
+				var y = y0 - (p[1] - benchOff) / peak * (H - 8);
+				y = Math.max(3, Math.min(H - 3, y));
+				if (!curG) { curG = []; gsegs.push(curG); }
+				curG.push([Math.round(x*10)/10, Math.round(y*10)/10]);
+			});
+			gl.setAttribute('d', gsegs.filter(function(seg){return seg.length>1}).map(function(seg){
+				return 'M' + seg.map(function(pt){return pt[0]+' '+pt[1]}).join('L');
+			}).join(''));
+		}
 		svg.querySelector('.ns-area-rx').setAttribute('d', area(sr));
 		svg.querySelector('.ns-line-rx').setAttribute('d', line(sr));
 		svg.querySelector('.ns-area-tx').setAttribute('d', area(stx));
@@ -1778,7 +1963,21 @@ renderSoftirqCard: function(text) {
 			/* v2 总览: 复用主题 vt token; 主题未加载时有兜底色 */
 			'.ns-wires{padding:14px 18px 10px}',
 			'.ns-wires-svg{width:100%;height:auto;display:block}',
-			'.ns-node{fill:var(--vt-surface,var(--s1,#f8f9fa));stroke:var(--vt-line,var(--line,#d6dade));stroke-width:1.5;transition:stroke .3s}',
+			'.ns-master-body{display:flex;align-items:center;gap:18px;padding:4px 0}',
+			'.netsteer-root .ns-toggle{flex:none;width:58px!important;height:32px!important;border-radius:16px!important;border:1px solid var(--vt-line,var(--line,#d6dade))!important;background:var(--vt-surface-3,var(--s2,#eceef1))!important;position:relative!important;cursor:pointer;transition:background .25s;padding:0!important;display:block!important;appearance:none!important}',
+			'.netsteer-root .ns-toggle.on{background:var(--vt-accent,#c8f031)!important;border-color:var(--vt-accent-line,var(--vt-accent,#c8f031))!important}',
+			'.netsteer-root .ns-toggle-knob{position:absolute!important;top:3px!important;left:3px!important;width:24px!important;height:24px!important;border-radius:50%!important;background:var(--vt-surface,#fff)!important;box-shadow:0 1px 4px rgba(0,0,0,.25);transition:left .22s;display:block!important}',
+			'.netsteer-root .ns-toggle.on .ns-toggle-knob{left:29px!important}',
+			'.ns-master-info{min-width:0;flex:1}',
+			'.ns-master-desc{font-size:12.5px;color:var(--vt-text-3,var(--text-3,#5f666f));margin:0 0 4px}',
+			'.ns-master-gain{font-size:13px;font-weight:600;color:var(--vt-text,var(--text,#14171a));margin:0}',
+			'.ns-master-gain.ns-has-gain{color:var(--vt-accent-line,var(--vt-accent,#5a7d0a))}',
+			'.ns-modal-title{font-size:15px;font-weight:700;margin:0 0 8px}',
+			'.ns-modal-body{font-size:13px;margin:0 0 14px;line-height:1.55}',
+			'.ns-gain-line{fill:none;stroke:var(--vt-accent,#c8f031);stroke-width:1.4;stroke-dasharray:1 3;opacity:.9}',
+			'.ns-gain-zero{stroke:var(--vt-line,#d6dade);stroke-width:.8;stroke-dasharray:2 4}',
+			'.ns-legend-gain{color:var(--vt-accent-line,var(--vt-accent,#5a7d0a))}',
+'.ns-node{fill:var(--vt-surface,var(--s1,#f8f9fa));stroke:var(--vt-line,var(--line,#d6dade));stroke-width:1.5;transition:stroke .3s}',
 			'.ns-node-hub{stroke:var(--vt-accent-line,var(--vt-accent,#c8f031));stroke-width:2}',
 			'.ns-node-ico-p{fill:none;stroke:var(--vt-accent-line,var(--vt-accent,#c8f031));stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}',
 			'.ns-node-t{font-size:14px;font-weight:600;fill:var(--vt-text,var(--text,#14171a))}',
@@ -1874,6 +2073,7 @@ renderSoftirqCard: function(text) {
 /* 主题 token + 总览面板 (wires/health/traffic) */
 		this.loadVtCss();
 		var panelOverview = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-overview' }, [
+			this.renderMaster(),
 			this.renderWires(),
 			E('div', { 'id': 'ns-health-slot' }, [ this.renderHealth(null) ]),
 			this.renderTraffic()
@@ -1916,8 +2116,6 @@ renderSoftirqCard: function(text) {
 			css,
 			E('h2', {}, _('网络加速 NetSteer')),
 			menu,
-			E('p', { 'class': 'netsteer-note', 'id': 'netsteer-tab-hint' },
-				TABS.filter(function(t) { return t.id === active; })[0].hint),
 			panelOverview,
 			panelSmart,
 			panelSteer
@@ -1933,9 +2131,6 @@ renderSoftirqCard: function(text) {
 			var b = ev.target.closest ? ev.target.closest('.netsteer-tab') : null;
 			if (!b) return;
 			var tid = b.getAttribute('data-tab');
-			var t = TABS.filter(function(x) { return x.id === tid; })[0];
-			var hint = document.getElementById('netsteer-tab-hint');
-			if (hint && t) hint.textContent = t.hint;
 		});
 
 		/* 首次使用: 自动询问智能测速 */

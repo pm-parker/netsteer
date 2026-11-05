@@ -108,7 +108,38 @@ require_deps() { # 缺依赖拒绝应用 (防半应用: sqm_migrate 会凭空造
 
 require_deps "${1:-}"
 
+apply_off() { # 停用全部 netsteer 优化, 回到系统默认 (供 A/B 基线对比); 记住 prev 供一键回开
+	local acts=""
+	local cur
+	cur="$(uci -q get netsteer.scenario.mode 2>/dev/null)"
+	[ -n "$cur" ] && [ "$cur" != "off" ] && uci set netsteer.scenario.prev="$cur"
+	# SQM 关 (保留配置, 只停用)
+	local sec
+	sec=$(uci -q show sqm 2>/dev/null | grep -E '=queue$|=sqm$' | head -1 | cut -d. -f2 | cut -d= -f1)
+	if [ -n "$sec" ] && [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" != "0" ]; then
+		uci set sqm.$sec.enabled='0'
+		uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1
+		acts="$acts sqm:off"
+	fi
+	# 分核清零 (RPS/XPS/IRQ 恢复全核默认)
+	if netsteer-apply clear >/dev/null 2>&1; then
+		acts="$acts rps-irq:default"
+	fi
+	# P2P 直通关
+	netsteer-p2p off >/dev/null 2>&1
+	acts="$acts p2p:off"
+	echo "$acts"
+}
+
 case "${1:-}" in
+	off)
+		ACTS=$(apply_off)
+		uci set netsteer.scenario='scenario' 2>/dev/null
+		uci set netsteer.scenario.mode='off'
+		uci commit netsteer 2>/dev/null
+		log "mode=off applied: $ACTS"
+		echo "{\"mode\":\"off\",\"actions\":\"$ACTS\"}"
+		;;
 	steering)
 		ACTS=""
 		if [ "$(uci -q get sqm.@queue[0].enabled 2>/dev/null)" != "0" ] && uci -q show sqm >/dev/null 2>&1; then
@@ -134,13 +165,17 @@ case "${1:-}" in
 		uci set netsteer.scenario.mode="$1"
 		uci commit netsteer 2>/dev/null
 		log "mode=$1 applied: $ACTS"
+		( sleep 2; exec /usr/bin/netsteer-bench bg ) >/dev/null 2>&1 </dev/null &
 		echo "{\"mode\":\"$1\",\"actions\":\"$ACTS\"}"
 		;;
 	list)
-		echo "steering standard p2p throughput latency"
+		echo "steering standard p2p throughput latency off"
+		;;
+	status)
+		echo "{\"mode\":\"$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)\",\"prev\":\"$(uci -q get netsteer.scenario.prev 2>/dev/null || echo p2p)\"}"
 		;;
 	*)
-		echo "Usage: netsteer-mode {steering|standard|p2p|throughput|latency} [p2p_ip]" >&2
+		echo "Usage: netsteer-mode {steering|standard|p2p|throughput|latency|off} [p2p_ip]" >&2
 		echo "       netsteer-mode list" >&2
 		exit 1
 		;;

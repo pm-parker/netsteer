@@ -43,11 +43,17 @@ Expert tuning (per-core + IRQ affinity) | Mobile
 
 Mobile is a first-class citizen: 44px touch targets, tap equivalents for every hover interaction, single-column cards, light/dark theme auto-follow.
 
-### Measured benchmark (v1.6 era, core-spreading only)
+### Extreme A/B benchmark (v1.12.4 · measured on-device)
+
+![ab-benchmark](docs/images/netsteer-ab-benchmark.png)
+
+*NanoPi R5C · China Telecom 1000M↓/50M↑: 16-thread saturated download for 30s × 2 runs, concurrent ping during the load. With NetSteer on (cake + all-core spreading + P2P): **average loaded latency ↓87%** (58.6 → 7.8 ms) and **loaded latency spread −88%** (56.4 → 6.9 ms) — gaming/video-call latency no longer explodes during bulk downloads. The cost is stated honestly: loaded throughput −29% (cake shaping overhead on 4-core software forwarding; both sides far exceed everyday usage), idle latency roughly par (slight overhead when on). Benchmark scripts ship with the repo (`scripts/bench-ab-*.sh`) — reproduce on your own device.*
+
+### Historical benchmark (v1.6 era, core-spreading only)
 
 ![benchmark](docs/images/benchmark-before-after.png)
 
-*NanoPi R5C (4 cores, single-queue GbE), same 20 parallel HTTPS downloads: +17% sustained RX throughput with the recommended plan, busiest-core share unchanged. Gains vary by hardware — that's exactly why the app benchmarks your device instead of promising fixed numbers.*
+*NanoPi R5C (4 cores, single-queue GbE), same 20 parallel HTTPS downloads: +17% sustained RX throughput with the recommended plan, busiest-core share unchanged.*
 
 ## Install
 

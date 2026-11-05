@@ -210,6 +210,64 @@ function p2pStatusMeta(st) {
 	return { label: '已关闭', cls: ' is-custom' };
 }
 
+/* ---- 网络体检: 冲突矩阵 + 模式定义 (纯函数层) ---- */
+function auditConflicts(a) {
+	/* a = netsteer-audit 输出 JSON → [{level:'conflict'|'warn'|'info', title, detail, fix}] */
+	var out = [];
+	if (!a) return out;
+	var s = a.sqm || {}, o = a.offload || {}, p = a.p2p || {};
+	if (s.enabled && o.flow)
+		out.push({ level: 'conflict', title: _('SQM 与流量分载同时开启'),
+			detail: _('分载 (flow offloading) 会让后续包绕过 netfilter 入站钩子，SQM 的下行整形 (cake) 对这些包失效——等于花着 CPU 跑 SQM 却管不住大部分流量。'),
+			fix: _('二选一：要低延迟选“均衡/低延迟”模式（关分载）；要纯吞吐选“极速”模式（关 SQM）。') });
+	if (s.enabled && s.cake_running && String(s.section_type) === 'sqm')
+		out.push({ level: 'conflict', title: _('SQM 配置是旧结构，LuCI 页面读不到'),
+			detail: _('cake 在跑但 /etc/config/sqm 的 section 类型是旧式 sqm，新版 SQM 页面只认 queue 类型，会显示“没有值”。'),
+			fix: _('任意模式应用时会自动迁移为 queue 结构，无需手工处理。') });
+	if (s.enabled && s.cake_running && !o.flow && +a.uplink_sample_kbps > 0 && +s.upload > 0) {
+		var ov = +a.uplink_sample_kbps - (+s.upload);
+		if (ov > +s.upload * 0.05)
+			out.push({ level: 'warn', title: _('上行超售：实测 %d kbps 已超过整形值 %d kbps').format(+a.uplink_sample_kbps, +s.upload),
+				detail: _('持续超出套餐速率会触发运营商城域网 QoS——丢包发生在电信机房，路由器侧任何队列都排不到那里。cake 只能保证“不堵在自家门口”。'),
+				fix: _('若重视传输质量，用“低延迟”模式把整形值降到实测的 90%；若追求跑量，保持现状即可。') });
+	}
+	if (p.active && p.ip && String(a.static_leases || '').indexOf(p.ip) < 0)
+		out.push({ level: 'warn', title: _('P2P 直通设备 %s 没有静态租约').format(p.ip),
+			detail: _('DHCP 重新分配后 IP 漂移，直通规则会打到别的设备上（安全面扩大 + P2P 失效）。'),
+			fix: _('在 网络→接口→DHCP 里为该设备添加静态租约。') });
+	if (+a.irqbalance)
+		out.push({ level: 'warn', title: _('irqbalance 与手动分核绑定冲突'),
+			detail: _('irqbalance 会周期性重排中断，覆盖 netsteer 的 IRQ 亲和设置。'),
+			fix: _('禁用 irqbalance：/etc/init.d/irqbalance disable') });
+	if (!s.enabled && !o.flow)
+		out.push({ level: 'info', title: _('当前既无 SQM 也无分载，转发为逐包软路径'),
+			detail: _('小核 CPU 高负载时千兆 NAT 会吃力。按目标选模式即可。'),
+			fix: _('低延迟选“均衡”，纯吞吐选“极速”。') });
+	return out;
+}
+function modeDefs() {
+	return [
+		{ id: 'standard', icon: '⚖', name: _('均衡'), desc: _('SQM cake 整形 + 全核分摊 + 分载关。家用默认最优：防缓冲膨胀，多设备公平，视频会议不卡。') },
+		{ id: 'p2p', icon: '⇅', name: _('P2P 加速'), desc: _('均衡基础上给指定设备开 UDP 全端口直通 (Fullcone 等效)。适合有网心云/P2P 下载机的环境，打洞成功率最大化。') },
+		{ id: 'throughput', icon: '»', name: _('极速'), desc: _('关 SQM、开流量分载 (Routing+NAT)。转发 CPU 大幅下降、千兆线速更容易稳住——代价是失去整形质量。适合大流量搬运、不在乎延迟抖动。') },
+		{ id: 'latency', icon: '⏱', name: _('低延迟'), desc: _('SQM 切 layer_cake 分层 + 整形值降 10%。游戏/会议优先级最高，代价是主动放弃部分带宽。') }
+	];
+}
+function recommendModes(a) {
+	/* 按体检结果给模式排序: 返回 [{id, why}] */
+	var r = [];
+	var s = a && a.sqm || {}, o = a && a.offload || {}, p = a && a.p2p || {};
+	if (p.active || (p.ip && p.ip !== '-'))
+		r.push({ id: 'p2p', why: _('检测到 P2P 直通设备在网 (%s)，保持直通收益最大').format(p.ip || '?') });
+	if (s.enabled && o.flow)
+		r.push({ id: 'standard', why: _('SQM 与分载正在互相打架——此模式关分载保整形，恢复正常工作') });
+	if (s.enabled && s.cake_running && +a.uplink_sample_kbps > 0 && +s.upload > 0 && (+a.uplink_sample_kbps - +s.upload) > +s.upload * 0.05)
+		r.push({ id: 'latency', why: _('上行持续超售 (实测 %d kbps)，降速 10% 换传输质量').format(+a.uplink_sample_kbps) });
+	if (!r.length || r.length < 2)
+		r.push({ id: 'standard', why: _('无特殊风险信号，均衡模式通用性最好') });
+	return r;
+}
+
 /* cpu online ("0-3"/"0-7") → 核数 */
 function parseCpuRange(txt) {
 	var m = (txt || '0-3').trim().match(/(\d+)-(\d+)/);
@@ -683,6 +741,127 @@ return view.extend({
 		]);
 	},
 
+	/* ---- 网络体检 + 场景模式卡 ---- */
+	renderAuditCard: function() {
+		var self = this;
+		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-audit' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('网络体检 · 场景模式')),
+				E('button', {
+					'class': 'netsteer-minibtn', 'type': 'button', 'id': 'netsteer-audit-btn',
+					'click': ui.createHandlerFn(self, 'runAudit')
+				}, _('开始体检'))
+			]),
+			E('p', { 'class': 'netsteer-note', 'id': 'netsteer-audit-hint' }, _('一键检测 SQM、流量分载、P2P 直通、上行带宽与冲突项，按结果推荐 4 套场景模式（检测约 4 秒，只读不改配置）。'))
+		]);
+	},
+
+	runAudit: function(ev) {
+		var self = this;
+		var btn = document.getElementById('netsteer-audit-btn');
+		if (btn) { btn.disabled = true; btn.textContent = _('检测中…'); }
+		return fs.exec('/usr/bin/netsteer-audit', []).then(function(r) {
+			var a = null;
+			try { a = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			return self.renderAuditResult(a);
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', {}, _('体检失败: %s').format(String(e))), 'error');
+		}).finally(function() {
+			if (btn) { btn.disabled = false; btn.textContent = _('重新体检'); }
+		});
+	},
+
+	renderAuditResult: function(a) {
+		var self = this;
+		var card = document.getElementById('netsteer-audit');
+		if (!card) return;
+		var conf = auditConflicts(a);
+		var recs = recommendModes(a);
+		var defs = modeDefs();
+		var recIds = {};
+		recs.forEach(function(x, i) { recIds[x.id] = i; });
+		var sorted = defs.slice().sort(function(x, y) {
+			return (recIds[x.id] !== undefined ? recIds[x.id] : 99) - (recIds[y.id] !== undefined ? recIds[y.id] : 99);
+		});
+		var kids = [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('网络体检 · 场景模式')),
+				E('button', { 'class': 'netsteer-minibtn', 'type': 'button',
+					'click': ui.createHandlerFn(self, 'runAudit') }, _('重新体检'))
+			])
+		];
+		/* 冲突/风险列表 */
+		var CLS = { conflict: '#c0392b', warn: '#d35400', info: '#2471a3' };
+		if (conf.length) {
+			kids.push(E('div', { 'style': 'margin:.4em 0' }, conf.map(function(c) {
+				return E('div', { 'style': 'border-left:3px solid %s;padding:4px 8px;margin:6px 0;background:rgba(0,0,0,.03)'.format(CLS[c.level] || '#888') }, [
+					E('div', { 'style': 'font-weight:600;color:%s'.format(CLS[c.level] || '#888') }, c.title),
+					E('div', { 'class': 'netsteer-note' }, c.detail),
+					c.fix ? E('div', { 'class': 'netsteer-note', 'style': 'color:#2471a3' }, '→ ' + c.fix) : E('span')
+				]);
+			})));
+		} else {
+			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'color:#1e8449' }, _('✓ 未发现冲突或风险项')));
+		}
+		/* 环境事实摘要 */
+		if (a && a.sqm) {
+			kids.push(E('p', { 'class': 'netsteer-foot' },
+				_('SQM: %s · 分载: %s · P2P 直通: %s · 上行实测: %s kbps').format(
+					a.sqm.enabled ? (a.sqm.cake_running ? _('运行中(cake)') : _('已启用未运行')) : _('关'),
+					a.offload && a.offload.flow ? _('开') : _('关'),
+					a.p2p && a.p2p.active ? a.p2p.ip : _('关'),
+					a.uplink_sample_kbps > 0 ? String(a.uplink_sample_kbps) : '—')));
+		}
+		/* 模式选择 */
+		kids.push(E('div', { 'style': 'display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin-top:.6em' },
+			sorted.map(function(m) {
+				var rec = recIds[m.id] !== undefined ? recs[recIds[m.id]] : null;
+				return E('div', { 'style': 'border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:8px 10px' .replace('  ', ' ') }, [
+					E('div', { 'style': 'font-weight:600' }, (rec ? '★ ' : '') + m.icon + ' ' + m.name),
+					E('p', { 'class': 'netsteer-note', 'style': 'margin:.3em 0' }, m.desc),
+					rec ? E('p', { 'class': 'netsteer-note', 'style': 'color:#1e8449;margin:.2em 0' }, _('推荐理由: %s').format(rec.why)) : E('span'),
+					E('button', {
+						'class': 'netsteer-minibtn', 'type': 'button',
+						'click': ui.createHandlerFn(self, 'applyModeConfirm', m.id, a)
+					}, _('应用此模式'))
+				]);
+			})));
+		var fresh = this.renderAuditCardShell(kids);
+		card.replaceWith(fresh);
+	},
+
+	renderAuditCardShell: function(kids) {
+		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-audit' }, kids);
+	},
+
+	applyModeConfirm: function(mode, audit, ev) {
+		var self = this;
+		var defs = {};
+		modeDefs().forEach(function(m) { defs[m.id] = m; });
+		var m = defs[mode];
+		var extra = '';
+		if (mode === 'p2p') {
+			var ip = (audit && audit.p2p && audit.p2p.ip && audit.p2p.ip !== '-') ? audit.p2p.ip : '192.168.11.175';
+			extra = _('（直通设备: %s）').format(ip);
+		}
+		return ui.showModal(_('确认应用「%s」模式').format(m.name), [
+			E('p', { 'class': 'netsteer-note' }, m.desc + extra),
+			E('p', { 'class': 'netsteer-note', 'style': 'color:#c0392b' }, _('即将修改 SQM / 防火墙分载 / P2P 直通设置，网络会瞬断 1-2 秒。')),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn cbi-button-neutral', 'click': ui.hideModal.bind(ui) }, _('取消')),
+				' ',
+				E('button', { 'class': 'btn cbi-button-positive important', 'click': function() {
+					ui.hideModal();
+					fs.exec('/usr/bin/netsteer-mode', [mode]).then(function() { return self.load(); })
+						.then(function() {
+							ui.addNotification(null, E('p', {}, _('「%s」模式已应用').format(m.name)), 'info');
+						})
+						.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+				} }, _('应用'))
+			])
+		]);
+	},
+
 	/* ---- P2P 直通卡 (Fullcone 等效: UDP 全端口入站 DNAT) ---- */
 	renderP2PCard: function(st) {
 		var self = this;
@@ -901,7 +1080,8 @@ return view.extend({
 				return self.renderIface(it, values.slice(1), i, state);
 			})),
 			this.renderSoftirqCard(values[1 + IFACES.length * 2] || ''),
-			this.renderP2PCard(values[3 + IFACES.length * 2])
+			this.renderP2PCard(values[3 + IFACES.length * 2]),
+			this.renderAuditCard()
 		]);
 
 		/* 首次使用: 自动询问智能测速 */

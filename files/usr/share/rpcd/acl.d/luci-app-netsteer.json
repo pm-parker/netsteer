@@ -1,56 +1,64 @@
 {
-	"luci-app-netsteer": {
-		"description": "Grant access to NetSteer RPS/RFS/XPS tuning",
-		"read": {
-			"uci": [
-				"netsteer"
-			],
-			"file": {
-				"/proc/softirqs": [
-					"read"
-				],
-				"/proc/sys/net/core/rps_sock_flow_entries": [
-					"read"
-				],
-				"/sys/devices/system/cpu/online": [
-					"read"
-				],
-				"/sys/class/net/*/queues/*/*": [
-					"read"
-				],
-				"/sys/devices/platform/*/net/*/queues/*/*": [
-					"read"
-				],
-				"/sys/devices/virtual/net/*/queues/*/*": [
-					"read"
-				],
-				"/tmp/netsteer/state.json": [
-					"read"
-				],
-				"/etc/config/netsteer": [
-					"read"
-				],
-				"/tmp/netsteer/history.log": [
-					"read"
-				],
-				"/etc/netsteer/incidents/*": [
-					"read"
-				]
-			}
-		},
-		"write": {
-			"uci": [
-				"netsteer",
-				"firewall"
-			],
-			"file": {
-				"/usr/bin/netsteer-apply": [
-					"exec"
-				],
-				"/usr/bin/netsteer-p2p": [
-					"exec"
-				]
-			}
-		}
-	}
+  "luci-app-netsteer": {
+    "description": "Grant access to NetSteer RPS/RFS/XPS tuning",
+    "read": {
+      "uci": [
+        "netsteer",
+        "sqm",
+        "dhcp"
+      ],
+      "file": {
+        "/proc/softirqs": [
+          "read"
+        ],
+        "/proc/sys/net/core/rps_sock_flow_entries": [
+          "read"
+        ],
+        "/sys/devices/system/cpu/online": [
+          "read"
+        ],
+        "/sys/class/net/*/queues/*/*": [
+          "read"
+        ],
+        "/sys/devices/platform/*/net/*/queues/*/*": [
+          "read"
+        ],
+        "/sys/devices/virtual/net/*/queues/*/*": [
+          "read"
+        ],
+        "/tmp/netsteer/state.json": [
+          "read"
+        ],
+        "/etc/config/netsteer": [
+          "read"
+        ],
+        "/tmp/netsteer/history.log": [
+          "read"
+        ],
+        "/etc/netsteer/incidents/*": [
+          "read"
+        ]
+      }
+    },
+    "write": {
+      "uci": [
+        "netsteer",
+        "firewall"
+      ],
+      "file": {
+        "/usr/bin/netsteer-apply": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-p2p": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-audit": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-mode": [
+          "exec"
+        ]
+      }
+    }
+  }
 }

@@ -44,10 +44,10 @@ Mobile is a first-class target: 44px touch targets, tap equivalents for every ho
 
 ### Option A — apk package (OpenWrt 24.10+/25.12)
 
-Download `dist/luci-app-netsteer-1.7.0.apk` from this repo, copy it to the router, then:
+Download `dist/luci-app-netsteer-1.8.0.apk` from this repo, copy it to the router, then:
 
 ```sh
-apk add --allow-untrusted /tmp/luci-app-netsteer-1.7.0.apk
+apk add --allow-untrusted /tmp/luci-app-netsteer-1.8.0.apk
 ```
 
 The package enables the service at boot, clears the LuCI menu cache and reloads rpcd. On first open the page offers a guided setup.

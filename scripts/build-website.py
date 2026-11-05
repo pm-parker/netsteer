@@ -8,7 +8,6 @@ def b64(f):
 
 ab_bench = b64("netsteer-ab-benchmark.png")
 overview = b64("screenshot-overview.png")
-mobile   = b64("screenshot-mobile.png")
 
 html = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -159,7 +158,6 @@ html = """<!DOCTYPE html>
     section { margin-top:72px; }
     section p.lead { font-size:17px; }
     pre { font-size:13px; padding:18px 16px; }
-    .duo { grid-template-columns:1fr; }
   }
   @media (max-width:760px){ .cap-grid { grid-template-columns:1fr; } }
   .cap { border:1px solid var(--line); border-radius:14px; padding:26px 26px 22px; background:var(--card); transition:border-color .15s, box-shadow .15s, background .25s; }
@@ -175,8 +173,6 @@ html = """<!DOCTYPE html>
   /* 截图 */
   .shot { margin-top:38px; border:1px solid var(--line); border-radius:14px; overflow:hidden; background:#FFF; }
   .shot img { display:block; width:100%; height:auto; }
-  .duo { margin-top:22px; display:grid; grid-template-columns:1.8fr 1fr; gap:22px; align-items:start; }
-  @media (max-width:760px){ .duo { grid-template-columns:1fr; } }
   .caption { margin-top:14px; font-size:14.5px; color:var(--muted); text-align:center; }
 
   /* 数据表 */
@@ -340,11 +336,8 @@ html = """<!DOCTYPE html>
   <section id="ui">
     <h2>4. 界面</h2>
     <hr class="rule">
-    <div class="duo">
-      <div class="shot"><img src="__OVERVIEW__" alt="NetSteer 总览仪表盘：总开关、网络路径、健康卡、吞吐曲线"></div>
-      <div class="shot"><img src="__MOBILE__" alt="移动端布局"></div>
-    </div>
-    <p class="caption">总览仪表盘（左）与移动端（右）：面板内显示的 ↓9% 为空载实时抽测增益；满载极限数据见上节。深浅主题跟随 LuCI，触控热区 44px，悬停交互均有点按等价物</p>
+    <div class="shot"><img src="__OVERVIEW__" alt="NetSteer 总览仪表盘：总开关、网络路径、健康卡、吞吐曲线"></div>
+    <p class="caption">总览仪表盘：面板内显示的 ↓9% 为空载实时抽测增益；满载极限数据见上节。深浅主题跟随 LuCI，移动端单列自适应</p>
   </section>
 
   <!-- 5. 快速开始 -->
@@ -471,7 +464,7 @@ apk add --allow-untrusted /tmp/luci-app-netsteer-1.12.4-aarch64_generic.apk
 </html>
 """
 
-html = html.replace("__AB_BENCH__", ab_bench).replace("__OVERVIEW__", overview).replace("__MOBILE__", mobile)
+html = html.replace("__AB_BENCH__", ab_bench).replace("__OVERVIEW__", overview)
 out = "/home/abc/.hermes/workspace/netsteer-site.html"
 open(out, "w").write(html)
 print(out, os.path.getsize(out)//1024, "KB")

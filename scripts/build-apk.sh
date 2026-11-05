@@ -60,6 +60,8 @@ echo ">> verify content:"
 mkdir -p "$WORK/check"
 "$MKPKG" extract --allow-untrusted --destination "$WORK/check" "$OUT" >/dev/null
 find "$WORK/check" -type f | sort | sed 's/^/   /'
+# integrity check — a package that fails verify must never be shipped
+"$MKPKG" verify --allow-untrusted "$OUT" >/dev/null || { echo "ERROR: apk verify failed"; exit 1; }
 # sanity: js must be present and non-empty
 JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
 [ -s "$JS" ] || { echo "ERROR: package is missing netsteer.js — build is broken"; exit 1; }

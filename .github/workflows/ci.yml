@@ -36,7 +36,16 @@ jobs:
         run: |
           V="${GITHUB_REF_NAME#v}"
           case "$V" in [0-9]*) ;; *) V="0.0.0_alpha";; esac
+          rm -rf dist          # never ship stale packages from the working tree
           ./scripts/build-apk.sh "$V" ${{ matrix.arch }}
+      - name: Verify package integrity (apk verify)
+        run: |
+          set -e
+          TOOLS=$(mktemp -d)
+          curl -sL -o "$TOOLS/t.apk" https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/apk-tools-static-3.0.9-r0.apk
+          tar xzf "$TOOLS/t.apk" -C "$TOOLS" sbin/apk.static
+          chmod +x "$TOOLS/sbin/apk.static"
+          "$TOOLS/sbin/apk.static" verify --allow-untrusted dist/*.apk
       - uses: actions/upload-artifact@v4
         with:
           name: apk-${{ matrix.arch }}
@@ -49,14 +58,33 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Collect artifacts (one dir per arch, no name collisions)
+        uses: actions/download-artifact@v4
         with:
-          merge-multiple: true
-          path: dist
+          pattern: apk-*
+          merge-multiple: false
+          path: artifacts
+      - name: Flatten into release-dist
+        run: |
+          set -e
+          mkdir -p release-dist
+          find artifacts -name '*.apk' -exec cp -n {} release-dist/ \;
+          ls -la release-dist/
+          # refuse to ship duplicate package names
+          DUPES=$(ls release-dist/ | sed -E 's/-[^-]*\.apk$//' | sort | uniq -d || true)
+          if [ -n "$DUPES" ]; then echo "ERROR: duplicate package names: $DUPES"; exit 1; fi
+      - name: Verify every package before attaching
+        run: |
+          set -e
+          TOOLS=$(mktemp -d)
+          curl -sL -o "$TOOLS/t.apk" https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/apk-tools-static-3.0.9-r0.apk
+          tar xzf "$TOOLS/t.apk" -C "$TOOLS" sbin/apk.static
+          chmod +x "$TOOLS/sbin/apk.static"
+          "$TOOLS/sbin/apk.static" verify --allow-untrusted release-dist/*.apk
       - name: Attach all arch builds to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.apk
+          files: release-dist/*.apk
           body: |
             Download the .apk matching your device architecture (check `/etc/apk/arch` on the router).
 
@@ -66,3 +94,4 @@ jobs:
             ```
 
             Built automatically by CI from this tag — unit tests + 4-arch build matrix.
+            Every package is verified with `apk verify` before it is attached.

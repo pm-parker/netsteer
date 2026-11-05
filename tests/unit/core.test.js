@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -32,7 +32,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -108,6 +108,24 @@ eq(P8.pairs.irq, { eth0: '8', eth1: '80' }, '8c pairs irq (C3, C7)');
 setup(16, R5C);
 eq(api.fullMask(), 'ffff', '16c fullMask');
 eq(api.getPresets().all.irq, { eth0: '8000', eth1: '4000' }, '16c all irq');
+
+// ---------- P2P 直通 (Fullcone 等效) ----------
+eq(api.p2pValidIp('192.168.11.175'), true, 'p2p ip valid 192.168');
+eq(api.p2pValidIp('10.0.0.5'), true, 'p2p ip valid 10.x');
+eq(api.p2pValidIp('172.16.3.9'), true, 'p2p ip valid 172.16');
+eq(api.p2pValidIp('172.32.0.1'), false, 'p2p ip reject 172.32');
+eq(api.p2pValidIp('8.8.8.8'), false, 'p2p ip reject public');
+eq(api.p2pValidIp('999.1.1.1'), false, 'p2p ip reject 999');
+eq(api.p2pValidIp(''), false, 'p2p ip reject empty');
+eq(api.p2pValidIp('192.168.11.999'), false, 'p2p ip reject bad octet');
+eq(api.p2pValidPort('1024'), true, 'p2p port valid');
+eq(api.p2pValidPort('65535'), true, 'p2p port max');
+eq(api.p2pValidPort('0'), false, 'p2p port reject 0');
+eq(api.p2pValidPort('70000'), false, 'p2p port reject >65535');
+eq(api.p2pValidPort('abc'), false, 'p2p port reject NaN');
+eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启 · 192.168.11.175', 'p2p status on label');
+eq(api.p2pStatusMeta({active:0}).cls, ' is-custom', 'p2p status off cls');
+eq(api.p2pStatusMeta(null).label, '已关闭', 'p2p status null label');
 
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail ? 1 : 0);

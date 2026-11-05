@@ -26,6 +26,7 @@ NetSteer turns that into three buttons.
 | **Per-core control** | Toggle RPS/XPS/IRQ per interface, per core — PPPoE virtual interfaces included |
 | **Guard daemon** | Background watcher that detects and *self-heals* any drift between config and live sysfs state, logging evidence to a persistent incident directory |
 | **Works on any device** | Core count, interfaces and IRQ numbers are detected at runtime — nothing is hardcoded for a specific board. First install auto-generates a sane default for *your* hardware |
+| **P2P passthrough** | One-click UDP full-port inbound DNAT for a chosen device (Fullcone-equivalent) — dramatically better P2P hole-punching. Native fw4 rules, visible in the LuCI firewall page, idempotently added/removed by the toggle |
 
 ## Screenshots
 
@@ -43,10 +44,10 @@ Mobile is a first-class target: 44px touch targets, tap equivalents for every ho
 
 ### Option A — apk package (OpenWrt 24.10+/25.12)
 
-Download `dist/luci-app-netsteer-1.6.0.apk` from this repo, copy it to the router, then:
+Download `dist/luci-app-netsteer-1.7.0.apk` from this repo, copy it to the router, then:
 
 ```sh
-apk add --allow-untrusted /tmp/luci-app-netsteer-1.6.0.apk
+apk add --allow-untrusted /tmp/luci-app-netsteer-1.7.0.apk
 ```
 
 The package enables the service at boot, clears the LuCI menu cache and reloads rpcd. On first open the page offers a guided setup.

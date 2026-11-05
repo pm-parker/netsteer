@@ -26,6 +26,7 @@ NetSteer 把它变成三个按钮。
 | **逐核控制** | 每个接口、每个核独立开关 RPS/XPS/IRQ，PPPoE 虚拟口同样支持 |
 | **守卫后台** | 每分钟对账配置与运行态，发现漂移自动修复并存证到持久目录 |
 | **跨设备通用** | 核数、接口、IRQ 号全部运行时探测，零硬编码；首装自动为你的硬件生成合理默认值 |
+| **P2P 直通** | 一键给指定设备开 UDP 全端口入站（Fullcone 等效），P2P 打洞成功率显著提升；fw4 原生规则，LuCI 防火墙页可见，随开关幂等增删 |
 
 ## 截图
 
@@ -43,10 +44,10 @@ NetSteer 把它变成三个按钮。
 
 ### 方式 A — apk 安装包（OpenWrt 24.10+/25.12）
 
-从本仓库下载 `dist/luci-app-netsteer-1.6.0.apk`，拷到路由器后：
+从本仓库下载 `dist/luci-app-netsteer-1.7.0.apk`，拷到路由器后：
 
 ```sh
-apk add --allow-untrusted /tmp/luci-app-netsteer-1.6.0.apk
+apk add --allow-untrusted /tmp/luci-app-netsteer-1.7.0.apk
 ```
 
 安装包会启用开机自启、清 LuCI 菜单缓存并重载 rpcd。首次打开页面会引导初始设置。

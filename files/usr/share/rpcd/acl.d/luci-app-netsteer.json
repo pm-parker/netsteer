@@ -40,10 +40,14 @@
 		},
 		"write": {
 			"uci": [
-				"netsteer"
+				"netsteer",
+				"firewall"
 			],
 			"file": {
 				"/usr/bin/netsteer-apply": [
+					"exec"
+				],
+				"/usr/bin/netsteer-p2p": [
 					"exec"
 				]
 			}

@@ -191,6 +191,25 @@ function legend() {
 	}));
 }
 
+/* ---- P2P 直通 (Fullcone 等效): 纯函数层 ---- */
+function p2pValidIp(ip) {
+	var m = (/^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/).exec(ip || '');
+	if (!m) return false;
+	var a = ip.split('.').map(Number);
+	if (a[0] === 10 || (a[0] === 192 && a[1] === 168)) return true;
+	if (a[0] === 172 && a[1] >= 16 && a[1] <= 31) return true;
+	return false;
+}
+function p2pValidPort(p) {
+	var n = parseInt(p, 10);
+	return n >= 1 && n <= 65535;
+}
+function p2pStatusMeta(st) {
+	/* st = netsteer-p2p status 的 JSON → 徽标文案与样式类 */
+	if (st && st.active) return { label: '已开启 · %s'.format(st.dest_ip || '?'), cls: '' };
+	return { label: '已关闭', cls: ' is-custom' };
+}
+
 /* cpu online ("0-3"/"0-7") → 核数 */
 function parseCpuRange(txt) {
 	var m = (txt || '0-3').trim().match(/(\d+)-(\d+)/);
@@ -249,6 +268,10 @@ return view.extend({
 			});
 			tasks.push(L.resolveDefault(fs.read('/proc/softirqs'), ''));
 			tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
+			/* P2P 直通状态: 独立脚本输出 JSON (脚本不在时静默降级为关) */
+			tasks.push(fs.exec('/usr/bin/netsteer-p2p', ['status']).then(function(r) {
+				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
+			}).catch(function() { return null; }));
 			return Promise.all(tasks);
 		});
 	},
@@ -660,6 +683,69 @@ return view.extend({
 		]);
 	},
 
+	/* ---- P2P 直通卡 (Fullcone 等效: UDP 全端口入站 DNAT) ---- */
+	renderP2PCard: function(st) {
+		var self = this;
+		var meta = p2pStatusMeta(st);
+		var defIp = (st && st.dest_ip && st.dest_ip !== '-') ? st.dest_ip : ((st && st.uci_ip) || '192.168.11.175');
+		var defPorts = (st && st.ports && st.ports !== '-') ? String(st.ports) : '1024-65535';
+		var ps = defPorts.split('-');
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-p2p' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('P2P 直通 (Fullcone 等效)')),
+				E('span', { 'class': 'netsteer-badge' + meta.cls, 'id': 'netsteer-p2p-badge' }, _(meta.label))
+			]),
+			E('p', { 'class': 'netsteer-note' }, _('给指定设备开放 UDP 全端口入站（防火墙原生 DNAT 规则）。配合系统 NAT 的端口保留特性，效果等同 Fullcone NAT——P2P 下载、网心云类设备的打洞成功率显著提升。仅放行 UDP，TCP 不受影响。')),
+			E('div', { 'class': 'netsteer-row', 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
+				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ip' }, _('设备 IP')),
+				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'min-height:32px' }),
+				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ports' }, _('端口')),
+				E('input', { 'id': 'netsteer-p2p-ports', 'type': 'text', 'value': defPorts, 'size': 12, 'style': 'min-height:32px' }),
+				E('button', {
+					'class': 'netsteer-minibtn', 'type': 'button',
+					'click': ui.createHandlerFn(self, 'p2pToggle', st)
+				}, (st && st.active) ? _('关闭') : _('开启'))
+			]),
+			E('p', { 'class': 'netsteer-foot' }, _('注意：该设备的 UDP 端口将对公网开放，请确保设备上的服务可信。规则可在 系统→防火墙 页面查看。'))
+		]);
+		return card;
+	},
+
+	p2pToggle: function(st, ev) {
+		/* 开→关 / 关→开; 开时读输入框并前端校验 (shell 端再校验一道) */
+		var self = this;
+		var turningOn = !(st && st.active);
+		var chain;
+		if (turningOn) {
+			var ip = (document.getElementById('netsteer-p2p-ip') || {}).value || '';
+			var ports = ((document.getElementById('netsteer-p2p-ports') || {}).value || '1024-65535').trim();
+			var m = (/^(\d+)-(\d+)$/).exec(ports);
+			if (!p2pValidIp(ip.trim()))
+				return ui.showModal(_('IP 无效'), [E('p', { 'class': 'netsteer-note' }, _('请输入 RFC1918 内网地址，例如 192.168.11.175')), E('div', { 'class': 'right' }, [E('button', { 'class': 'btn cbi-button-neutral', 'click': ui.hideModal.bind(ui) }, _('知道了'))])]);
+			if (!m || !p2pValidPort(m[1]) || !p2pValidPort(m[2]) || +m[1] > +m[2])
+				return ui.showModal(_('端口无效'), [E('p', { 'class': 'netsteer-note' }, _('格式: 起-止，如 1024-65535')), E('div', { 'class': 'right' }, [E('button', { 'class': 'btn cbi-button-neutral', 'click': ui.hideModal.bind(ui) }, _('知道了'))])]);
+			/* 权威操作 = 脚本 exec (自带首装自愈); uci 记录尽力而为, 失败不阻断 */
+			chain = fs.exec('/usr/bin/netsteer-p2p', ['on', ip.trim(), m[1], m[2]])
+				.then(function() {
+					return ubusCall('uci', 'set', { config: 'netsteer', section: 'p2p', values: { enabled: '1', dest_ip: ip.trim(), port_start: m[1], port_end: m[2] } }).catch(function() {});
+				});
+		} else {
+			chain = fs.exec('/usr/bin/netsteer-p2p', ['off'])
+				.then(function() {
+					return ubusCall('uci', 'set', { config: 'netsteer', section: 'p2p', values: { enabled: '0' } }).catch(function() {});
+				});
+		}
+		return chain.then(function() { return self.load(); })
+			.then(function(values) {
+				var newSt = values[3 + IFACES.length * 2];
+				/* 整卡重渲染 (按钮文案/IP/端口预填都随状态走, 只改 badge 会留下旧按钮) */
+				var old = document.getElementById('netsteer-p2p');
+				if (old) old.replaceWith(this.renderP2PCard(newSt));
+				ui.addNotification(null, E('p', {}, turningOn ? _('P2P 直通已开启') : _('P2P 直通已关闭')), 'info');
+			}.bind(this))
+			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
 	/* 问号浮窗: 原理与用法 */
 	toggleHelp: function(ev) {
 		var old = document.getElementById('netsteer-help-pop');
@@ -814,7 +900,8 @@ return view.extend({
 			E('div', { 'class': 'netsteer-grid' }, IFACES.map(function(it, i) {
 				return self.renderIface(it, values.slice(1), i, state);
 			})),
-			this.renderSoftirqCard(values[1 + IFACES.length * 2] || '')
+			this.renderSoftirqCard(values[1 + IFACES.length * 2] || ''),
+			this.renderP2PCard(values[3 + IFACES.length * 2])
 		]);
 
 		/* 首次使用: 自动询问智能测速 */

@@ -1,0 +1,115 @@
+#!/bin/sh
+# netsteer-p2p: P2P 直通开关 (Fullcone 等效 — UDP 全端口入站 DNAT 到指定设备)
+# 原理: masquerade 本就保留源端口 (EIM 映射), 补上"任意外部可入站"这一半即等效 Fullcone。
+# 纯 uci firewall redirect 实现: fw4 原生管理, LuCI 防火墙页可见, 重启持久, 幂等。
+# 用法: netsteer-p2p on [ip] [port_start] [port_end] | off | status
+# 状态源: /etc/config/netsteer 的 p2p 节 (enabled/dest_ip/port_start/port_end)
+
+. /lib/functions.sh
+
+LOG_TAG=netsteer
+RULE_NAME="netsteer-p2p-pass"
+log() { logger -t $LOG_TAG "p2p: $@"; }
+
+# ---- 校验 ----
+valid_ip() {
+	echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+	local o
+	for o in $(echo "$1" | tr '.' ' '); do
+		[ "$o" -le 255 ] 2>/dev/null || return 1
+	done
+	case "$1" in
+		192.168.*.*|10.*.*.*|172.1[6-9].*.*|172.2[0-9].*.*|172.3[01].*.*) return 0;;
+		*) return 1;;
+	esac
+}
+valid_port() {
+	case "$1" in ''|*[!0-9]*) return 1;; esac
+	[ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+
+# ---- 从 /etc/config/netsteer 读默认值 ----
+p2p_get() { # $1=option $2=default
+	config_load netsteer 2>/dev/null
+	config_get v "p2p" "$1" "$2"
+	echo "$v"
+}
+ensure_section() { # 确保 netsteer.p2p 节存在 (首装自愈, 前端 uci set 依赖)
+	uci -q get netsteer.p2p >/dev/null 2>&1 || { uci set netsteer.p2p='p2p'; uci commit netsteer; }
+}
+
+# ---- firewall redirect 管理 (绝对幂等: 先清同名再操作; 索引删除位移 → 倒序删) ----
+find_all_rules() { # 输出所有同名 section id (每行一个 @redirect[N])
+	uci -q show firewall 2>/dev/null | grep "=redirect$" | cut -d. -f2 | cut -d= -f1 | while read s; do
+		[ "$(uci -q get "firewall.$s.name" 2>/dev/null)" = "$RULE_NAME" ] && echo "$s"
+	done
+}
+find_rule() { find_all_rules | head -1; }
+purge_rules() { # 删除全部同名规则 (倒序防索引位移), 返回删除数
+	local ids n=0
+	ids=$(find_all_rules | sort -t'[' -k2 -rn)
+	local s
+	for s in $ids; do
+		uci delete "firewall.$s" 2>/dev/null && n=$((n+1))
+	done
+	[ "$n" -gt 0 ] && echo "$n"
+}
+
+p2p_on() {
+	ensure_section
+	local ip="${1:-$(p2p_get dest_ip 192.168.11.175)}"
+	local ps="${2:-$(p2p_get port_start 1024)}"
+	local pe="${3:-$(p2p_get port_end 65535)}"
+	valid_ip "$ip"   || { log "ERR: 非法内网 IP '$ip'"; echo "ERR: invalid ip"; exit 1; }
+	valid_port "$ps" || { log "ERR: 非法端口 '$ps'"; echo "ERR: invalid port"; exit 1; }
+	valid_port "$pe" || { log "ERR: 非法端口 '$pe'"; echo "ERR: invalid port"; exit 1; }
+	[ "$ps" -le "$pe" ] || { log "ERR: port_start > port_end"; echo "ERR: port range"; exit 1; }
+
+	local sid=$(find_rule)
+	purge_rules >/dev/null   # 绝对幂等: 无论历史状态如何, 重建唯一一条
+	local new=$(uci add firewall redirect)
+	uci set firewall.$new.name="$RULE_NAME"
+	uci set firewall.$new.target='DNAT'
+	uci set firewall.$new.src='wan'
+	uci set firewall.$new.dest='lan'
+	uci set firewall.$new.dest_ip="$ip"
+	uci set firewall.$new.proto='udp'
+	uci set firewall.$new.src_dport="$ps-$pe"
+	uci set firewall.$new.dest_port="$ps-$pe"
+	uci commit firewall
+	fw4 reload >/dev/null 2>&1
+	log "ON: UDP $ps-$pe -> $ip (fullcone 等效已开启)"
+	echo "OK: udp $ps-$pe -> $ip"
+}
+
+p2p_off() {
+	local n=$(purge_rules)
+	if [ -n "$n" ]; then
+		uci commit firewall
+		fw4 reload >/dev/null 2>&1
+		log "OFF: P2P 直通已关闭 (删 $n 条)"
+		echo "OK: off ($n rule)"
+	else
+		echo "OK: already off"
+	fi
+}
+
+p2p_status() {
+	local want_en=$(p2p_get enabled 0)
+	local want_ip=$(p2p_get dest_ip 192.168.11.175)
+	local sid=$(find_rule)
+	local active=0 cur_ip="-" cur_ports="-"
+	if [ -n "$sid" ]; then
+		active=1
+		cur_ip=$(uci -q get firewall.$sid.dest_ip 2>/dev/null)
+		cur_ports=$(uci -q get firewall.$sid.src_dport 2>/dev/null)
+	fi
+	echo "{\"active\":$active,\"rule\":\"$RULE_NAME\",\"dest_ip\":\"$cur_ip\",\"ports\":\"$cur_ports\",\"uci_enabled\":$want_en,\"uci_ip\":\"$want_ip\"}"
+}
+
+case "$1" in
+	on)     shift; p2p_on "$@";;
+	off)    p2p_off;;
+	status) p2p_status;;
+	*)      echo "usage: $0 on [ip] [port_start] [port_end] | off | status"; exit 1;;
+esac

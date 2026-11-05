@@ -70,9 +70,11 @@ jobs:
           mkdir -p release-dist
           find artifacts -name '*.apk' -exec cp -n {} release-dist/ \;
           ls -la release-dist/
-          # refuse to ship duplicate package names
-          DUPES=$(ls release-dist/ | sed -E 's/-[^-]*\.apk$//' | sort | uniq -d || true)
-          if [ -n "$DUPES" ]; then echo "ERROR: duplicate package names: $DUPES"; exit 1; fi
+          # refuse to ship two different packages under the same file name
+          DUPES=$(ls release-dist/ | sort | uniq -d || true)
+          if [ -n "$DUPES" ]; then echo "ERROR: duplicate file names: $DUPES"; exit 1; fi
+          COUNT=$(ls release-dist/*.apk | wc -l)
+          echo ">> $COUNT packages collected"
       - name: Verify every package before attaching
         run: |
           set -e

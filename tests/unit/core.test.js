@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -32,7 +32,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -150,16 +150,55 @@ eq(dz.rxConc, null, 'delta 无新包 → conc null');
 let dn = api.deltaSoftirq(SC1, SB1);
 eq(dn.total, 0, 'delta 负增量钳 0');
 
+// ---------- v2 引擎: 采样/路径/时序 ----------
+const ND = '  eth0: 1000000000 100 0 0 0 0 0 0 500000000\n  eth1: 2000000000 200 0 0 0 0 0 0 800000000\n    lo: 1 1 0 0 0 0 0 0 1';
+let nd = api.netdevParse(ND);
+eq(nd.eth0.rx, 1000000000, 'netdevParse rx');
+eq(nd.eth1.tx, 800000000, 'netdevParse tx');
+eq(nd.eth0.tx, 500000000, 'netdevParse tx eth0');
+eq(nd.lo ? 1 : 0, 1, 'netdevParse lo 也在 (可过滤)');
+let dd1 = api.netdevDelta(nd, api.netdevParse('  eth0: 1008000000 100 0 0 0 0 0 0 500500000'), 5000);
+eq(Math.round(dd1.eth0.rx_bps), Math.round(8000000*8/5), 'netdevDelta 1MB/5s bps');
+let dback = api.netdevDelta(api.netdevParse('  eth0: 9999999999 1 0 0 0 0 0 0 1'), api.netdevParse('  eth0: 100 1 0 0 0 0 0 0 1'), 5000);
+eq(dback.eth0, null, 'netdevDelta 回绕 → null');
+eq(api.speedTier(null), 0, 'speedTier null=0');
+eq(api.speedTier(1e5), 0, 'speedTier 100k=0');
+eq(api.speedTier(10e6), 1, 'speedTier 10M=1');
+eq(api.speedTier(200e6), 2, 'speedTier 200M=2');
+let wp = api.wiresPathH(100, 60, 200, 60);
+eq(wp.length, 25, 'wiresPathH 25 点');
+eq(wp[0][1], 60, 'wiresPathH 起点同高');
+let wr = api.wiresResample(wp, 16);
+eq(wr.len > 90, true, 'wiresResample 长度合理');
+eq(wr.pts.every(p => p.length === 3), true, 'wiresResample 点含角度');
+let sp = [];
+sp = api.seriesPush(sp, [1000, 5], 60000, 90);
+sp = api.seriesPush(sp, [2000, 7], 60000, 90);
+sp = api.seriesPush(sp, [1500, 6], 60000, 90);  // 乱序拒绝
+eq(sp.length, 2, 'seriesPush 乱序不入');
+eq(sp[1][1], 7, 'seriesPush 值正确');
+sp = api.seriesPush(sp, [99000, 9], 60000, 90);
+eq(sp.length, 1, 'seriesPush 窗口裁剪');
+eq(api.niceCeil(3700000), 4000000, 'niceCeil 3.7M→4M');
+eq(api.niceCeil(2.4e6), 2.5e6, 'niceCeil 2.4M→2.5M');
+eq(api.niceCeil(-1), 1, 'niceCeil 负→1');
+eq(api.seriesStatsMax([[1,5],[2,null],[3,9]]), 9, 'seriesStatsMax 忽略 null');
+eq(api.fmtBps(null), '—', 'fmtBps null');
+eq(api.fmtBps(1.5e6), '1.5 Mbit/s', 'fmtBps M');
+eq(api.fmtBps(2.3e9), '2.3 Gbit/s', 'fmtBps G');
+
 // ---------- Tab 结构 ----------
 const TABS = api.tabStructure();
 eq(TABS.length, 3, 'tabs: 3 个');
-eq(TABS.map(t=>t.id).join(','), 'smart,steer,irq', 'tabs: 顺序 smart/steer/irq');
+eq(TABS.map(t=>t.id).join(','), 'overview,smart,pro', 'tabs: 顺序 overview/smart/pro');
 const allCards = TABS.reduce((a,t)=>a.concat(t.cards),[]);
 eq(allCards.length, new Set(allCards).size, 'tabs: 卡片归属无重复');
-eq(allCards.slice().sort().join(','), 'audit,ifaces,p2p,presets,softirq', 'tabs: 五卡全归组');
-eq(TABS[0].cards.includes('audit') && TABS[0].cards.includes('p2p'), true, 'tabs: 智能优化含体检+P2P');
-eq(TABS[1].cards.includes('presets') && TABS[1].cards.includes('ifaces'), true, 'tabs: 分核加速含预设+接口');
-eq(TABS[2].cards.includes('softirq'), true, 'tabs: 软中断独立');
+eq(TABS[0].cards.join(','), 'wires,health,traffic', 'tabs: 总览三卡');
+eq(TABS[2].cards.join(','), 'presets,ifaces,softirq,irq', 'tabs: 专家四卡');
+eq(allCards.slice().sort().join(','), 'audit,health,ifaces,irq,p2p,presets,softirq,traffic,wires', 'tabs: 九卡全归组');
+eq(TABS[1].cards.includes('audit') && TABS[1].cards.includes('p2p'), true, 'tabs: 智能优化含体检+P2P');
+eq(TABS[2].cards.includes('presets') && TABS[2].cards.includes('ifaces'), true, 'tabs: 专家含预设+接口');
+eq(TABS[2].cards.includes('softirq') && TABS[2].cards.includes('irq'), true, 'tabs: 专家含软中断+IRQ');
 TABS.forEach(t => eq(typeof t.hint === 'string' && t.hint.length > 6, true, 'tabs: '+t.id+' hint 非空'));
 
 // ---------- 依赖矩阵四态 ----------

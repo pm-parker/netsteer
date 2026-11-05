@@ -79,7 +79,15 @@ ls /etc/init.d/irqbalance >/dev/null 2>&1 && /etc/init.d/irqbalance enabled 2>/d
 mods=$(grep -oE '^sch_[a-z_]*' /proc/modules 2>/dev/null | sed 's/sch_//' | tr '\n' ' ')
 
 echo "{"
+# 软中断集中度: NET_RX 各核计数 → 最大核占比 (%)
+NETRX=$(awk '/NET_RX[ \t]*:/{ if (NF>2) { for(i=2;i<=NF;i++) if($i+0>0) print $i+0; exit } cont=1; next } cont && NF>2 { for(i=1;i<=NF;i++) if($i+0>0) print $i+0; exit }' /proc/softirqs 2>/dev/null | head -16)
+RX_CONC=-1; RX_WARN=45
+if [ -n "$NETRX" ]; then
+	RX_CONC=$(echo "$NETRX" | awk '{s+=$1; if($1>m) m=$1} END{if(s>0) printf "%d", m*100/s; else print -1}')
+fi
+
 echo "  \"deps\": {\"sqm_scripts\":$DEP_SQM_SCRIPTS, \"sqm_luci\":$DEP_SQM_LUCI, \"kmod_cake\":$DEP_KMOD_CAKE, \"tc\":$DEP_TC, \"nft\":$DEP_NFT, \"feed_luci\":$FEED_LUCI, \"feed_packages\":$FEED_PKGS, \"feed_kmods\":$FEED_KMODS},"
+echo "  \"softirq_conc\":$RX_CONC, \"softirq_warn\":$RX_WARN,"
 echo "  \"sqm\": {\"enabled\":$SQM_ENABLED, \"section_type\":\"$SECTION_TYPE\", \"script\":\"$SQM_SCRIPT\", \"qdisc\":\"$SQM_QDISC\", \"download\":\"$SQM_DL\", \"upload\":\"$SQM_UL\", \"cake_running\":$CAKE_RUNNING, \"drop\":$CAKE_DROP, \"overlimit\":$CAKE_OVER},"
 echo "  \"offload\": {\"flow\":$FLOW_OFF, \"hw\":$FLOW_HW},"
 echo "  \"p2p\": {\"active\":$P2P_ACTIVE, \"ip\":\"$P2P_IP\"},"

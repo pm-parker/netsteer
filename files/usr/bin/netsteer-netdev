@@ -1,0 +1,14 @@
+#!/bin/sh
+# NetSteer netdev 采样 (总览吞吐曲线数据源; 读 /proc/net/dev 输出累计字节, 无 sleep)
+# 输出: {"ts":ms,"rows":[{"dev":"eth0","rx":N,"tx":N},...]}
+awk 'NR>2 {
+	dev=$1; sub(/:.*/, "", dev); sub(/^[ \t]+/, "", dev)
+	if (dev == "") next
+	split($0, a, ":")
+	n=split(a[2], v, /[ \t]+/)
+	rx=v[2]; tx=v[10]   # v[1] 为前导空串
+	printf "%s{\"dev\":\"%s\",\"rx\":%s,\"tx\":%s}", (c++?",":""), dev, rx, tx
+}' /proc/net/dev 2>/dev/null | {
+	ROW=$(cat)
+	echo "{\"ts\":$(date +%s),\"rows\":[$ROW]}"
+}

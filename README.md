@@ -22,7 +22,8 @@ NetSteer turns that into three buttons.
 |---|---|
 | **One-click presets** | `All-cores` (recommended), `Stock`, `RX/TX split` — applied instantly, persisted across reboots |
 | **Auto-benchmark** | Real-traffic sampling of each candidate preset, ~30 s, recommends the most even one — adopt it or keep your current setup. Your pre-test config is always restored automatically |
-| **Live dashboard** | Per-core RX/TX softirq distribution with tap-to-inspect bars, busiest-core share at a glance |
+| **Overview dashboard** | Network-path diagram with flow particles (speed follows live traffic), 3-card health strip (RX concentration / shaping / forwarding), live RX/TX throughput chart — see which segment is hurting at a glance |
+| **Live softirq view** | Per-core RX/TX softirq distribution with tap-to-inspect bars, busiest-core share at a glance |
 | **Per-core control** | Toggle RPS/XPS/IRQ per interface, per core — PPPoE virtual interfaces included |
 | **Guard daemon** | Background watcher that detects and *self-heals* any drift between config and live sysfs state, logging evidence to a persistent incident directory |
 | **Works on any device** | Core count, interfaces and IRQ numbers are detected at runtime — nothing is hardcoded for a specific board. First install auto-generates a sane default for *your* hardware |

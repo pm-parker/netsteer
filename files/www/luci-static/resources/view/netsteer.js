@@ -247,15 +247,106 @@ function deltaSoftirq(baseText, curText) {
 	};
 }
 
+/* ---- v2 引擎: 数据采样 / 路径粒子 / 时序曲线 (风格与机制移植自主题仪表盘) ---- */
+function netdevParse(txt) {
+	/* /proc/net/dev → {iface: {rx_bps, tx_bps}} 需两次采样求差, 本函数只解析累计值 */
+	var out = {};
+	(txt || '').split('\n').forEach(function(line) {
+		var m = line.match(/^\s*([\w.@-]+):\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)/);
+		if (m) out[m[1]] = { rx: +m[2], tx: +m[3] };
+	});
+	return out;
+}
+function netdevDelta(prev, cur, dtMs) {
+	/* 两次累计值 → bps (回绕/重启保护: 负值或超大跳变视为无效返回 null) */
+	var out = {};
+	Object.keys(cur).forEach(function(k) {
+		if (!prev || prev[k] === undefined) { out[k] = null; return; }
+		var dr = cur[k].rx - prev[k].rx, dt = cur[k].tx - prev[k].tx;
+		var s = dtMs / 1000;
+		if (dr < 0 || dt < 0 || s <= 0) { out[k] = null; return; }
+		if (dr / s > 25e9 || dt / s > 25e9) { out[k] = null; return; } /* >25Gbps = 回绕噪声 */
+		out[k] = { rx_bps: dr * 8 / s, tx_bps: dt * 8 / s };
+	});
+	return out;
+}
+function speedTier(bps) { /* 粒子速度三档 (与主题 wires.js 同档位): 0 慢 1 中 2 快 */
+	if (bps == null) return 0;
+	return bps > 100e6 ? 2 : bps > 5e6 ? 1 : 0;
+}
+function wiresPathH(x1, y1, x2, y2) {
+	/* 水平贝塞尔 (与主题 wires.curve 同形): 两节点同高时的 S 型连线 */
+	var mx = (x1 + x2) / 2, pts = [], STEPS = 24;
+	for (var i = 0; i <= STEPS; i++) {
+		var t = i / STEPS, u = 1 - t;
+		pts.push([u*u*u*x1 + 3*u*t*mx + t*t*t*x2, (u*u*u + 3*u*u*t)*y1 + (3*u*t*t + t*t*t)*y2]);
+	}
+	return pts;
+}
+function wiresResample(pts, step) {
+	/* 等距重采样 + 航向角 → 粒子 keyframes (与主题 wires.resample 同法) */
+	var cum = [0], i;
+	for (i = 1; i < pts.length; i++)
+		cum.push(cum[i-1] + Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]));
+	var len = cum[cum.length-1];
+	if (!(len > 0)) return { pts: [], len: 0 };
+	var n = Math.max(1, Math.round(len/step)), j = 1, prev = null, out = [];
+	for (i = 0; i <= n; i++) {
+		var s2 = len * i / n;
+		while (j < pts.length-1 && cum[j] < s2) j++;
+		var k = j;
+		while (k < pts.length-1 && cum[k] === cum[k-1]) k++;
+		var seg = cum[j] - cum[j-1], f = seg > 0 ? (s2 - cum[j-1]) / seg : 0;
+		var dx = pts[k][0]-pts[k-1][0], dy = pts[k][1]-pts[k-1][1];
+		var deg = Math.atan2(dy, dx) * 180 / Math.PI;
+		if (prev != null) { while (deg-prev > 180) deg -= 360; while (deg-prev < -180) deg += 360; }
+		prev = deg;
+		out.push([pts[j-1][0] + (pts[k][0]-pts[k-1][0])*f, pts[j-1][1] + (pts[k][1]-pts[k-1][1])*f, deg]);
+	}
+	return { pts: out, len: len };
+}
+function seriesPush(arr, point, windowMs, max) {
+	/* 滑动窗口追加 (与主题 series.push 同法): 时间升序 + 裁剪 */
+	var out = Array.isArray(arr) ? arr.slice() : [];
+	if (!Array.isArray(point) || !isFinite(point[0])) return out;
+	if (out.length && out[out.length-1][0] >= point[0]) return out;
+	out.push(point);
+	var cutoff = point[0] - (windowMs > 0 ? windowMs : Infinity);
+	while (out.length && (out[0][0] < cutoff || (max > 0 && out.length > max))) out.shift();
+	return out;
+}
+function niceCeil(v) {
+	/* 图表轴 nice 值 (与主题 series.niceCeil 同法) */
+	if (!isFinite(v) || v <= 0) return 1;
+	var e = Math.pow(10, Math.floor(Math.log10(v))), f = v / e;
+	var steps = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+	for (var i = 0; i < steps.length; i++)
+		if (f <= steps[i] * (1 + 1e-9)) return steps[i] * e;
+	return 10 * e;
+}
+function seriesStatsMax(sr) {
+	/* 时序数组 [[t,v],...] 的峰值 (null 忽略) */
+	var m = 0;
+	(sr || []).forEach(function(p) { if (p[1] != null && isFinite(p[1]) && p[1] > m) m = p[1]; });
+	return m;
+}
+function fmtBps(bps) {
+	/* cFos 风读数: 自动单位一位小数 */
+	if (bps == null || !isFinite(bps)) return '—';
+	var u = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'], i = 0, v = bps;
+	while (v >= 1000 && i < u.length-1) { v /= 1000; i++; }
+	return (v >= 100 ? Math.round(v) : v >= 10 ? Math.round(v*10)/10 : Math.round(v*100)/100) + ' ' + u[i];
+}
+
 function tabStructure() {
-	/* 横向 Tab 分组: 卡片归类唯一 (单测校验) */
+	/* 横向 Tab 分组: 卡片归类唯一 (单测校验)。总览=仪表盘 (小白), 专家调教=手工层 */
 	return [
+		{ id: 'overview', name: _('总览'), cards: ['wires', 'health', 'traffic'],
+			hint: _('实时网络路径、负载健康与吞吐曲线 — 出问题一眼看到在哪一段。') },
 		{ id: 'smart', name: _('智能优化'), cards: ['audit', 'p2p'],
 			hint: _('一键体检、场景模式与 P2P 直通——自动检测环境、推荐方案、规避冲突配置。') },
-		{ id: 'steer', name: _('分核加速'), cards: ['presets', 'ifaces'],
-			hint: _('把网络负载摊到全部核心：选一个方案预设，或逐接口逐核手工调配。') },
-		{ id: 'irq', name: _('软中断'), cards: ['softirq'],
-			hint: _('网络软中断 (NET_RX) 的 CPU 亲和调整，减少单核打满丢包。') }
+		{ id: 'pro', name: _('专家调教'), cards: ['presets', 'ifaces', 'softirq', 'irq'],
+			hint: _('分核方案、逐口 RPS/XPS、软中断分布与 IRQ 亲和 — 精确到每一颗核心。') }
 	];
 }
 
@@ -453,7 +544,232 @@ return view.extend({
 	},
 
 	/* ---- 软中断分布卡 (首页 Memory 卡同款: 大数字 + 堆叠条 + 图例) ---- */
-		/* ---- IRQ 亲和设置卡: 每 IRQ 一行, CPU 芯片点选掩码, 应用后行内反馈 ---- */
+		/* ================= 总览仪表盘 (cFos Speed 定位: 一眼看到网络健康) ================= */
+	loadVtCss: function() {
+		/* 复用主题仪表盘的设计 token (同 overview.js 的 adoptedStyleSheets 机制) */
+		if (this._vtCssP) return this._vtCssP;
+		this._vtCssP = fetch(L.resource('vantage/app.css'), { cache: 'no-cache' })
+			.then(function(r) { return r.ok ? r.text() : ''; })
+			.then(function(text) {
+				if (text && ('adoptedStyleSheets' in document) && typeof CSSStyleSheet === 'function') {
+					var sheet = new CSSStyleSheet();
+					sheet.replaceSync(text);
+					document.adoptedStyleSheets = document.adoptedStyleSheets.concat([sheet]);
+				}
+			}).catch(function() {});
+		return this._vtCssP;
+	},
+
+	reducedMotion: function() {
+		return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+	},
+
+	/* 路径图: 互联网 → WAN → 核心(CPU×N) → LAN → 内网, 粒子沿贝塞尔流动 */
+	renderWires: function() {
+		var svgNS = 'http://www.w3.org/2000/svg';
+		var svg = document.createElementNS(svgNS, 'svg');
+		svg.setAttribute('viewBox', '0 0 860 120');
+		svg.setAttribute('class', 'ns-wires-svg');
+		var mk = function(tag, attrs) {
+			var el = document.createElementNS(svgNS, tag);
+			for (var k in attrs) el.setAttribute(k, attrs[k]);
+			return el;
+		};
+		/* 节点: x/宽/标签/副标签 */
+		var nodes = [
+			{ id: 'net', x: 10,   w: 96, t: _('互联网'), s: 'WAN' },
+			{ id: 'cpu', x: 288,  w: 200, t: _('路由核心'), s: NCPU + ' cores' },
+			{ id: 'lan', x: 754,  w: 96, t: _('局域网'), s: 'LAN' }
+		];
+		nodes.forEach(function(n) {
+			var g = mk('g', {});
+			g.appendChild(mk('rect', { x: n.x, y: 30, width: n.w, height: 60, rx: 8,
+				'class': 'ns-node', 'data-node': n.id }));
+			var t1 = mk('text', { x: n.x + n.w/2, y: 56, 'text-anchor': 'middle', 'class': 'ns-node-t' });
+			t1.textContent = n.t;
+			var t2 = mk('text', { x: n.x + n.w/2, y: 74, 'text-anchor': 'middle', 'class': 'ns-node-s' });
+			t2.textContent = n.s;
+			g.appendChild(t1); g.appendChild(t2);
+			svg.appendChild(g);
+		});
+		/* 连线: 左中右两段 (粒子容器) */
+		[['net','cpu'], ['cpu','lan']].forEach(function(pair, i) {
+			var a = nodes[i], b = nodes[i+1];
+			var pts = wiresPathH(a.x + a.w, 60, b.x, 60);
+			var d = 'M' + pts.map(function(p) { return p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join('L');
+			svg.appendChild(mk('path', { d: d, 'class': 'ns-wire' }));
+			var rs = wiresResample(pts, 16);
+			var lane = mk('g', { 'class': 'ns-lane', 'data-lane': i ? 'lan' : 'wan' });
+			/* 粒子: 沿路径流动的点 (WAAPI; 动态加减速) */
+			rs.pts.forEach(function(p, k) {
+				var dot = mk('circle', { cx: 0, cy: 0, r: 2.2, 'class': 'ns-dot' });
+				lane.appendChild(dot);
+				var frames = rs.pts.slice(k).concat(rs.pts.slice(0, k + 1)).map(function(q) {
+					return { transform: 'translate(' + q[0].toFixed(1) + 'px,' + q[1].toFixed(1) + 'px)' };
+				});
+				try {
+					var anim = dot.animate(frames, { duration: 1600, iterations: Infinity, easing: 'linear' });
+					anim.pause();
+				} catch (e) {}
+			});
+			svg.appendChild(lane);
+		});
+		/* 速率读数 (挂在两段连线中点) */
+		[['wan', nodes[0].x + nodes[0].w + 42], ['lan', nodes[1].x + nodes[1].w + 42]].forEach(function(x) {
+			var t = mk('text', { x: x[1], y: 22, 'text-anchor': 'middle', 'class': 'ns-wire-rate', 'data-rate': x[0] });
+			t.textContent = '—';
+			svg.appendChild(t);
+		});
+		return E('div', { 'class': 'vt-tile ns-wires', 'id': 'ns-wires' }, [
+			E('div', { 'class': 'vt-tile-head' }, [
+				E('span', { 'class': 'vt-tile-title' }, _('网络路径')),
+				E('span', { 'class': 'vt-hint' }, _('粒子速度 = 实时流量 (三档)')),
+			]),
+			svg,
+			E('p', { 'class': 'vt-hint ns-wires-foot' }, '')
+		]);
+	},
+
+	setWireRate: function(lane, bps) {
+		var el = document.querySelector('#ns-wires [data-rate="' + lane + '"]');
+		if (!el) return;
+		el.textContent = fmtBps(bps);
+		el.classList.toggle('ns-busy', bps != null && bps > 5e6);
+		/* 粒子速度三档: >100M 600ms / >5M 1050ms / 其余 1600ms (与主题同档) */
+		var dur = bps == null ? 1600 : bps > 100e6 ? 600 : bps > 5e6 ? 1050 : 1600;
+		var laneEl = document.querySelector('#ns-wires .ns-lane[data-lane="' + lane + '"]');
+		if (laneEl) laneEl.querySelectorAll('.ns-dot').forEach(function(dot) {
+			(dot.getAnimations ? dot.getAnimations() : []).forEach(function(a) {
+				try { a.playbackRate = 1600 / dur; } catch (e) {}
+			});
+		});
+	},
+
+	/* 吞吐量时序卡: 上下行双曲线 (5s 采样, 90 点窗), SVG 面积图 */
+	renderTraffic: function() {
+		this._series = { rx: [], tx: [], last: null };
+		var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('viewBox', '0 0 640 130');
+		svg.setAttribute('preserveAspectRatio', 'none');
+		svg.setAttribute('class', 'ns-traffic-svg');
+		svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'path')).setAttribute('class', 'ns-area-rx');
+		svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'path')).setAttribute('class', 'ns-line-rx');
+		svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'path')).setAttribute('class', 'ns-area-tx');
+		svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'path')).setAttribute('class', 'ns-line-tx');
+		return E('div', { 'class': 'vt-tile ns-traffic', 'id': 'ns-traffic' }, [
+			E('div', { 'class': 'vt-tile-head' }, [
+				E('span', { 'class': 'vt-tile-title' }, _('吞吐量')),
+				E('span', { 'class': 'vt-hint' }, _('每 5 秒采样 · 近 7.5 分钟'))
+			]),
+			E('div', { 'class': 'ns-traffic-nums' }, [
+				E('div', {}, [ E('span', { 'class': 'vt-hint' }, '↓ ' + _('下行')), E('b', { 'class': 'vt-tn ns-num-rx' }, '—') ]),
+				E('div', {}, [ E('span', { 'class': 'vt-hint' }, '↑ ' + _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ])
+			]),
+			svg,
+			E('div', { 'class': 'vt-hint ns-traffic-foot' }, _('正在建立基线…'))
+		]);
+	},
+
+	pollTraffic: function() {
+		if (!document.getElementById('ns-traffic')) return;
+		var self = this;
+		return fs.exec('/usr/bin/netsteer-netdev', []).then(function(res) {
+			var d = null;
+			try { d = JSON.parse((res && res.stdout) || '{}'); } catch (e) {}
+			if (!d || !d.rows) return;
+			var cur = {}, i;
+			for (i = 0; i < d.rows.length; i++)
+				cur[d.rows[i].dev] = { rx: +d.rows[i].rx, tx: +d.rows[i].tx };
+			var now = d.ts || Date.now();
+			if (now < 1e12) now *= 1000; /* busybox date 只给秒 */
+			var st = self._series;
+			if (st.last && cur.eth0) {
+				var dt = now - st.last.t;
+				if (dt >= 2500 && dt <= 30000) {
+					var dd = netdevDelta(st.last.d, cur, dt);
+					var rx = dd.eth0 ? dd.eth0.rx_bps : null;
+					var tx = dd.eth0 ? dd.eth0.tx_bps : null;
+					st.rx = seriesPush(st.rx, [now, rx], 7.5 * 60 * 1000, 90);
+					st.tx = seriesPush(st.tx, [now, tx], 7.5 * 60 * 1000, 90);
+					self.drawTraffic();
+					self.setWireRate('lan', rx);
+					self.setWireRate('wan', dd.eth1 ? dd.eth1.rx_bps : null);
+				}
+			}
+			st.last = { t: now, d: cur };
+		}).catch(function() {});
+	},
+
+	drawTraffic: function() {
+		var svg = document.querySelector('#ns-traffic .ns-traffic-svg');
+		var st = this._series;
+		if (!svg || st.rx.length < 2) return;
+		var W = 640, H = 130;
+		var segs = function(sr, vmax) {
+			var out = [], curSeg = null, span = st.rx[st.rx.length-1][0] - st.rx[0][0] || 1;
+			sr.forEach(function(p) {
+				var x = (p[0] - st.rx[0][0]) / span * W;
+				var y = p[1] == null ? null : H - Math.min(1, p[1] / vmax) * (H - 8) - 2;
+				if (y == null) { curSeg = null; return; }
+				if (!curSeg) { curSeg = []; out.push(curSeg); }
+				curSeg.push([Math.round(x*10)/10, Math.round(y*10)/10]);
+			});
+			return out;
+		};
+		var peak = niceCeil(Math.max(1e5,
+			seriesStatsMax(st.rx), seriesStatsMax(st.tx)) * 1.05);
+		var line = function(s) {
+			return s.filter(function(x) { return x.length > 1; }).map(function(x) {
+				return 'M' + x.map(function(pt) { return pt[0] + ' ' + pt[1]; }).join('L');
+			}).join('');
+		};
+		var area = function(s) {
+			return s.filter(function(x) { return x.length > 1; }).map(function(x) {
+				return 'M' + x[0][0] + ' ' + H + 'L' + x.map(function(pt) { return pt[0] + ' ' + pt[1]; }).join('L') + 'L' + x[x.length-1][0] + ' ' + H + 'Z';
+			}).join('');
+		};
+		var sr = segs(st.rx, peak), stx = segs(st.tx, peak);
+		svg.querySelector('.ns-area-rx').setAttribute('d', area(sr));
+		svg.querySelector('.ns-line-rx').setAttribute('d', line(sr));
+		svg.querySelector('.ns-area-tx').setAttribute('d', area(stx));
+		svg.querySelector('.ns-line-tx').setAttribute('d', line(stx));
+		var lastRx = st.rx[st.rx.length-1][1], lastTx = st.tx[st.tx.length-1][1];
+		var nx = document.querySelector('#ns-traffic .ns-num-rx'), ntx = document.querySelector('#ns-traffic .ns-num-tx');
+		if (nx) nx.textContent = fmtBps(lastRx);
+		if (ntx) ntx.textContent = fmtBps(lastTx);
+		var foot = document.querySelector('#ns-traffic .ns-traffic-foot');
+		if (foot) foot.textContent = _('峰值 %s · 量程 %s').format(
+			fmtBps(Math.max.apply(null, st.rx.map(function(p) { return p[1] || 0; }).concat([0]))),
+			fmtBps(peak));
+	},
+
+	/* health 卡: 三格 (软中断集中度 / 整形 / 转发链路) */
+	renderHealth: function(a) {
+		var d = (a && a.deps) || {}, sq = (a && a.sqm) || {}, o = (a && a.offload) || {}, pp = (a && a.p2p) || {};
+		var card = function(title, val, cls, hint) {
+			return E('div', { 'class': 'vt-dcard ns-hc ' + (cls || '') }, [
+				E('span', { 'class': 'vt-dcard-label' }, title),
+				E('b', { 'class': 'vt-dcard-value vt-tn' }, val),
+				E('span', { 'class': 'vt-dcard-sub' }, hint)
+			]);
+		};
+		var softirqTxt = (a && a.softirq_conc != null)
+			? a.softirq_conc + '%' : '—';
+		var sqmVal = !d.sqm_scripts ? _('未安装') : (sq.cake_running ? _('cake 整形中') : (sq.enabled ? _('已启用') : _('关闭')));
+		var fwd = [];
+		if (o.flow) fwd.push(_('分载开'));
+		if (pp.active) fwd.push(_('P2P 直通'));
+		var mode = 'steering';
+		return E('div', { 'class': 'vt-health ns-health' }, [
+			card(_('收包集中度'), softirqTxt,
+				a && a.softirq_conc != null && a.softirq_conc > (a.softirq_warn || 45) ? 'ns-bad' : 'ns-good',
+				a && a.softirq_conc != null ? (a.softirq_conc > (a.softirq_warn || 45) ? _('单核偏热 — 建议调 IRQ') : _('分布均衡')) : _('采样中')),
+			card(_('智能队列'), sqmVal, sq.cake_running ? 'ns-good' : '', d.sqm_scripts ? _('SQM 引擎') : _('可补装解锁')),
+			card(_('转发链路'), fwd.length ? fwd.join(' · ') : _('标准转发'), '', _('分载/直通/分核'))
+		]);
+	},
+
+
 	renderIrqCard: function(irqJson) {
 		var self = this;
 		var list = parseIrqList(irqJson);
@@ -1363,6 +1679,34 @@ renderSoftirqCard: function(text) {
 			'.netsteer-tune-table th,.netsteer-tune-table td{padding:.35em .6em;border-bottom:1px solid var(--line-2,#e3e6ea);font-size:var(--fs-sm,12px);text-align:left}',
 			'.netsteer-tune-table th{color:var(--text-3,#5f666f);font-weight:600}',
 
+			/* v2 总览: 复用主题 vt token; 主题未加载时有兜底色 */
+			'.ns-wires{padding:14px 18px 10px}',
+			'.ns-wires-svg{width:100%;height:auto;display:block}',
+			'.ns-node{fill:var(--vt-surface,var(--s1,#f8f9fa));stroke:var(--vt-line,var(--line,#d6dade));stroke-width:1.5;transition:stroke .3s}',
+			'.ns-node-t{font-size:14px;font-weight:600;fill:var(--vt-text,var(--text,#14171a))}',
+			'.ns-node-s{font-size:10.5px;fill:var(--vt-text-3,var(--text-3,#5f666f))}',
+			'.ns-wire{fill:none;stroke:var(--vt-line,var(--line,#d6dade));stroke-width:2;stroke-dasharray:1 0}',
+			'.ns-dot{fill:var(--vt-accent,var(--accent,#3563e9))}',
+			'.ns-wire-rate{font-size:11px;font-weight:600;fill:var(--vt-text-2,var(--text-2,#4a515a));font-family:var(--vt-mono,var(--mono,ui-monospace,monospace));font-variant-numeric:tabular-nums}',
+			'.ns-wire-rate.ns-busy{fill:var(--vt-accent,var(--accent,#3563e9))}',
+			'.ns-wires-foot{margin:4px 0 0}',
+			'.ns-health{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin:10px 0}',
+			'.ns-hc .vt-dcard-value{font-size:var(--vt-fs-xl,20px);font-weight:680;letter-spacing:-.015em}',
+			'.ns-hc.ns-good .vt-dcard-value{color:var(--vt-ok,var(--ok,#0b7f6c))}',
+			'.ns-hc.ns-bad .vt-dcard-value{color:var(--vt-err,var(--err,#c42b2b))}',
+			'.ns-hc.ns-bad{animation:vt-in .3s ease}',
+			'.ns-traffic{padding:14px 18px}',
+			'.ns-traffic-nums{display:flex;gap:22px;margin:2px 0 8px}',
+			'.ns-traffic-nums b{font-size:var(--vt-fs-lg,16px);margin-left:6px;font-weight:650}',
+			'.ns-traffic-svg{width:100%;height:120px;display:block}',
+			'.ns-area-rx{fill:var(--vt-chart-1,var(--accent,#3563e9));opacity:.14}',
+			'.ns-line-rx{fill:none;stroke:var(--vt-chart-1,var(--accent,#3563e9));stroke-width:1.6}',
+			'.ns-area-tx{fill:var(--vt-chart-2,#2a78d6);opacity:.12}',
+			'.ns-line-tx{fill:none;stroke:var(--vt-chart-2,#2a78d6);stroke-width:1.6;stroke-dasharray:3 2}',
+			'.ns-traffic-foot{margin:6px 0 0}',
+			'.vt-tile-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}',
+			'.vt-tile-title{font-size:var(--vt-fs-md,14px);font-weight:640}',
+
 			/* 横向 Tab */
 			'.netsteer-tabs{display:flex;gap:4px;border-bottom:2px solid var(--line,#d6dade);margin:10px 0 4px;flex-wrap:wrap}',
 			'.netsteer-tab{appearance:none;border:none;background:transparent;padding:8px 14px;font-size:var(--fs-md,14px);font-weight:600;color:var(--text-3,#5f666f);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px}',
@@ -1385,7 +1729,7 @@ renderSoftirqCard: function(text) {
 		].join(''));
 
 		/* Tab 面板内容 */
-		var panelSteer = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-steer' }, [
+		var panelSteer = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-pro' }, [
 			E('p', { 'class': 'netsteer-lede' }, [
 				E('span', {}, _('把网络负载摊到全部 %d 个核心，多设备高速下载时不掉速、不卡顿。'.format(NCPU))),
 				E('button', { 'class': 'netsteer-help', 'type': 'button', 'title': _('了解原理与用法'), 'click': ui.createHandlerFn(this, 'toggleHelp') }, '?')
@@ -1413,24 +1757,37 @@ renderSoftirqCard: function(text) {
 			})),
 			E('div', { 'class': 'netsteer-grid' }, IFACES.map(function(it, i) {
 				return self.renderIface(it, values.slice(1), i, state);
-			}))
-		]);
-		var panelIrq = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-irq' }, [
+			})),
+			E('div', { 'style': 'height:12px' }),
 			this.renderSoftirqCard(values[1 + IFACES.length * 2] || ''),
-			E('div', { 'id': 'netsteer-irq-card-slot' }, [ this.renderIrqCard('') ]),
-			E('p', { 'class': 'netsteer-foot' }, _(''))
+			E('div', { 'id': 'netsteer-irq-card-slot' }, [ this.renderIrqCard('') ])
 		]);
-		/* IRQ 列表异步填入 (不阻塞首屏) */
+				/* IRQ 列表异步填入 (不阻塞首屏) */
 		var self2 = this;
 		fs.exec('/usr/bin/netsteer-irq', ['get']).then(function(r) {
 			var slot = document.getElementById('netsteer-irq-card-slot');
 			if (slot) slot.replaceChildren(self2.renderIrqCard((r && r.stdout) || ''));
 		});
+/* 主题 token + 总览面板 (wires/health/traffic) */
+		this.loadVtCss();
+		var panelOverview = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-overview' }, [
+			this.renderWires(),
+			E('div', { 'id': 'ns-health-slot' }, [ this.renderHealth(null) ]),
+			this.renderTraffic()
+		]);
+		/* 体检数据异步喂 health (audit 3s 采样不阻塞首屏) */
+		var selfOv = this;
+		fs.exec('/usr/bin/netsteer-audit', []).then(function(r) {
+			var a = null;
+			try { a = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+						var slot = document.getElementById('ns-health-slot');
+			if (slot) slot.replaceChildren(selfOv.renderHealth(a));
+		});
 		var panelSmart = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-smart' }, [
 			this.renderP2PCard(values[3 + IFACES.length * 2]),
 			this.renderAuditCard()
 		]);
-		var PANELS = { smart: panelSmart, steer: panelSteer, irq: panelIrq };
+		var PANELS = { overview: panelOverview, smart: panelSmart, pro: panelSteer };
 
 		/* Tab 菜单 (hash 记忆当前页) */
 		var TABS = tabStructure();
@@ -1451,16 +1808,24 @@ renderSoftirqCard: function(text) {
 		}));
 		Object.keys(PANELS).forEach(function(id) { PANELS[id].style.display = id === active ? '' : 'none'; });
 
+		
 		var root = E('div', { 'class': 'netsteer-root' }, [
 			css,
 			E('h2', {}, _('网络加速 netsteer')),
 			menu,
 			E('p', { 'class': 'netsteer-note', 'id': 'netsteer-tab-hint' },
 				TABS.filter(function(t) { return t.id === active; })[0].hint),
+			panelOverview,
 			panelSmart,
-			panelSteer,
-			panelIrq
+			panelSteer
 		]);
+		/* 总览 5s 轮询 (可见时) + visibility 节流 */
+		var pollFn = function() {
+			if (document.getElementById('netsteer-panel-overview') && document.getElementById('netsteer-panel-overview').style.display !== 'none' && !document.hidden)
+				self.pollTraffic();
+		};
+		window.setInterval(pollFn, 5000);
+		window.setTimeout(pollFn, 300);
 		menu.addEventListener('click', function(ev) {
 			var b = ev.target.closest ? ev.target.closest('.netsteer-tab') : null;
 			if (!b) return;

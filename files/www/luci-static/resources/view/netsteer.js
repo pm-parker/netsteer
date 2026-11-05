@@ -211,6 +211,18 @@ function p2pStatusMeta(st) {
 }
 
 /* ---- 网络体检: 依赖矩阵 + 冲突检测 + 两档方案构建 (纯函数层) ---- */
+function tabStructure() {
+	/* 横向 Tab 分组: 卡片归类唯一 (单测校验) */
+	return [
+		{ id: 'smart', name: _('智能优化'), cards: ['audit', 'p2p'],
+			hint: _('一键体检、场景模式与 P2P 直通——自动检测环境、推荐方案、规避冲突配置。') },
+		{ id: 'steer', name: _('分核加速'), cards: ['presets', 'ifaces'],
+			hint: _('把网络负载摊到全部核心：选一个方案预设，或逐接口逐核手工调配。') },
+		{ id: 'irq', name: _('软中断'), cards: ['softirq'],
+			hint: _('网络软中断 (NET_RX) 的 CPU 亲和调整，减少单核打满丢包。') }
+	];
+}
+
 function modeDefs() {
 	/* requires = 依赖键 (对照 netsteer-audit 的 deps 字段); 空 = 零依赖可用 */
 	return [
@@ -1157,6 +1169,13 @@ return view.extend({
 			'.netsteer-tune-table th,.netsteer-tune-table td{padding:.35em .6em;border-bottom:1px solid var(--line-2,#e3e6ea);font-size:var(--fs-sm,12px);text-align:left}',
 			'.netsteer-tune-table th{color:var(--text-3,#5f666f);font-weight:600}',
 
+			/* 横向 Tab */
+			'.netsteer-tabs{display:flex;gap:4px;border-bottom:2px solid var(--line,#d6dade);margin:10px 0 4px;flex-wrap:wrap}',
+			'.netsteer-tab{appearance:none;border:none;background:transparent;padding:8px 14px;font-size:var(--fs-md,14px);font-weight:600;color:var(--text-3,#5f666f);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px}',
+			'.netsteer-tab:hover{color:var(--text,#14171a)}',
+			'.netsteer-tab.on{color:var(--primary,#2274a5);border-bottom-color:var(--primary,#2274a5)}',
+			'.netsteer-tabpanel{padding-top:6px}',
+
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
 			'@media (max-width: 640px){',
 			'.netsteer-root{padding-bottom:96px}',
@@ -1171,9 +1190,8 @@ return view.extend({
 			'}'
 		].join(''));
 
-		var root = E('div', { 'class': 'netsteer-root' }, [
-			css,
-			E('h2', {}, _('网络分核加速')),
+		/* Tab 面板内容 */
+		var panelSteer = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-steer' }, [
 			E('p', { 'class': 'netsteer-lede' }, [
 				E('span', {}, _('把网络负载摊到全部 %d 个核心，多设备高速下载时不掉速、不卡顿。'.format(NCPU))),
 				E('button', { 'class': 'netsteer-help', 'type': 'button', 'title': _('了解原理与用法'), 'click': ui.createHandlerFn(this, 'toggleHelp') }, '?')
@@ -1201,11 +1219,54 @@ return view.extend({
 			})),
 			E('div', { 'class': 'netsteer-grid' }, IFACES.map(function(it, i) {
 				return self.renderIface(it, values.slice(1), i, state);
-			})),
-			this.renderSoftirqCard(values[1 + IFACES.length * 2] || ''),
+			}))
+		]);
+		var panelIrq = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-irq' }, [
+			this.renderSoftirqCard(values[1 + IFACES.length * 2] || '')
+		]);
+		var panelSmart = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-smart' }, [
 			this.renderP2PCard(values[3 + IFACES.length * 2]),
 			this.renderAuditCard()
 		]);
+		var PANELS = { smart: panelSmart, steer: panelSteer, irq: panelIrq };
+
+		/* Tab 菜单 (hash 记忆当前页) */
+		var TABS = tabStructure();
+		var initial = (location.hash || '').replace('#tab-', '');
+		var active = TABS.some(function(t) { return t.id === initial; }) ? initial : TABS[0].id;
+		var menu = E('div', { 'class': 'netsteer-tabs', 'role': 'tablist' }, TABS.map(function(t) {
+			return E('button', {
+				'class': 'netsteer-tab' + (t.id === active ? ' on' : ''),
+				'type': 'button',
+				'role': 'tab',
+				'data-tab': t.id,
+				'click': function(ev) {
+					TABS.forEach(function(x) { PANELS[x.id].style.display = x.id === t.id ? '' : 'none'; });
+					document.querySelectorAll('.netsteer-tab').forEach(function(el) { el.classList.toggle('on', el.getAttribute('data-tab') === t.id); });
+					history.replaceState(null, '', '#tab-' + t.id);
+				}
+			}, t.name);
+		}));
+		Object.keys(PANELS).forEach(function(id) { PANELS[id].style.display = id === active ? '' : 'none'; });
+
+		var root = E('div', { 'class': 'netsteer-root' }, [
+			css,
+			E('h2', {}, _('网络加速 netsteer')),
+			menu,
+			E('p', { 'class': 'netsteer-note', 'id': 'netsteer-tab-hint' },
+				TABS.filter(function(t) { return t.id === active; })[0].hint),
+			panelSmart,
+			panelSteer,
+			panelIrq
+		]);
+		menu.addEventListener('click', function(ev) {
+			var b = ev.target.closest ? ev.target.closest('.netsteer-tab') : null;
+			if (!b) return;
+			var tid = b.getAttribute('data-tab');
+			var t = TABS.filter(function(x) { return x.id === tid; })[0];
+			var hint = document.getElementById('netsteer-tab-hint');
+			if (hint && t) hint.textContent = t.hint;
+		});
 
 		/* 首次使用: 自动询问智能测速 */
 		if (!meta.autotuneDone)

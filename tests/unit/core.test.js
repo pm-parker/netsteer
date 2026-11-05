@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -32,7 +32,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -126,6 +126,18 @@ eq(api.p2pValidPort('abc'), false, 'p2p port reject NaN');
 eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启 · 192.168.11.175', 'p2p status on label');
 eq(api.p2pStatusMeta({active:0}).cls, ' is-custom', 'p2p status off cls');
 eq(api.p2pStatusMeta(null).label, '已关闭', 'p2p status null label');
+
+// ---------- Tab 结构 ----------
+const TABS = api.tabStructure();
+eq(TABS.length, 3, 'tabs: 3 个');
+eq(TABS.map(t=>t.id).join(','), 'smart,steer,irq', 'tabs: 顺序 smart/steer/irq');
+const allCards = TABS.reduce((a,t)=>a.concat(t.cards),[]);
+eq(allCards.length, new Set(allCards).size, 'tabs: 卡片归属无重复');
+eq(allCards.slice().sort().join(','), 'audit,ifaces,p2p,presets,softirq', 'tabs: 五卡全归组');
+eq(TABS[0].cards.includes('audit') && TABS[0].cards.includes('p2p'), true, 'tabs: 智能优化含体检+P2P');
+eq(TABS[1].cards.includes('presets') && TABS[1].cards.includes('ifaces'), true, 'tabs: 分核加速含预设+接口');
+eq(TABS[2].cards.includes('softirq'), true, 'tabs: 软中断独立');
+TABS.forEach(t => eq(typeof t.hint === 'string' && t.hint.length > 6, true, 'tabs: '+t.id+' hint 非空'));
 
 // ---------- 依赖矩阵四态 ----------
 const FULL = { deps: {sqm_scripts:1, sqm_luci:1, kmod_cake:1, tc:1, nft:1, feed_luci:1, feed_packages:1, feed_kmods:1},

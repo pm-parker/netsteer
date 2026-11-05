@@ -92,7 +92,7 @@ function getPresets() {
 		all: {
 			label: _('全核分摊'),
 			short: _('所有核一起干活，负载摊得最平。'),
-			desc: _('软中断分摊到全部 %d 核，硬中断错开应门。通用推荐：负载最均匀。'.format(NCPU)),
+			desc: _('软中断分摊到全部 %d 核，硬中断错开响应。通用推荐：负载最均匀。'.format(NCPU)),
 			rec: true,
 			map: map,
 			irq: irqMap
@@ -839,7 +839,7 @@ return view.extend({
 					'click': ui.createHandlerFn(this, 'reloadIrqCard')
 				}, _('刷新'))
 			]),
-			E('p', { 'class': 'netsteer-note' }, _('网卡中断固定由哪些核处理。单队列网卡内核只在掩码中选一个核应门 — 把 eth0/eth1 的中断错开到不同核，配合 RPS 分摊可避免两块网卡挤同一个核。点选 CPU 芯片组合掩码后应用；改变即时生效并写入持久配置。'))
+			E('p', { 'class': 'netsteer-note' }, _('网卡中断固定由哪些核处理。单队列网卡内核只会让掩码里的那颗核响应中断 — 把 eth0/eth1 的中断错开到不同核，配合 RPS 分摊可避免两块网卡挤同一个核。点选 CPU 芯片组合掩码后应用；改变即时生效并写入持久配置。'))
 		];
 		if (!list.length) {
 			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'color:#d35400' },
@@ -1057,7 +1057,7 @@ renderSoftirqCard: function(text) {
 			var irqOn = irqNow ? maskToCpus(irqNow) : cpuRange().map(function() { return false; });
 			irqRow = E('div', { 'class': 'netsteer-row' }, [
 				E('span', { 'class': 'netsteer-rowlabel' }, [
-					_('中断应门 (IRQ)'),
+					_('中断响应核 (IRQ)'),
 					E('em', { 'class': 'netsteer-mask netsteer-irq-mask' }, irqNow ? maskLabel(irqNow) : _('—'))
 				]),
 				E('div', { 'class': 'netsteer-chips' }, cpuRange().map(function(i) {
@@ -1073,7 +1073,7 @@ renderSoftirqCard: function(text) {
 		} else {
 			irqRow = E('div', { 'class': 'netsteer-row' }, [
 				E('span', { 'class': 'netsteer-rowlabel' }, [
-					_('中断应门 (IRQ)'),
+					_('中断响应核 (IRQ)'),
 					E('em', { 'class': 'netsteer-mask' }, it.virtual ? _('虚拟接口 · 无硬件中断') : _('—'))
 				])
 			]);
@@ -1114,7 +1114,7 @@ renderSoftirqCard: function(text) {
 				}))
 			]),
 			irqRow,
-			E('div', { 'class': 'netsteer-foot' }, !it.virtual ? _('点选即生效 · 中断行： 单队列网卡，内核只在所选核上应门') : _('点选即生效'))
+			E('div', { 'class': 'netsteer-foot' }, !it.virtual ? _('点选即生效 · 中断行： 单队列网卡，内核只会由所选核响应') : _('点选即生效'))
 		]);
 	},
 
@@ -1170,7 +1170,7 @@ renderSoftirqCard: function(text) {
 			try { irq = JSON.parse(stateTxt || ''); } catch (e) { irq = null; }
 			var cur = matchPreset(m, irq);
 			var PRESETS = getPresets();
-			el.textContent = _('当前: %s'.format(cur ? PRESETS[cur].label : '自定义组合'));
+			el.textContent = _('当前：%s'.format(cur ? PRESETS[cur].label : '自定义组合'));
 			el.classList.toggle('is-custom', !cur);
 			Object.keys(PRESETS).forEach(function(name) {
 				var btn = document.querySelector('.netsteer-preset[data-preset="%s"]'.format(name));
@@ -1678,8 +1678,8 @@ renderSoftirqCard: function(text) {
 
 			/* 头部说明 (一句话 + 问号浮窗) */
 			'.netsteer-lede{max-width:64em;color:var(--text-2,#4a515a);font-size:var(--fs-md,14px);line-height:1.6;margin:.3em 0 .1em 0;display:flex;align-items:center;gap:.45em}',
-			'.netsteer-help{flex:none;width:1.35em;height:1.35em;border-radius:50%;border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-3,#5f666f);font-size:12px;font-weight:700;line-height:1.3;cursor:pointer;padding:0}',
-			'.netsteer-help:hover{border-color:var(--accent,#c8f031);color:var(--text,#14171a)}',
+			'.netsteer-root .netsteer-help{flex:none;width:19px;height:19px;aspect-ratio:1/1;border-radius:50%;border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-3,#5f666f);font-size:12px;font-weight:700;line-height:1.2;display:inline-flex;align-items:center;justify-content:center;text-align:center;cursor:pointer;padding:0}',
+			'.netsteer-root .netsteer-help:hover{border-color:var(--accent,#c8f031);color:var(--text,#14171a)}',
 			'.netsteer-help-pop{position:absolute;z-index:200;max-width:300px;margin:0;display:flex;flex-direction:column;gap:.1em}',
 			'.netsteer-help-pop strong{font-size:var(--fs-sm,12px);color:var(--text,#14171a);margin-top:.5em}',
 			'.netsteer-help-pop p{margin:.1em 0}',
@@ -1812,7 +1812,7 @@ renderSoftirqCard: function(text) {
 				E('button', { 'class': 'netsteer-help', 'type': 'button', 'title': _('了解原理与用法'), 'click': ui.createHandlerFn(this, 'toggleHelp') }, '?')
 			]),
 			E('div', { 'class': 'netsteer-card netsteer-statusbar' }, [
-				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前: %s'.format(curLabel))),
+				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前：%s'.format(curLabel))),
 				E('button', {
 					'class': 'netsteer-minibtn',
 					'type': 'button',

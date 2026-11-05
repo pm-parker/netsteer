@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml/badge.svg)](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 **Stop letting one CPU core do all the networking.** NetSteer is a LuCI app for OpenWrt 24.10+/25.12 that spreads network softirq and interrupt load across all CPU cores — with a live dashboard, one-click presets, and a built-in auto-benchmark that measures *your* router and recommends *your* best setting.
 
 ![benchmark](docs/images/benchmark-before-after.png)
@@ -84,6 +86,13 @@ Everything is reversible: the `Stock` preset restores kernel defaults.
 - Single-queue NICs have a physical floor on how even the distribution can get — the auto-benchmark shows your device's real numbers instead of promising a fixed gain.
 - The benchmark drives real download traffic (~30 s); run it during normal usage for a representative sample.
 - Tested on NanoPi R5C (aarch64_generic, 4-core, OpenWrt 25.12.6). Any ARM/x86_64 device with standard sysfs should work; if yours doesn't, please open an issue with the output of `cat /sys/devices/system/cpu/online` and `ls /sys/class/net/`.
+
+## Development & testing
+
+- `node tests/unit/core.test.js` — 34 assertions over the multi-core logic (runs in CI on every push)
+- `tests/e2e/e2e.py` — full browser pass against a live router (manual, see tests/README.md)
+- `scripts/build-apk.sh <version> <arch>` — reproduces the shipped .apk locally; CI builds 4 arches on every push and attaches them to GitHub Releases on tags
+- Hardware-in-the-loop checks (real-device install/uninstall round-trip, WAN A/B benchmark, reboot persistence) are documented in tests/README.md
 
 ## License
 

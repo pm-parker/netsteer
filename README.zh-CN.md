@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml/badge.svg)](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 **别让一个 CPU 核独自扛下所有网络流量。** NetSteer 是一个 OpenWrt 24.10+/25.12 的 LuCI 应用，把网络软中断与中断负载摊到全部 CPU 核——实时仪表盘、一键预设、内置自动压测（实测你的设备、推荐你的最优方案）。
 
 ![benchmark](docs/images/benchmark-before-after-zh.png)
@@ -84,6 +86,13 @@ apk del luci-app-netsteer
 - 单队列网卡的分摊均匀度有物理下限——自动压测给你看设备真实数字，不承诺固定收益。
 - 压测会跑约 30 秒真实下载流量；在正常使用时段跑，样本更有代表性。
 - 已在 NanoPi R5C（aarch64_generic、4 核、OpenWrt 25.12.6）实测。任何带标准 sysfs 的 ARM/x86_64 设备理论上可用；如果你的设备不行，请开 issue 附上 `cat /sys/devices/system/cpu/online` 与 `ls /sys/class/net/` 输出。
+
+## 开发与测试
+
+- `node tests/unit/core.test.js` —— 34 项多核逻辑断言（每次 push 在 CI 自动跑）
+- `tests/e2e/e2e.py` —— 面向真实路由器的整页浏览器测试（手动跑，见 tests/README.md）
+- `scripts/build-apk.sh <版本> <arch>` —— 本地复现正式 .apk；CI 每次 push 自动构建 4 种架构，打 tag 时自动附到 GitHub Release
+- 真机环节（设备上装卸重装、WAN 下载 A/B 对比、重启持久化）记录在 tests/README.md
 
 ## 许可
 

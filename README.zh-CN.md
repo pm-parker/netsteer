@@ -44,10 +44,10 @@ NetSteer 把它变成三个按钮。
 
 ### 方式 A — apk 安装包（OpenWrt 24.10+/25.12）
 
-从本仓库下载 `dist/luci-app-netsteer-1.8.0.apk`，拷到路由器后：
+从本仓库下载 `dist/luci-app-netsteer-1.9.0.apk`，拷到路由器后：
 
 ```sh
-apk add --allow-untrusted /tmp/luci-app-netsteer-1.8.0.apk
+apk add --allow-untrusted /tmp/luci-app-netsteer-1.9.0.apk
 ```
 
 安装包会启用开机自启、清 LuCI 菜单缓存并重载 rpcd。首次打开页面会引导初始设置。

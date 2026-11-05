@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'recommendModes'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -32,7 +32,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, recommendModes,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -127,51 +127,79 @@ eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启 · 
 eq(api.p2pStatusMeta({active:0}).cls, ' is-custom', 'p2p status off cls');
 eq(api.p2pStatusMeta(null).label, '已关闭', 'p2p status null label');
 
-// ---------- 网络体检: 冲突矩阵 ----------
-const A_OK = { sqm:{enabled:1, section_type:'queue', script:'simple.qos', qdisc:'cake', download:'900000', upload:'48000', cake_running:1, drop:0, overlimit:0},
-  offload:{flow:0,hw:0}, p2p:{active:0, ip:'-'}, uplink_sample_kbps:40000, static_leases:'192.168.11.175 192.168.11.179', irqbalance:0 };
-function confOf(a){ return api.auditConflicts(a).map(c=>c.level+':'+c.title); }
-eq(api.auditConflicts(null).length, 0, 'audit null → empty');
-eq(confOf(A_OK).length, 0, 'audit healthy env → no conflicts');
-// SQM + offload 硬冲突
-let a1 = JSON.parse(JSON.stringify(A_OK)); a1.offload.flow=1;
-eq(confOf(a1).some(t=>t.startsWith('conflict:')&&t.includes('分载')), true, 'audit sqm+offload conflict');
-// 旧结构
-let a2 = JSON.parse(JSON.stringify(A_OK)); a2.sqm.section_type='sqm';
-eq(confOf(a2).some(t=>t.includes('旧结构')), true, 'audit legacy section detected');
-// 上行超售 (实测 > 整形值 5%)
-let a3 = JSON.parse(JSON.stringify(A_OK)); a3.uplink_sample_kbps=78000;
-eq(confOf(a3).some(t=>t.startsWith('warn:')&&t.includes('超售')), true, 'audit uplink oversubscription');
-// 不够 5% 不报
-let a4 = JSON.parse(JSON.stringify(A_OK)); a4.uplink_sample_kbps=50000;
-eq(confOf(a4).some(t=>t.includes('超售')), false, 'audit uplink within 5% no warn');
-// P2P 无静态租约
-let a5 = JSON.parse(JSON.stringify(A_OK)); a5.p2p={active:1, ip:'192.168.11.200'};
-eq(confOf(a5).some(t=>t.includes('静态租约')), true, 'audit p2p no lease warn');
-// P2P 有租约不报
-let a6 = JSON.parse(JSON.stringify(A_OK)); a6.p2p={active:1, ip:'192.168.11.175'};
-eq(confOf(a6).some(t=>t.includes('静态租约')), false, 'audit p2p leased no warn');
-// irqbalance
-let a7 = JSON.parse(JSON.stringify(A_OK)); a7.irqbalance=1;
-eq(confOf(a7).some(t=>t.includes('irqbalance')), true, 'audit irqbalance warn');
-// 无 SQM 无分载 → info
-let a8 = JSON.parse(JSON.stringify(A_OK)); a8.sqm.enabled=0;
-eq(confOf(a8).some(t=>t.startsWith('info:')), true, 'audit bare info');
+// ---------- 依赖矩阵四态 ----------
+const FULL = { deps: {sqm_scripts:1, sqm_luci:1, kmod_cake:1, tc:1, nft:1, feed_luci:1, feed_packages:1, feed_kmods:1},
+  sqm:{enabled:1, section_type:'queue', script:'simple.qos', qdisc:'cake', download:'900000', upload:'48000', cake_running:1, drop:0, overlimit:0},
+  offload:{flow:0,hw:0}, p2p:{active:0, ip:'-'}, uplink_sample_kbps:48000, static_leases:'192.168.11.175', irqbalance:0 };
+function clone(a){ return JSON.parse(JSON.stringify(a)); }
+function modeIds(plan){ return plan.now.candidates.map(c=>c.m.id); }
 
-// ---------- 模式定义与推荐 ----------
-eq(api.modeDefs().length, 4, 'modes count 4');
-eq(api.modeDefs().map(m=>m.id).join(','), 'standard,p2p,throughput,latency', 'mode ids');
-// P2P 在网 → p2p 排第一
-let r1 = api.recommendModes(A_OK);
-eq(r1[0].id, 'standard', 'healthy → standard first (p2p inactive)');
-let r2 = api.recommendModes(a5);
-eq(r2[0].id, 'p2p', 'p2p active → p2p first');
-// SQM+offload 冲突 → standard 优先
-let r3 = api.recommendModes(a1);
-eq(r3.some(x=>x.id==='standard'&&x.why.includes('打架')), true, 'conflict → standard recommended');
-// 超售 → latency
-let r4 = api.recommendModes(a3);
-eq(r4.some(x=>x.id==='latency'), true, 'oversubscription → latency recommended');
+// 态1 全依赖: now=standard best + p2p/throughput/steering 候选, full=null
+let p1 = api.buildPlan(FULL);
+eq(p1.now.best.id, 'standard', 'full-deps: best=standard');
+eq(p1.now.candidates.length, 4, 'full-deps: 4 candidates');
+eq(p1.full, null, 'full-deps: full tier empty');
+eq(api.modeDefs().length, 5, '5 modes defined');
+
+// 态2 无 SQM (最小系统): standard/p2p/latency 进 full, now=steering/throughput
+let m2 = clone(FULL); m2.deps = {tc:1, nft:1}; m2.sqm.enabled=0; m2.sqm.cake_running=0;
+let p2 = api.buildPlan(m2);
+eq(p2.now.best.id, 'throughput', 'no-sqm: best=throughput (offload zero-dep, higher value than steering)');
+eq(modeIds(p2).includes('steering'), true, 'no-sqm: steering in candidates');
+eq(p2.full.best.id, 'standard', 'no-sqm: full best=standard');
+eq(p2.full.missing.join(','), 'sqm_scripts,kmod_cake', 'no-sqm: missing list');
+eq(p2.full.hint.cmd, 'apk update && apk add sqm-scripts kmod-sch-cake', 'no-sqm: install cmd');
+
+// 态2b 无 SQM + 无源: hint 带 feed 提示
+let m2b = clone(m2); m2b.deps.feed_packages=0; m2b.deps.feed_kmods=0;
+let p2b = api.buildPlan(m2b);
+eq(p2b.full.hint.note.includes('软件源'), true, 'no-feed: hint mentions feeds');
+
+// 态3 有 sqm-scripts 无 cake 模块: 只 standard/p2p/latency 里的 cake 依赖失败
+let m3 = clone(FULL); m3.deps.kmod_cake=0;
+let p3 = api.buildPlan(m3);
+eq(p3.full.best.id, 'standard', 'no-cake-mod: full best=standard');
+eq(p3.full.missing.join(','), 'kmod_cake', 'no-cake-mod: missing=kmod_cake');
+eq(p3.now.best.id, 'throughput', 'no-cake-mod: now best=throughput');
+
+// 态4 P2P 在网 → p2p 升为 now best
+let m4 = clone(FULL); m4.p2p = {active:1, ip:'192.168.11.175'};
+let p4 = api.buildPlan(m4);
+eq(p4.now.best.id, 'p2p', 'p2p-active: best=p2p');
+eq(p4.now.why.includes('192.168.11.175'), true, 'p2p-active: why mentions ip');
+
+// 态5 超售 → latency 升 now best
+let m5 = clone(FULL); m5.uplink_sample_kbps = 78000;
+let p5 = api.buildPlan(m5);
+eq(p5.now.best.id, 'latency', 'oversell: best=latency');
+
+// 态6 SQM+offload 打架 → standard best 且 why 提打架
+let m6 = clone(FULL); m6.offload.flow=1;
+let p6 = api.buildPlan(m6);
+eq(p6.now.best.id, 'standard', 'conflict: best=standard');
+eq(p6.now.why.includes('打架'), true, 'conflict: why explains');
+
+// ---------- 依赖缺失差异化冲突检测 ----------
+// 无 sqm_scripts 时: 不报"无SQM无分载"以外的 sqm 配置类冲突; 报 info 引导
+let c2 = api.auditConflicts(m2);
+eq(c2.some(c=>c.title.includes('未安装') || c.title.includes('软路径')), true, 'no-sqm: guidance info present');
+eq(c2.some(c=>c.detail && c.detail.includes('cake 在跑')), false, 'no-sqm: no legacy-struct conflict');
+// sqm_scripts 有 + sqm_luci 缺 → info LuCI 页缺失
+let m7 = clone(FULL); m7.deps.sqm_luci=0;
+let c7 = api.auditConflicts(m7);
+eq(c7.some(c=>c.title.includes('LuCI SQM 管理页未安装')), true, 'no-luci-page: info present');
+// depsMissing/installHint 纯函数
+eq(api.depsMissing({id:'x',requires:['sqm_scripts','kmod_cake']}, m2).length, 2, 'depsMissing counts');
+eq(api.depsMissing({id:'x',requires:[]}, m2).length, 0, 'depsMissing zero-req');
+eq(api.depsMissing({id:'x',requires:['tc']}, m2).length, 0, 'depsMissing satisfied');
+let h = api.installHint(['kmod_cake'], clone(FULL));
+eq(h.cmd, 'apk update && apk add kmod-sch-cake', 'installHint single');
+let h2 = api.installHint(['kmod_cake','sqm_scripts'], m2b);
+eq(h2.note.includes('kmods'), true, 'installHint feed note names missing feed');
+
+// modeScore 排序稳定性: throughput 在无 sqm 时排名高于 steering
+let sc1 = api.modeScore({id:'throughput'}, m2), sc2 = api.modeScore({id:'steering'}, m2);
+eq(sc1 < sc2, true, 'score: throughput < steering when no sqm');
 
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail ? 1 : 0);

@@ -210,26 +210,55 @@ function p2pStatusMeta(st) {
 	return { label: '已关闭', cls: ' is-custom' };
 }
 
-/* ---- 网络体检: 冲突矩阵 + 模式定义 (纯函数层) ---- */
+/* ---- 网络体检: 依赖矩阵 + 冲突检测 + 两档方案构建 (纯函数层) ---- */
+function modeDefs() {
+	/* requires = 依赖键 (对照 netsteer-audit 的 deps 字段); 空 = 零依赖可用 */
+	return [
+		{ id: 'steering', icon: '◈', name: _('纯分核加速'), requires: [],
+			desc: _('只做 RPS/XPS/IRQ 分核，不动 SQM/防火墙。零依赖，任何设备可用。CPU 多核分担转发，无整形。') },
+		{ id: 'standard', icon: '⚖', name: _('均衡'), requires: ['sqm_scripts', 'kmod_cake'],
+			desc: _('SQM cake 整形 + 全核分摊 + 分载关。家用默认最优：防缓冲膨胀，多设备公平，视频会议不卡。') },
+		{ id: 'p2p', icon: '⇅', name: _('P2P 加速'), requires: ['sqm_scripts', 'kmod_cake'],
+			desc: _('均衡基础上给指定设备开 UDP 全端口直通 (Fullcone 等效)。适合有网心云/P2P 下载机的环境，打洞成功率最大化。') },
+		{ id: 'throughput', icon: '»', name: _('极速'), requires: [],
+			desc: _('关 SQM、开流量分载 (Routing+NAT)。转发 CPU 大幅下降、千兆线速更容易稳住——代价是失去整形质量。') },
+		{ id: 'latency', icon: '⏱', name: _('低延迟'), requires: ['sqm_scripts', 'kmod_cake'],
+			desc: _('SQM 切 layer_cake 分层 + 整形值降 10%。游戏/会议优先级最高，代价是主动放弃部分带宽。') }
+	];
+}
+function depLabels() {
+	return {
+		sqm_scripts: { name: _('SQM 引擎 (sqm-scripts)'), pkg: 'sqm-scripts', feed: 'packages' },
+		kmod_cake: { name: _('CAKE 队列模块 (kmod-sch-cake)'), pkg: 'kmod-sch-cake', feed: 'kmods' },
+		sqm_luci: { name: _('LuCI SQM 管理页 (luci-app-sqm)'), pkg: 'luci-app-sqm', feed: 'luci' },
+		tc: { name: _('流量控制工具 (tc)'), pkg: 'tc', feed: 'packages' },
+		nft: { name: _('nftables'), pkg: 'nft', feed: 'base' }
+	};
+}
 function auditConflicts(a) {
-	/* a = netsteer-audit 输出 JSON → [{level:'conflict'|'warn'|'info', title, detail, fix}] */
+	/* a = netsteer-audit 输出 JSON → [{level, title, detail, fix}]; 依赖缺失先行差异化 */
 	var out = [];
 	if (!a) return out;
-	var s = a.sqm || {}, o = a.offload || {}, p = a.p2p || {};
+	var d = a.deps || {}, s = a.sqm || {}, o = a.offload || {}, p = a.p2p || {};
+	var hasSqm = !!d.sqm_scripts;
 	if (s.enabled && o.flow)
 		out.push({ level: 'conflict', title: _('SQM 与流量分载同时开启'),
 			detail: _('分载 (flow offloading) 会让后续包绕过 netfilter 入站钩子，SQM 的下行整形 (cake) 对这些包失效——等于花着 CPU 跑 SQM 却管不住大部分流量。'),
-			fix: _('二选一：要低延迟选“均衡/低延迟”模式（关分载）；要纯吞吐选“极速”模式（关 SQM）。') });
-	if (s.enabled && s.cake_running && String(s.section_type) === 'sqm')
+			fix: _('二选一：要低延迟选"均衡/低延迟"模式（关分载）；要纯吞吐选"极速"模式（关 SQM）。') });
+	if (hasSqm && s.enabled && s.cake_running && String(s.section_type) === 'sqm')
 		out.push({ level: 'conflict', title: _('SQM 配置是旧结构，LuCI 页面读不到'),
-			detail: _('cake 在跑但 /etc/config/sqm 的 section 类型是旧式 sqm，新版 SQM 页面只认 queue 类型，会显示“没有值”。'),
+			detail: _('cake 在跑但 /etc/config/sqm 的 section 类型是旧式 sqm，新版 SQM 页面只认 queue 类型，会显示"没有值"。'),
 			fix: _('任意模式应用时会自动迁移为 queue 结构，无需手工处理。') });
-	if (s.enabled && s.cake_running && !o.flow && +a.uplink_sample_kbps > 0 && +s.upload > 0) {
+	if (hasSqm && !d.sqm_luci && s.enabled)
+		out.push({ level: 'info', title: _('LuCI SQM 管理页未安装'),
+			detail: _('SQM 引擎在跑但管理页面 (luci-app-sqm) 缺失——你在 系统→防火墙 看得到整形效果，却没有可视化调整入口。'),
+			fix: _('apk add luci-app-sqm（需 luci 软件源）。') });
+	if (hasSqm && s.enabled && s.cake_running && !o.flow && +a.uplink_sample_kbps > 0 && +s.upload > 0) {
 		var ov = +a.uplink_sample_kbps - (+s.upload);
 		if (ov > +s.upload * 0.05)
 			out.push({ level: 'warn', title: _('上行超售：实测 %d kbps 已超过整形值 %d kbps').format(+a.uplink_sample_kbps, +s.upload),
-				detail: _('持续超出套餐速率会触发运营商城域网 QoS——丢包发生在电信机房，路由器侧任何队列都排不到那里。cake 只能保证“不堵在自家门口”。'),
-				fix: _('若重视传输质量，用“低延迟”模式把整形值降到实测的 90%；若追求跑量，保持现状即可。') });
+				detail: _('持续超出套餐速率会触发运营商城域网 QoS——丢包发生在运营商机房，路由器侧任何队列都排不到那里。cake 只能保证"不堵在自家门口"。'),
+				fix: _('若重视传输质量，用"低延迟"模式把整形值降到实测的 90%；若追求跑量，保持现状即可。') });
 	}
 	if (p.active && p.ip && String(a.static_leases || '').indexOf(p.ip) < 0)
 		out.push({ level: 'warn', title: _('P2P 直通设备 %s 没有静态租约').format(p.ip),
@@ -239,33 +268,74 @@ function auditConflicts(a) {
 		out.push({ level: 'warn', title: _('irqbalance 与手动分核绑定冲突'),
 			detail: _('irqbalance 会周期性重排中断，覆盖 netsteer 的 IRQ 亲和设置。'),
 			fix: _('禁用 irqbalance：/etc/init.d/irqbalance disable') });
-	if (!s.enabled && !o.flow)
-		out.push({ level: 'info', title: _('当前既无 SQM 也无分载，转发为逐包软路径'),
-			detail: _('小核 CPU 高负载时千兆 NAT 会吃力。按目标选模式即可。'),
-			fix: _('低延迟选“均衡”，纯吞吐选“极速”。') });
+	if (!hasSqm && !o.flow)
+		out.push({ level: 'info', title: _('当前无 SQM 引擎也无分载，转发为逐包软路径'),
+			detail: _('小核 CPU 高负载时千兆 NAT 会吃力。SQM 引擎未安装——本档推荐会给出补齐依赖后的方案。'),
+			fix: _('按下方推荐操作：零依赖可先用"纯分核/极速"，补齐 sqm-scripts + kmod-sch-cake 后解锁整形。') });
 	return out;
 }
-function modeDefs() {
-	return [
-		{ id: 'standard', icon: '⚖', name: _('均衡'), desc: _('SQM cake 整形 + 全核分摊 + 分载关。家用默认最优：防缓冲膨胀，多设备公平，视频会议不卡。') },
-		{ id: 'p2p', icon: '⇅', name: _('P2P 加速'), desc: _('均衡基础上给指定设备开 UDP 全端口直通 (Fullcone 等效)。适合有网心云/P2P 下载机的环境，打洞成功率最大化。') },
-		{ id: 'throughput', icon: '»', name: _('极速'), desc: _('关 SQM、开流量分载 (Routing+NAT)。转发 CPU 大幅下降、千兆线速更容易稳住——代价是失去整形质量。适合大流量搬运、不在乎延迟抖动。') },
-		{ id: 'latency', icon: '⏱', name: _('低延迟'), desc: _('SQM 切 layer_cake 分层 + 整形值降 10%。游戏/会议优先级最高，代价是主动放弃部分带宽。') }
-	];
-}
-function recommendModes(a) {
-	/* 按体检结果给模式排序: 返回 [{id, why}] */
-	var r = [];
+function modeScore(m, a) {
+	/* 场景打分: 返回排序键 (小前优) */
 	var s = a && a.sqm || {}, o = a && a.offload || {}, p = a && a.p2p || {};
-	if (p.active || (p.ip && p.ip !== '-'))
-		r.push({ id: 'p2p', why: _('检测到 P2P 直通设备在网 (%s)，保持直通收益最大').format(p.ip || '?') });
-	if (s.enabled && o.flow)
-		r.push({ id: 'standard', why: _('SQM 与分载正在互相打架——此模式关分载保整形，恢复正常工作') });
-	if (s.enabled && s.cake_running && +a.uplink_sample_kbps > 0 && +s.upload > 0 && (+a.uplink_sample_kbps - +s.upload) > +s.upload * 0.05)
-		r.push({ id: 'latency', why: _('上行持续超售 (实测 %d kbps)，降速 10% 换传输质量').format(+a.uplink_sample_kbps) });
-	if (!r.length || r.length < 2)
-		r.push({ id: 'standard', why: _('无特殊风险信号，均衡模式通用性最好') });
-	return r;
+	if (m.id === 'p2p' && (p.active || (p.ip && p.ip !== '-'))) return 0;
+	if (m.id === 'standard' && s.enabled && o.flow) return 0;
+	if (m.id === 'latency' && s.enabled && s.cake_running && +a.uplink_sample_kbps > 0 && +s.upload > 0 && (+a.uplink_sample_kbps - +s.upload) > +s.upload * 0.05) return 0;
+	if (m.id === 'standard') return 1;
+	if (m.id === 'throughput' && !s.enabled) return 1;
+	if (m.id === 'latency') return 2;
+	if (m.id === 'throughput') return 2;
+	return 3;
+}
+function modeWhy(m, a) {
+	var s = a && a.sqm || {}, o = a && a.offload || {}, p = a && a.p2p || {};
+	if (m.id === 'p2p' && (p.active || (p.ip && p.ip !== '-'))) return _('P2P 直通设备在网 (%s)，保持直通收益最大').format(p.ip || '?');
+	if (m.id === 'standard' && s.enabled && o.flow) return _('SQM 与分载正在互相打架——此模式关分载保整形，恢复正常工作');
+	if (m.id === 'latency') return _('上行持续超售 (实测 %d kbps)，降速 10% 换传输质量').format(+a.uplink_sample_kbps);
+	if (m.id === 'standard') return _('无特殊风险信号，均衡模式通用性最好');
+	if (m.id === 'throughput') return _('不装任何东西也能拿到 CPU 降载');
+	if (m.id === 'steering') return _('零依赖可用的最小升级');
+	return '';
+}
+function depsMissing(m, a) {
+	var d = (a && a.deps) || {};
+	return (m.requires || []).filter(function(k) { return !d[k]; });
+}
+function installHint(missing, a) {
+	/* 依据缺失项 + 源可用性生成安装指引 */
+	var L = depLabels(), d = (a && a.deps) || {};
+	var pkgs = [], feedNote = [];
+	missing.forEach(function(k) {
+		var it = L[k]; if (!it) return;
+		pkgs.push(it.pkg);
+		var feedKey = 'feed_' + it.feed;
+		if (it.feed !== 'base' && !d[feedKey]) feedNote.push(it.feed);
+	});
+	var cmd = pkgs.length ? 'apk update && apk add ' + pkgs.join(' ') : '';
+	var extra = '';
+	if (feedNote.length) {
+		var mirrors = 'https://mirrors.tencent.com/openwrt/releases/<版本>/packages/<架构>/';
+		extra = _('（缺 %s 软件源，先用镜像补源再装：%s）').format(feedNote.join('/'), mirrors);
+	}
+	return { cmd: cmd, note: extra, pkgs: pkgs };
+}
+function buildPlan(a) {
+	/* 核心: 现状可用档 + 补齐依赖档 */
+	var defs = modeDefs();
+	var now = [], full = [];
+	defs.forEach(function(m) {
+		var miss = depsMissing(m, a);
+		miss.length ? full.push(m) : now.push(m);
+	});
+	now.sort(function(x, y) { return modeScore(x, a) - modeScore(y, a); });
+	full.sort(function(x, y) { return modeScore(x, a) - modeScore(y, a); });
+	var best = now[0] || defs[0];
+	var candidates = now.slice(1);
+	var fullBest = full[0] || null;
+	var fullMiss = fullBest ? depsMissing(fullBest, a) : [];
+	return {
+		now: { best: best, why: modeWhy(best, a), candidates: candidates.map(function(m) { return { m: m, why: modeWhy(m, a) }; }) },
+		full: fullBest ? { best: fullBest, why: modeWhy(fullBest, a), missing: fullMiss, hint: installHint(fullMiss, a) } : null
+	};
 }
 
 /* cpu online ("0-3"/"0-7") → 核数 */
@@ -752,7 +822,7 @@ return view.extend({
 					'click': ui.createHandlerFn(self, 'runAudit')
 				}, _('开始体检'))
 			]),
-			E('p', { 'class': 'netsteer-note', 'id': 'netsteer-audit-hint' }, _('一键检测 SQM、流量分载、P2P 直通、上行带宽与冲突项，按结果推荐 4 套场景模式（检测约 4 秒，只读不改配置）。'))
+			E('p', { 'class': 'netsteer-note', 'id': 'netsteer-audit-hint' }, _('分三层检测依赖/配置/冲突并生成环境报告；方案分「现状最优 + 候选」与「补齐依赖后最优」两档（检测约 4 秒，只读不改配置）。'))
 		]);
 	},
 
@@ -775,59 +845,107 @@ return view.extend({
 		var self = this;
 		var card = document.getElementById('netsteer-audit');
 		if (!card) return;
-		var conf = auditConflicts(a);
-		var recs = recommendModes(a);
-		var defs = modeDefs();
-		var recIds = {};
-		recs.forEach(function(x, i) { recIds[x.id] = i; });
-		var sorted = defs.slice().sort(function(x, y) {
-			return (recIds[x.id] !== undefined ? recIds[x.id] : 99) - (recIds[y.id] !== undefined ? recIds[y.id] : 99);
-		});
 		var kids = [
 			E('div', { 'class': 'netsteer-card-head' }, [
-				E('span', { 'class': 'netsteer-card-title' }, _('网络体检 · 场景模式')),
+				E('span', { 'class': 'netsteer-card-title' }, _('网络体检 · 环境报告')),
 				E('button', { 'class': 'netsteer-minibtn', 'type': 'button',
 					'click': ui.createHandlerFn(self, 'runAudit') }, _('重新体检'))
 			])
 		];
-		/* 冲突/风险列表 */
+		if (!a) {
+			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'color:#c0392b' }, _('体检数据解析失败，请重试。')));
+			card.replaceWith(this.renderAuditCardShell(kids));
+			return;
+		}
+		var d = a.deps || {};
+		var L = depLabels();
+		/* -- ① 依赖层报告 -- */
+		var depRows = Object.keys(L).map(function(k) {
+			var ok = !!d[k];
+			var feedOk = L[k].feed === 'base' || d['feed_' + L[k].feed];
+			var hint = ok ? '' : (feedOk ? _('可在线安装') : _('需先配置 %s 软件源').format(L[k].feed));
+			return E('div', { 'style': 'padding:2px 0' }, [
+				E('span', { 'style': 'color:%s;font-weight:600'.format(ok ? '#1e8449' : '#c0392b') }, ok ? '✓ ' : '✗ '),
+				L[k].name,
+				hint ? E('span', { 'class': 'netsteer-note' }, ' — ' + hint) : E('span')
+			]);
+		});
+		kids.push(E('div', { 'style': 'border:1px solid rgba(0,0,0,.12);border-radius:8px;padding:8px 12px;margin:6px 0' },
+			[E('div', { 'style': 'font-weight:600;margin-bottom:4px' }, _('① 依赖层'))].concat(depRows)));
+		/* -- ② 配置/运行层报告 -- */
+		var hasSqm = !!d.sqm_scripts;
+		var sqmLine = hasSqm
+			? _('SQM: %s · %s/%s kbps · cake %s').format(
+					a.sqm && a.sqm.cake_running ? _('运行中') : (a.sqm && a.sqm.enabled ? _('已启用未运行') : _('未启用')),
+					a.sqm ? a.sqm.download : '-', a.sqm ? a.sqm.upload : '-',
+					a.sqm && a.sqm.cake_running ? _('活跃') : _('停止'))
+			: _('SQM 引擎未安装（可补装后解锁整形类模式）');
+		var upLine = +a.uplink_sample_kbps > 0
+			? _('上行实测: %d kbps').format(+a.uplink_sample_kbps)
+			: _('上行实测: 采样失败 (后台负载时常见)');
+		kids.push(E('div', { 'style': 'border:1px solid rgba(0,0,0,.12);border-radius:8px;padding:8px 12px;margin:6px 0' }, [
+			E('div', { 'style': 'font-weight:600;margin-bottom:4px' }, _('② 配置与运行')),
+			E('div', { 'style': 'padding:2px 0' }, sqmLine),
+			E('div', { 'style': 'padding:2px 0' }, _('流量分载: %s · P2P 直通: %s · 分核: %s').format(
+				a.offload && a.offload.flow ? _('开') : _('关'),
+				a.p2p && a.p2p.active ? (a.p2p.ip || '') : _('关'),
+				+a.irqbalance ? 'irqbalance' : 'netsteer')),
+			E('div', { 'style': 'padding:2px 0' }, upLine),
+			a.sqm && a.sqm.cake_running && a.sqm.drop >= 0
+				? E('div', { 'style': 'padding:2px 0' }, _('cake 累计: 丢包 %s · 超限 %s').format(a.sqm.drop, a.sqm.overlimit))
+				: E('span')
+		]));
+		/* -- ③ 冲突/风险 -- */
+		var conf = auditConflicts(a);
 		var CLS = { conflict: '#c0392b', warn: '#d35400', info: '#2471a3' };
-		if (conf.length) {
-			kids.push(E('div', { 'style': 'margin:.4em 0' }, conf.map(function(c) {
-				return E('div', { 'style': 'border-left:3px solid %s;padding:4px 8px;margin:6px 0;background:rgba(0,0,0,.03)'.format(CLS[c.level] || '#888') }, [
-					E('div', { 'style': 'font-weight:600;color:%s'.format(CLS[c.level] || '#888') }, c.title),
-					E('div', { 'class': 'netsteer-note' }, c.detail),
-					c.fix ? E('div', { 'class': 'netsteer-note', 'style': 'color:#2471a3' }, '→ ' + c.fix) : E('span')
-				]);
-			})));
-		} else {
-			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'color:#1e8449' }, _('✓ 未发现冲突或风险项')));
+		var confBlock = [E('div', { 'style': 'font-weight:600;margin-bottom:4px' }, _('③ 冲突与风险 (%d)').format(conf.length))];
+		if (!conf.length) confBlock.push(E('div', { 'style': 'color:#1e8449' }, _('✓ 未发现冲突或风险项')));
+		conf.forEach(function(c) {
+			confBlock.push(E('div', { 'style': 'border-left:3px solid %s;padding:4px 8px;margin:6px 0;background:rgba(0,0,0,.03)'.format(CLS[c.level] || '#888') }, [
+				E('div', { 'style': 'font-weight:600;color:%s'.format(CLS[c.level] || '#888') }, c.title),
+				E('div', { 'class': 'netsteer-note' }, c.detail),
+				c.fix ? E('div', { 'class': 'netsteer-note', 'style': 'color:#2471a3' }, '→ ' + c.fix) : E('span')
+			]));
+		});
+		kids.push(E('div', { 'style': 'border:1px solid rgba(0,0,0,.12);border-radius:8px;padding:8px 12px;margin:6px 0' }, confBlock));
+		/* -- ④ 方案: 现状最优 + 候选 -- */
+		var plan = buildPlan(a);
+		var planBlock = [E('div', { 'style': 'font-weight:600;margin-bottom:4px' }, _('④ 方案推荐'))];
+		planBlock.push(E('div', { 'style': 'font-weight:600;color:#1e8449;margin:6px 0 2px' }, _('现状最优：%s%s').format(plan.now.best.icon, plan.now.best.name)));
+		planBlock.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0' }, plan.now.best.desc));
+		if (plan.now.why) planBlock.push(E('p', { 'class': 'netsteer-note', 'style': 'color:#1e8449;margin:.2em 0' }, _('推荐理由: %s').format(plan.now.why)));
+		planBlock.push(E('button', { 'class': 'netsteer-minibtn', 'type': 'button',
+			'click': ui.createHandlerFn(self, 'applyModeConfirm', plan.now.best.id, a) }, _('应用「%s」').format(plan.now.best.name)));
+		if (plan.now.candidates.length) {
+			planBlock.push(E('div', { 'style': 'font-weight:600;margin:10px 0 2px' }, _('候选方案')));
+			plan.now.candidates.forEach(function(c) {
+				planBlock.push(E('div', { 'style': 'border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:6px 10px;margin:6px 0' }, [
+					E('div', { 'style': 'font-weight:600' }, c.m.icon + ' ' + c.m.name),
+					E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0' }, c.m.desc),
+					c.why ? E('p', { 'class': 'netsteer-note', 'style': 'color:#1e8449;margin:.2em 0' }, _('推荐理由: %s').format(c.why)) : E('span'),
+					E('button', { 'class': 'netsteer-minibtn', 'type': 'button',
+						'click': ui.createHandlerFn(self, 'applyModeConfirm', c.m.id, a) }, _('应用'))
+				]));
+			});
 		}
-		/* 环境事实摘要 */
-		if (a && a.sqm) {
-			kids.push(E('p', { 'class': 'netsteer-foot' },
-				_('SQM: %s · 分载: %s · P2P 直通: %s · 上行实测: %s kbps').format(
-					a.sqm.enabled ? (a.sqm.cake_running ? _('运行中(cake)') : _('已启用未运行')) : _('关'),
-					a.offload && a.offload.flow ? _('开') : _('关'),
-					a.p2p && a.p2p.active ? a.p2p.ip : _('关'),
-					a.uplink_sample_kbps > 0 ? String(a.uplink_sample_kbps) : '—')));
+		/* -- ⑤ 补齐依赖后的最优 -- */
+		if (plan.full) {
+			var f = plan.full;
+			var missNames = f.missing.map(function(k) { return (depLabels()[k] || {}).name || k; }).join('、');
+			var hintBlock = [
+				E('div', { 'style': 'font-weight:600;color:#2471a3;margin:10px 0 2px' }, _('补齐依赖后的最优：%s%s').format(f.best.icon, f.best.name)),
+				E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0' }, f.best.desc),
+				E('p', { 'class': 'netsteer-note', 'style': 'color:#d35400;margin:.2em 0' }, _('需补齐：%s').format(missNames))
+			];
+			if (f.hint.cmd) hintBlock.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0' },
+				_('SSH 执行：%s').format(f.hint.cmd)));
+			if (f.hint.note) hintBlock.push(E('p', { 'class': 'netsteer-note', 'style': 'color:#2471a3;margin:.2em 0' }, f.hint.note));
+			hintBlock.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0;color:#666' },
+				_('装好后重新体检，此方案会移入"现状最优"。')));
+			planBlock.push(E('div', { 'style': 'border:1px dashed #2471a3;border-radius:8px;padding:6px 10px;margin:8px 0' }, hintBlock));
 		}
-		/* 模式选择 */
-		kids.push(E('div', { 'style': 'display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin-top:.6em' },
-			sorted.map(function(m) {
-				var rec = recIds[m.id] !== undefined ? recs[recIds[m.id]] : null;
-				return E('div', { 'style': 'border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:8px 10px' .replace('  ', ' ') }, [
-					E('div', { 'style': 'font-weight:600' }, (rec ? '★ ' : '') + m.icon + ' ' + m.name),
-					E('p', { 'class': 'netsteer-note', 'style': 'margin:.3em 0' }, m.desc),
-					rec ? E('p', { 'class': 'netsteer-note', 'style': 'color:#1e8449;margin:.2em 0' }, _('推荐理由: %s').format(rec.why)) : E('span'),
-					E('button', {
-						'class': 'netsteer-minibtn', 'type': 'button',
-						'click': ui.createHandlerFn(self, 'applyModeConfirm', m.id, a)
-					}, _('应用此模式'))
-				]);
-			})));
-		var fresh = this.renderAuditCardShell(kids);
-		card.replaceWith(fresh);
+		kids.push(E('div', { 'style': 'border:1px solid rgba(0,0,0,.12);border-radius:8px;padding:8px 12px;margin:6px 0' }, planBlock));
+		card.replaceWith(this.renderAuditCardShell(kids));
 	},
 
 	renderAuditCardShell: function(kids) {
@@ -836,9 +954,14 @@ return view.extend({
 
 	applyModeConfirm: function(mode, audit, ev) {
 		var self = this;
-		var defs = {};
-		modeDefs().forEach(function(m) { defs[m.id] = m; });
-		var m = defs[mode];
+		var m = null;
+		modeDefs().forEach(function(x) { if (x.id === mode) m = x; });
+		var miss = depsMissing(m, audit);
+		if (miss.length) {
+			var names = miss.map(function(k) { return (depLabels()[k] || {}).name || k; }).join('、');
+			return ui.showModal(_('无法应用'), E('p', { 'class': 'netsteer-note' },
+				_('「%s」需要：%s。请先补齐依赖（见体检报告）。').format(m.name, names)));
+		}
 		var extra = '';
 		if (mode === 'p2p') {
 			var ip = (audit && audit.p2p && audit.p2p.ip && audit.p2p.ip !== '-') ? audit.p2p.ip : '192.168.11.175';

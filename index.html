@@ -66,6 +66,7 @@
   .theme-btn { width:38px; height:38px; border:1px solid var(--ghost-line); border-radius:10px; background:transparent;
                color:var(--sub); cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .theme-btn:hover { color:var(--blue); border-color:var(--blue); }
+  .nav-wrap { display:flex; align-items:center; justify-content:space-between; width:100%; position:relative; }
   .nav-burger { display:none; width:42px; height:42px; border:1px solid #D6DAE2; border-radius:11px;
                 background:#FFF; align-items:center; justify-content:center; cursor:pointer; }
   .nav-burger span { display:block; width:17px; height:2px; background:#111; border-radius:2px; position:relative; }
@@ -89,7 +90,6 @@
     .nav-menu { display:none; }
     .nav-burger { display:flex; order:3; }
     nav { height:64px; }
-    .nav-wrap { position:relative; display:flex; align-items:center; justify-content:space-between; width:100%; }
     .nav-l { gap:0; }
     .nav-r { gap:10px; }
     .nav-r > a span.hide-m { display:none; }
@@ -107,7 +107,8 @@
   h1 { margin-top:22px; text-align:center; font-size:clamp(44px,6.5vw,68px); line-height:1.02;
        font-weight:900; color:var(--ink); letter-spacing:-.015em; }
   h1 .accent { color:var(--blue); font-style:italic; }
-  h1 .suffix { font-size:24px; font-weight:400; color:var(--muted); margin-left:10px; }
+  h1 .suffix { display:block; margin:16px auto 0; font-size:clamp(17px,2vw,22px); font-weight:400;
+               color:var(--muted); letter-spacing:.06em; }
   .tagline { margin-top:26px; text-align:center; font-size:clamp(18px,2.2vw,24px); color:var(--sub); font-weight:400; }
 
   .cta-row { margin-top:38px; display:flex; justify-content:center; gap:16px; flex-wrap:wrap; }
@@ -139,7 +140,6 @@
   .table-wrap table { margin-top:0; min-width:560px; }
   @media (max-width:640px){
     h1 { font-size:clamp(34px,10vw,48px); }
-    h1 .suffix { display:block; margin-left:0; margin-top:8px; font-size:19px; }
     .crumb { margin-top:40px; font-size:14px; }
     .tagline { font-size:17px; }
     .cta-row { gap:12px; } .btn-primary,.btn-ghost { font-size:16px; padding:15px 24px; width:100%; justify-content:center; }

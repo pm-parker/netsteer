@@ -587,15 +587,33 @@ return view.extend({
 			{ id: 'cpu', x: 288,  w: 200, t: _('路由核心'), s: NCPU + ' cores' },
 			{ id: 'lan', x: 754,  w: 96, t: _('局域网'), s: 'LAN' }
 		];
+		/* 主题同款 router 图标 (vantage ICONS.router, 24x24 stroke 风格) */
+		var ROUTER_ICON = [
+			'M4.5 13h15a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z',
+			'M7 16h.01M10 16h.01',
+			'M8 13 6 6.5M16 13l2-6.5'
+		];
 		nodes.forEach(function(n) {
 			var g = mk('g', {});
 			g.appendChild(mk('rect', { x: n.x, y: narrow ? 26 : 28, width: n.w, height: narrow ? 56 : 62, rx: 8,
-				'class': 'ns-node', 'data-node': n.id }));
+				'class': 'ns-node' + (n.id === 'cpu' ? ' ns-node-hub' : ''), 'data-node': n.id }));
 			var t1 = mk('text', { x: n.x + n.w/2, y: narrow ? 51 : 55, 'text-anchor': 'middle', 'class': 'ns-node-t' });
 			t1.textContent = n.t;
 			var t2 = mk('text', { x: n.x + n.w/2, y: narrow ? 69 : 74, 'text-anchor': 'middle', 'class': 'ns-node-s' });
 			t2.textContent = n.s;
 			g.appendChild(t1); g.appendChild(t2);
+			/* 路由核心: 叠加路由器图标 (机身居中上方, 主题色描边) */
+			if (n.id === 'cpu') {
+				var ib = mk('g', { 'class': 'ns-node-ico',
+					transform: 'translate(' + (n.x + n.w/2 - 7) + ',' + (narrow ? 30 : 33) + ') scale(0.58)' });
+				ROUTER_ICON.forEach(function(d) {
+					ib.appendChild(mk('path', { d: d, 'class': 'ns-node-ico-p' }));
+				});
+				g.appendChild(ib);
+				/* 图标放在标题上方, 标题下移一行 */
+				t1.setAttribute('y', narrow ? 62 : 66);
+				t2.setAttribute('y', narrow ? 77 : 82);
+			}
 			svg.appendChild(g);
 		});
 		/* 连线: 左中右两段 (粒子容器) */
@@ -607,7 +625,9 @@ return view.extend({
 			svg.appendChild(mk('path', { d: d, 'class': 'ns-wire' }));
 			var rs = wiresResample(pts, 16);
 			var lane = mk('g', { 'class': 'ns-lane', 'data-lane': i ? 'lan' : 'wan' });
-			/* 粒子: 沿路径流动的点 (WAAPI; 动态加减速) */
+			/* 粒子: 沿路径流动 (速度模型与主题一致 — 恒定线速度: 32px / PERIOD[档] ms) */
+			var TRIP = rs.len / 32 * 1050;
+			lane.setAttribute('data-trip', String(Math.round(TRIP)));
 			rs.pts.forEach(function(p, k) {
 				var dot = mk('circle', { cx: 0, cy: 0, r: narrow ? 3.4 : 3, 'class': 'ns-dot' });
 				lane.appendChild(dot);
@@ -615,7 +635,7 @@ return view.extend({
 					return { transform: 'translate(' + q[0].toFixed(1) + 'px,' + q[1].toFixed(1) + 'px)' };
 				});
 				try {
-					var anim = dot.animate(frames, { duration: 1600, iterations: Infinity, easing: 'linear' });
+					var anim = dot.animate(frames, { duration: TRIP, iterations: Infinity, easing: 'linear' });
 					if (!self.reducedMotion()) anim.play();
 				} catch (e) {}
 			});
@@ -635,7 +655,7 @@ return view.extend({
 				E('span', { 'class': 'vt-hint' }, _('粒子速度 = 实时流量 (三档)')),
 			]),
 			svg,
-			E('p', { 'class': 'vt-hint ns-wires-foot' }, '')
+			E('p', { 'class': 'vt-hint ns-wires-foot' }, _('速率 = 各网口下载方向实时速率；粒子速度随流量三档加速'))
 		]);
 	},
 
@@ -644,14 +664,17 @@ return view.extend({
 		if (!el) return;
 		el.textContent = fmtBps(bps);
 		el.classList.toggle('ns-busy', bps != null && bps > 5e6);
-		/* 粒子速度三档: >100M 600ms / >5M 1050ms / 其余 1600ms (与主题同档) */
-		var dur = bps == null ? 1600 : bps > 100e6 ? 600 : bps > 5e6 ? 1050 : 1600;
+		/* 速度三档与主题同基准 (恒线速): 档周期 1600/1050/600ms, rate = 1050/周期 */
+		var period = bps == null ? 1600 : bps > 100e6 ? 600 : bps > 5e6 ? 1050 : 1600;
 		var laneEl = document.querySelector('#ns-wires .ns-lane[data-lane="' + lane + '"]');
 		if (laneEl) laneEl.querySelectorAll('.ns-dot').forEach(function(dot) {
-			(dot.getAnimations ? dot.getAnimations() : []).forEach(function(a) {
-				try { a.playbackRate = 1600 / dur; if (a.playState === 'paused' && !self.reducedMotion()) a.play(); } catch (e) {}
+				(dot.getAnimations ? dot.getAnimations() : []).forEach(function(a) {
+					try {
+						a.playbackRate = 1050 / period;
+						if (a.playState === 'paused' && !self.reducedMotion()) a.play();
+					} catch (e) {}
+				});
 			});
-		});
 	},
 
 	/* 吞吐量时序卡: 上下行双曲线 (5s 采样, 90 点窗), SVG 面积图 */
@@ -685,8 +708,8 @@ return view.extend({
 				E('span', { 'class': 'vt-hint' }, _('每 5 秒采样 · 近 7.5 分钟'))
 			]),
 			E('div', { 'class': 'ns-traffic-nums' }, [
-				E('div', {}, [ E('span', { 'class': 'vt-hint' }, '↓ ' + _('下行')), E('b', { 'class': 'vt-tn ns-num-rx' }, '—') ]),
-				E('div', {}, [ E('span', { 'class': 'vt-hint' }, '↑ ' + _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ])
+				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:var(--vt-chart-1,var(--accent,#3563e9))' }), E('span', { 'class': 'vt-hint' }, _('下行')), E('b', { 'class': 'vt-tn ns-num-rx' }, '—') ]),
+				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-chart-2,#2a78d6) 0 5px,transparent 5px 8px)' }), E('span', { 'class': 'vt-hint' }, _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ])
 			]),
 			svg,
 			E('div', { 'class': 'vt-hint ns-traffic-foot' }, _('基线建立中 — 约 10 秒后出现第一条曲线'))
@@ -770,7 +793,7 @@ return view.extend({
 			ycap.setAttribute('class', 'ns-axis-y');
 			ycap.setAttribute('data-role', 'peak');
 			grid.appendChild(ycap);
-			[['0', 4], ['-3.5m', 320], ['now', 632]].forEach(function(pair) {
+			[['-7.5m', 4], ['-3.5m', 320], ['now', 632]].forEach(function(pair) {
 				var tx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
 				tx.setAttribute('x', pair[1]); tx.setAttribute('y', 128);
 				tx.setAttribute('text-anchor', pair[1] > 600 ? 'end' : 'middle');
@@ -796,9 +819,8 @@ return view.extend({
 		if (nx) nx.textContent = fmtBps(lastRx);
 		if (ntx) ntx.textContent = fmtBps(lastTx);
 		var foot = document.querySelector('#ns-traffic .ns-traffic-foot');
-		if (foot) foot.textContent = _('峰值 %s · 量程 %s').format(
-			fmtBps(Math.max.apply(null, st.rx.map(function(p) { return p[1] || 0; }).concat([0]))),
-			fmtBps(peak));
+		var pk = function(a) { return Math.max.apply(null, a.map(function(p) { return p[1] || 0; }).concat([0])); };
+		if (foot) foot.textContent = _('峰值 ↓%s · ↑%s · 量程 %s').format(fmtBps(pk(st.rx)), fmtBps(pk(st.tx)), fmtBps(peak));
 	},
 
 	/* health 卡: 三格 (软中断集中度 / 整形 / 转发链路) */
@@ -1743,7 +1765,7 @@ renderSoftirqCard: function(text) {
 			'.ns-wires-svg.ns-narrow .ns-wire-rate{font-size:13px}',
 			/* 吞吐空态骨架 */
 			'.ns-skeleton{stroke:var(--vt-line,#d6dade);stroke-width:1;stroke-dasharray:4 5}',
-			'.ns-skeleton-block{fill:var(--vt-surface-2,#f6f7f9)}',
+			'.ns-skeleton-block{fill:none}',
 			'.ns-traffic-svg:not(.ns-empty) .ns-skeleton, .ns-traffic-svg:not(.ns-empty) .ns-skeleton-block{display:none}',
 			'.ns-traffic-svg.ns-empty .ns-area-rx,.ns-traffic-svg.ns-empty .ns-line-rx,.ns-traffic-svg.ns-empty .ns-area-tx,.ns-traffic-svg.ns-empty .ns-line-tx{display:none}',
 			/* 提示字对比度提升 + 移动底部安全区 */
@@ -1757,6 +1779,8 @@ renderSoftirqCard: function(text) {
 			'.ns-wires{padding:14px 18px 10px}',
 			'.ns-wires-svg{width:100%;height:auto;display:block}',
 			'.ns-node{fill:var(--vt-surface,var(--s1,#f8f9fa));stroke:var(--vt-line,var(--line,#d6dade));stroke-width:1.5;transition:stroke .3s}',
+			'.ns-node-hub{stroke:var(--vt-accent-line,var(--vt-accent,#c8f031));stroke-width:2}',
+			'.ns-node-ico-p{fill:none;stroke:var(--vt-accent-line,var(--vt-accent,#c8f031));stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}',
 			'.ns-node-t{font-size:14px;font-weight:600;fill:var(--vt-text,var(--text,#14171a))}',
 			'.ns-node-s{font-size:10.5px;fill:var(--vt-text-3,var(--text-3,#5f666f))}',
 			'.ns-wire{fill:none;stroke:var(--vt-line,var(--line,#d6dade));stroke-width:2;stroke-dasharray:1 0}',
@@ -1777,7 +1801,9 @@ renderSoftirqCard: function(text) {
 			'.ns-line-rx{fill:none;stroke:var(--vt-chart-1,var(--accent,#3563e9));stroke-width:1.6}',
 			'.ns-area-tx{fill:var(--vt-chart-2,#2a78d6);opacity:.12}',
 			'.ns-line-tx{fill:none;stroke:var(--vt-chart-2,#2a78d6);stroke-width:1.6;stroke-dasharray:3 2}',
-			'.ns-traffic-foot{margin:6px 0 0}',
+			'.ns-traffic-num{display:flex;align-items:center;gap:6px}',
+			'.ns-sw{width:14px;height:3px;border-radius:2px;flex:none}',
+			'.ns-sw-tx{background-image:linear-gradient(90deg,currentColor 55%,transparent 55%);background-size:5px 3px}','.ns-traffic-foot{margin:6px 0 0}',
 			'.ns-grid{stroke:var(--vt-line,#d6dade);stroke-width:1;stroke-dasharray:3 6;opacity:.55}',
 			'.ns-axis-y{font-size:11px;fill:var(--vt-text-3,#5f666f);font-family:var(--vt-mono,monospace);text-anchor:end}',
 			'.ns-axis-x{font-size:10.5px;fill:var(--vt-text-3,#5f666f);opacity:.8}',
@@ -1788,7 +1814,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-tabs{display:flex;gap:4px;border-bottom:2px solid var(--line,#d6dade);margin:10px 0 4px;flex-wrap:wrap}',
 			'.netsteer-tab{appearance:none;border:none;background:transparent;padding:8px 14px;font-size:var(--fs-md,14px);font-weight:600;color:var(--text-3,#5f666f);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px}',
 			'.netsteer-tab:hover{color:var(--text,#14171a)}',
-			'.netsteer-tab.on{color:var(--primary,#2274a5);border-bottom-color:var(--primary,#2274a5)}',
+			'.netsteer-tab.on{color:var(--text,#14171a);border-bottom-color:var(--vt-accent-line,var(--vt-accent,#c8f031))}',
 			'.netsteer-tabpanel{padding-top:6px}',
 
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */

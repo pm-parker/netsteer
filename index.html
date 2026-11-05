@@ -194,7 +194,9 @@
   .trade .win li::before { content:"+"; position:absolute; left:2px; color:var(--win-t); font-weight:700; }
   .trade .cost li::before { content:"–"; position:absolute; left:2px; color:var(--cost-t); font-weight:700; }
 
-  footer { border-top:1px solid var(--line); margin-top:110px; padding:44px 24px 60px;
+  .fineprint { margin-top:90px; font-size:13px; line-height:1.75; color:var(--muted);
+               padding:0 8px; border-top:1px solid var(--line); padding-top:18px; }
+  footer { margin-top:14px; padding:0 24px 60px;
            display:flex; justify-content:center; gap:40px; font-size:15px; color:var(--muted); flex-wrap:wrap; }
   footer a:hover { color:var(--ink); }
 </style>
@@ -216,7 +218,6 @@
       <a href="#capabilities">Capabilities</a>
       <a href="#benchmark">Benchmark</a>
       <a href="#install">Install</a>
-      <a href="#tradeoffs">Trade-offs</a>
     </div>
   </div>
   <button class="nav-burger" id="burger" aria-label="菜单"><span></span></button>
@@ -235,7 +236,6 @@
     <a href="#capabilities">Capabilities <span class="zh">功能</span></a>
     <a href="#benchmark">Benchmark <span class="zh">实测</span></a>
     <a href="#install">Install <span class="zh">安装</span></a>
-    <a href="#tradeoffs">Trade-offs <span class="zh">取舍</span></a>
     <a href="https://github.com/pm-parker/netsteer" target="_blank">GitHub <span class="zh">源码</span></a>
   </div>
  </div>
@@ -320,7 +320,7 @@
       <tr><td>平均满载延迟</td><td>58.6 ms</td><td class="hl">7.8 ms</td><td class="hl">↓ 87%</td></tr>
       <tr><td>满载延迟跨度 (p99−p50)</td><td>56.4 ms</td><td class="hl">6.9 ms</td><td class="hl">↓ 88%</td></tr>
       <tr><td>空载延迟</td><td>5.79 ms</td><td class="dim">5.91 ms</td><td class="dim">基本持平</td></tr>
-      <tr><td>满载吞吐</td><td>823 Mbps</td><td class="dim">581 Mbps</td><td class="dim">−29%（见取舍）</td></tr>
+      <tr><td>满载吞吐</td><td>823 Mbps</td><td class="dim">581 Mbps</td><td class="dim">−29% *</td></tr>
     </table></div>
   </section>
 
@@ -352,34 +352,8 @@ apk add --allow-untrusted /tmp/luci-app-netsteer-1.12.4-aarch64_generic.apk
     缺什么、装什么、影响什么，界面上都会讲清楚 —— 从小白到专家调教用户都能各取所需。</p>
   </section>
 
-  <!-- 6. 取舍 -->
-  <section id="tradeoffs">
-    <h2>6. 设计取舍（诚实版）</h2>
-    <hr class="rule">
-    <div class="trade">
-      <div class="card win">
-        <h3>你得到</h3>
-        <ul>
-          <li>满载延迟 ↓87%（58.6 → 7.8 ms），p99 ↓87%</li>
-          <li>延迟确定性 ↑：跨度 56.4 → 6.9 ms，几乎无抖动</li>
-          <li>P2P 设备公网直连能力</li>
-          <li>全核分摊：多核利用率均衡，吞吐 +17%（单维度）</li>
-        </ul>
-      </div>
-      <div class="card cost">
-        <h3>你付出</h3>
-        <ul>
-          <li>满载吞吐 −29%（cake 在 4 核软转发上的整形开销）</li>
-          <li>空载延迟 +0.1 ms 量级的微开销</li>
-          <li>需要正确的上行带宽配置（体检会帮你测）</li>
-        </ul>
-      </div>
-    </div>
-    <p class="lead" style="margin-top:34px">
-      判断标准很简单：<b>如果你的宽带速率远高于日常实际用量（大多数家庭如此），用延迟确定性换一点峰值吞吐是净赚。</b>
-      总开关随时可关，关掉即恢复系统默认 —— 两侧的真实数字都会摆在你面前。
-    </p>
-  </section>
+  <p class="fineprint">* 取舍：开启 cake 整形后满载吞吐约 −29%（4 核软转发的整形开销，两侧仍远超日常实际用量）、空载延迟有 0.1ms 量级微开销。
+  宽带速率远高于日常用量时，用峰值吞吐换满载延迟确定性是净赚 —— 总开关随时可关，恢复系统默认。</p>
 
   <footer>
     <a href="https://github.com/pm-parker/netsteer" target="_blank">GitHub</a>

@@ -1,5 +1,7 @@
 # NetSteer — network load steering for OpenWrt
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 **Stop letting one CPU core do all the networking.** NetSteer is a LuCI app for OpenWrt 24.10+/25.12 that spreads network softirq and interrupt load across all CPU cores — with a live dashboard, one-click presets, and a built-in auto-benchmark that measures *your* router and recommends *your* best setting.
 
 ![benchmark](docs/images/benchmark-before-after.png)

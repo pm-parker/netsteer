@@ -1,8 +1,10 @@
 # NetSteer — OpenWrt 网络负载分核加速
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 **别让一个 CPU 核独自扛下所有网络流量。** NetSteer 是一个 OpenWrt 24.10+/25.12 的 LuCI 应用，把网络软中断与中断负载摊到全部 CPU 核——实时仪表盘、一键预设、内置自动压测（实测你的设备、推荐你的最优方案）。
 
-![benchmark](docs/images/benchmark-before-after.png)
+![benchmark](docs/images/benchmark-before-after-zh.png)
 
 *NanoPi R5C（4 核、单队列千兆、OpenWrt 25.12）实测：同样 20 路 HTTPS 下载，开启 NetSteer 推荐方案后持续收包吞吐 **+17%**，最忙核占比不升，闲置核开始参与。原生基线复测两次（±1%）。不同硬件收益不同——所以应用内置压测，测你的设备，而不是承诺固定数字。*
 

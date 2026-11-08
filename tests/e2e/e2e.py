@@ -21,7 +21,7 @@ def ok(name): PASS.append(name); print("PASS:", name)
 
 with sync_playwright() as p:
     b = p.chromium.launch()
-    ctx = b.new_context(viewport={"width": 1280, "height": 900})
+    ctx = b.new_context(viewport={"width": 1280, "height": 900}, ignore_https_errors=True)  # 路由器自签证书 (R5C local CA)
     pg = ctx.new_page()
     pg.goto(BASE, wait_until="domcontentloaded"); pg.wait_for_timeout(1000)
     pg.locator("input[type='password']").first.fill(PW)
@@ -103,7 +103,7 @@ with sync_playwright() as p:
     ok(f"游戏通道: UI 关闭还原 ({b2})")
 
     # mobile popover (新 context 需重新登录)
-    m = b.new_context(viewport={"width": 390, "height": 844})
+    m = b.new_context(viewport={"width": 390, "height": 844}, ignore_https_errors=True)
     mp = m.new_page()
     mp.goto(BASE, wait_until="domcontentloaded"); mp.wait_for_timeout(1000)
     mp.locator("input[type='password']").first.fill(PW)

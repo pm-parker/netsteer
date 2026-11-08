@@ -466,6 +466,12 @@ eq(TS.filter(function(t) { return t.id === 'smart'; })[0].cards.indexOf('game'),
 }
 
 {
+  // v1.16.2: 页脚版本常量 (build 注入; 源内默认 'dev' — 注入失败时页脚显示 dev 而非 undefined)
+  eq(!!SRC.match(/var NS_VERSION = '[^']+';/), true, 'NS_VERSION 常量已定义');
+  eq(SRC.match(/var NS_VERSION = '([^']+)';/)[1].length > 0, true, 'NS_VERSION 非空');
+}
+
+{
   // dnsObserverMeta: 环境自适应四态 (通用化核心 — 不同家庭自动选观测面)
   const m1 = api.dnsObserverMeta({ dns_observer: 'mihomo' });
   eq(m1.state, 'mihomo', 'obs: mihomo 态');

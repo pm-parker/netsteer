@@ -30,6 +30,11 @@ MKPKG="$APKTOOL/sbin/apk.static"
 # 2. assemble package root from files/
 PKGROOT="$WORK/PKGROOT"
 cp -r "$HERE/files/." "$PKGROOT"
+# 注入发布版本到页脚 (源内默认 'dev'; NS_VERSION 缺失则跳过 — 单测另有断言)
+sed -i "s/var NS_VERSION = '[^']*';/var NS_VERSION = '$VERSION';/" \
+  "$PKGROOT/www/luci-static/resources/view/netsteer.js"
+grep -q "var NS_VERSION = '$VERSION';" "$PKGROOT/www/luci-static/resources/view/netsteer.js" \
+  || { echo "FATAL: NS_VERSION inject failed" >&2; exit 1; }
 chmod 755 "$PKGROOT"/usr/bin/netsteer-* "$PKGROOT"/etc/init.d/netsteer 2>/dev/null
 find "$PKGROOT" -name '*.js' -o -name '*.json' | xargs chmod 644
 
@@ -65,8 +70,11 @@ find "$WORK/check" -type f | sort | sed 's/^/   /'
 # sanity: js must be present and non-empty
 JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
 [ -s "$JS" ] || { echo "ERROR: package is missing netsteer.js — build is broken"; exit 1; }
-[ "$(md5sum < "$JS" | cut -d' ' -f1)" = "$(md5sum < "$HERE/files/www/luci-static/resources/view/netsteer.js" | cut -d' ' -f1)" ] \
-  || { echo "ERROR: packaged js differs from source"; exit 1; }
+# 版本注入是唯一的预期差异: 把包内 NS_VERSION 还原为 'dev' 后应与源文件逐字节相同
+grep -q "var NS_VERSION = '$VERSION';" "$JS" \
+  || { echo "ERROR: packaged js missing NS_VERSION=$VERSION (version inject failed)"; exit 1; }
+[ "$(sed "s/var NS_VERSION = '$VERSION';/var NS_VERSION = 'dev';/" "$JS" | md5sum | cut -d' ' -f1)" = "$(md5sum < "$HERE/files/www/luci-static/resources/view/netsteer.js" | cut -d' ' -f1)" ] \
+  || { echo "ERROR: packaged js differs from source (beyond version inject)"; exit 1; }
 GD="$WORK/check/usr/share/netsteer/gamedomains.txt"
 [ -s "$GD" ] || { echo "ERROR: package is missing gamedomains.txt (L1 DNS 分类数据集)"; exit 1; }
 GI="$WORK/check/usr/share/netsteer/gameips.txt"

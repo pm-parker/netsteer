@@ -6,6 +6,9 @@
 'require view';
 'require fs';
 'require uci';
+
+/* 插件版本 (页脚显示; build-apk.sh 打包时按发布版本覆盖注入, 源内默认值为开发版标识) */
+var NS_VERSION = 'dev';
 'require ui';
 
 /* 直调 ubus 的轻量应用链 (rpc.declare 在本环境调用挂起，改用裸 fetch /ubus/) */
@@ -2830,7 +2833,10 @@ renderSoftirqCard: function(text) {
 			panelOverview,
 			panelSmart,
 			panelGame,
-			panelSteer
+			panelSteer,
+			/* 版本脚: 一眼可辨当前安装版本 (build 注入; dev=未打包的开发直推版) */
+			E('div', { 'class': 'netsteer-foot', 'id': 'ns-version-foot' },
+				_('NetSteer v%s · 识别数据集版本见「游戏通道」页').format(NS_VERSION || 'dev'))
 		]);
 		/* 总览 5s 轮询 (可见时) + visibility 节流 */
 		var pollFn = function() {

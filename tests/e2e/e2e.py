@@ -138,6 +138,10 @@ with sync_playwright() as p:
     mp.locator(".netsteer-help").first.click(); mp.wait_for_timeout(500)
     assert mp.locator("#netsteer-help-pop").count() == 1
     ok("移动端: 问号浮窗可开")
+    # v1.16.2: 页脚版本行 (build 注入真实版本号; dev=开发直推)
+    foot = pg.inner_text("#ns-version-foot")
+    assert foot.startswith("NetSteer v") and foot != "NetSteer vundefined", f"version foot bad: {foot!r}"
+    ok(f"页脚版本行: {foot[:40]}")
     m.close(); ctx.close(); b.close()
 
 print(f"ALL GREEN ({len(PASS)} checks)")

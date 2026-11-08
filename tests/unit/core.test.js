@@ -600,8 +600,12 @@ eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
   eq(r.scene, 'download', 'scene: 百度网盘 CDN heavy 83MB → download (不是流媒体)');
   r = api.senseClassify([conn({ q: 'nj.h.bcsp2p.baidu.com', u: '204546', v: '81161', t: 'udp', p: '8829' })], maps);
   eq(r.scene, 'download', 'scene: 网盘 P2P 加速域名 → download');
-  r = api.senseClassify([conn({ q: 'cdn.unknown-cdn.example', u: '1024', v: '53000000' })], maps);
-  eq(r.scene, 'streaming', 'scene: 未知 CDN heavy 53MB → streaming (bulk 证据保留)');
+  r = api.senseClassify([conn({ q: 'cdn.unknown-cdn.example', u: '1024', v: '53000000', p: '443', t: 'tcp' })], maps);
+  eq(r.scene, 'streaming', 'scene: 未知 CDN heavy 53MB 443 → streaming (bulk 证据保留)');
+  r = api.senseClassify([conn({ q: '', d: '114.112.26.11', u: '1171158', v: '1295741325', p: '80', t: 'tcp' })], maps);
+  eq(r.scene, 'streaming', 'scene: 裸 IP 80 单向下行主导 1.2GB → streaming (flow 层无法与视频区分; 对外服务设备靠设备级排除, 见 D14)');
+  r = api.senseClassify([conn({ q: '', d: '43.226.56.35', u: '110978807', v: '4811712028', p: '7201', t: 'tcp' })], maps);
+  eq(r.scene, 'normal', 'scene: 裸 IP 随机端口 7201 的 4.8GB (网盘 P2P 分发) → normal (不算看视频)');
 
   r = api.senseClassify([conn({ q: 'us02web.zoom.us', u: '2097152', v: '3145728' })], maps);
   eq(r.scene, 'work', 'scene: 会议域名 → work');

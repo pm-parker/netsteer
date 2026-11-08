@@ -275,13 +275,65 @@ qos_dnslog_dnsmasq() { # dnsmasq 查询日志采样 (需 logqueries 已开; 未�
 	}
 	END { printf "]\n" }'
 }
-qos_dnslog() { # 通道选择: 按 env 探测缓存; mihomo 失败自动回退 dnsmasq
-	local observer="$(qos_get dns_observer mihomo)"
-	if [ "$observer" = dnsmasq ] || [ "$observer" = dnsmasq_off ]; then
-		qos_dnslog_dnsmasq "$@"
+qos_dnslog_conntrack() { # 自研观测面: conntrack 流表 + dnsmasq 域名反查 (零代理依赖)
+	# 参考 mihomo /connections 的数据形态, 用 OpenWrt 原生栈自研:
+	#   流量维度 = conntrack netlink 流表 (每 flow 双向字节, 需 nf_conntrack_acct=1)
+	#   域名维度 = dnsmasq query 日志 reply 行反查 dst_ip (尽力; 代理劫持 53 的环境拿不到 → q 空, 走 IP 段匹配)
+	# 出站 flow 才参与 (LAN 发起); 入站 NAT 流不参与场景判定 (避免对外服务 P2P 污染场景)
+	# 依赖: apk add conntrack (netlink 接口; /proc/net/nf_conntrack 读取需 ~18s/8k flows, 不可用于轮询)
+	local n="${1:-200}"
+	command -v conntrack >/dev/null 2>&1 || return 1
+	# acct 计数未开则开 (幂等; 已有 flow 从开启时刻起计数)
+	[ "$(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null)" = "1" ] || \
+		sysctl -qw net.netfilter.nf_conntrack_acct=1 >/dev/null 2>&1 || return 1
+	# dnsmasq reply 缓存 (ip\ttab domain): DNS 走 dnsmasq 的环境可反查域名
+	local dc=/tmp/netsteer-dnscache.tsv
+	if [ "$(uci -q get dhcp.@dnsmasq[0].logqueries)" = "1" ]; then
+		logread 2>/dev/null | awk '/reply\[/ {
+			for (i=1; i<NF; i++) if ($(i+1) ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $(i-1) != "") {
+				printf "%s\t%s\n", $(i+1), $(i-1); break
+			}
+		}' | sort -u > "$dc" 2>/dev/null || :
 	else
-		qos_dnslog_mihomo "$@" || qos_dnslog_dnsmasq "$@"
+		: > "$dc" 2>/dev/null || true
 	fi
+	conntrack -L 2>/dev/null | awk -v dnsc="$dc" -v top="$n" '
+	BEGIN { while ((getline line < dnsc) > 0) { split(line, a, "\t"); dom[a[1]]=a[2] } close(dnsc) }
+	/^(tcp|udp) +[0-9]+ +[0-9]+( +[A-Z_]+)? / {
+		proto=$1; dir=0; s1=""; d1=""; dp1=""; b1=""; b2=""
+		for (i=1; i<=NF; i++) {
+			t=$i
+			if (substr(t,1,4)=="src=") { dir++; if (dir==1) s1=substr(t,5) }
+			else if (substr(t,1,4)=="dst=") { if (dir==1) d1=substr(t,5) }
+			else if (substr(t,1,6)=="dport=") { if (dir==1) dp1=substr(t,7) }
+			else if (substr(t,1,6)=="bytes=") { if (dir==1) b1=substr(t,7); else if (dir==2) b2=substr(t,7) }
+		}
+		# 出站 flow: 原始方向 src=LAN (RFC1918)
+		if (dir>=2 && (s1 ~ /^192\.168\./ || s1 ~ /^10\./ || s1 ~ /^172\.(1[6-9]|2[0-9]|3[01])\./)) {
+			key = s1 "|" d1 "|" dp1 "|" proto
+			if (key in seen) next
+			seen[key]=1
+			q = (d1 in dom) ? dom[d1] : ""
+			printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", b2+0, proto, s1, d1, dp1, b1+0, q
+		}
+	}
+	' | sort -rn | head -"$n" | awk -F'\t' '
+	BEGIN { printf "["; i=0 }
+	{
+		if (i++ > 0) printf ","
+		printf "{\"q\":\"%s\",\"c\":\"%s\",\"d\":\"%s\",\"p\":\"%s\",\"t\":\"%s\",\"u\":\"%s\",\"v\":\"%s\"}", $7, $3, $4, $5, $2, $6, $1
+	}
+	END { printf "]\n" }'
+}
+qos_dnslog() { # 通道选择: auto=自研 conntrack 优先, mihomo 在场则增强 (SNI 域名全); 手动可钉死
+	local observer="$(qos_get dns_observer auto)"
+	case "$observer" in
+	conntrack) qos_dnslog_conntrack "$@" ;;
+	mihomo) qos_dnslog_mihomo "$@" || qos_dnslog_conntrack "$@" || qos_dnslog_dnsmasq "$@" ;;
+	dnsmasq|dnsmasq_off) qos_dnslog_dnsmasq "$@" ;;
+	*) # auto: mihomo 探测到 → 用它 (域名最准); 否则自研 conntrack; 最后 dnsmasq
+		qos_dnslog_mihomo "$@" 2>/dev/null || qos_dnslog_conntrack "$@" || qos_dnslog_dnsmasq "$@" ;;
+	esac
 }
 qos_dns_en() { # $1=on|off — dnsmasq 查询日志开关 (仅 dnsmasq 观测面需要; 重启 dnsmasq ~1s)
 	local want="$1"

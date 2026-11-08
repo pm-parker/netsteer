@@ -465,7 +465,9 @@ function senseClassify(records, maps) {
 		else if (stun && traffic >= SENSE_WORK_MIN_BYTES) ev.work.push({ via: 'stun', host: host || ((r.d || '') + ':' + r.p) });
 		/* streaming: 流媒体域名需真实下行 ≥512KB (待机电视拉推荐图/App 预加载不算在看视频) */
 		if (streamCat && (+r.v || 0) >= SENSE_STREAM_MIN_BYTES) ev.streaming.push({ via: 'domain', host: host, cat: streamCat, heavy: heavy });
-		else if (!gameCat && heavy && (+r.v || 0) > SENSE_BULK_DOWN) ev.streaming.push({ via: 'bulk', host: host || r.d, cat: '' });
+		/* bulk: 无域名时的"大下行=流媒体"证据只认标准 web 端口 (80/443/1935) —
+		   随机高端口的大流量是 P2P/网盘分发 (对外服务设备/网心云), 不算家里人在看视频 */
+		else if (!gameCat && heavy && (+r.v || 0) > SENSE_BULK_DOWN && (+r.v > (+r.u || 0) * 10) && (r.p === '80' || r.p === '443' || r.p === '1935')) ev.streaming.push({ via: 'bulk', host: host || r.d, cat: '' });
 		/* download: 知名 P2P 端口 / 游戏平台域名下的 heavy 流 (平台商店下载≠对局, cFosSpeed light-heavy 分析的对症移植) */
 		if (classifyPort(r.p, r.t, maps.dlports)) ev.download.push({ via: 'port', host: host || r.d, cat: 'p2p' });
 		if (gameCat && heavy) ev.download.push({ via: 'game-heavy', host: host, cat: gameCat });

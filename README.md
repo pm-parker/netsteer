@@ -107,6 +107,7 @@ NetSteer is an integration layer — it invents no new mechanisms, it drives exi
 - **Gain measurement**: `netsteer-bench` runs an 8-second window of real ping latency + per-interface throughput sampling, baselines persisted to uci; triggered automatically in the background on master-toggle switches and compared on the page
 - **netsteer-apply** declaratively writes sysfs from UCI config, records applied state, idempotent at boot
 - **netsteer-check** (cron, every minute) reconciles runtime vs config, auto-repairs drift and persists evidence to `/etc/netsteer/incidents/`
+- **Scene sensing (v1.17.4+, proxy-free)**: traffic evidence comes from the kernel conntrack table via netlink (`conntrack -L`, needs `apk add conntrack`; byte accounting via `nf_conntrack_acct=1`, enabled automatically) — zero dependency on any proxy core. When mihomo/clash is present it is used as an optional enhancement (SNI hostnames are more precise); domain names otherwise come from dnsmasq query-log reply lookups where available. Sensing channel auto-selects: mihomo → conntrack → dnsmasq (override with `uci set netsteer.qos.dns_observer=<auto|mihomo|conntrack|dnsmasq>`)
 
 Everything is reversible: the master toggle restores stock behavior; the `System default` preset restores kernel defaults.
 

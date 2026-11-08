@@ -58,6 +58,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4   # release-notes/<tag>.md 需要 (无 checkout 时模板/说明文件不存在)
       - name: Collect artifacts (one dir per arch, no name collisions)
         uses: actions/download-artifact@v4
         with:

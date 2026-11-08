@@ -239,8 +239,8 @@ qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":
 		if (match($0, /"sourceIP":"[^"]*"/)) { ip = substr($0, RSTART + 12, RLENGTH - 13) }
 		if (ip !~ /^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[01])\./) next
 		h = ""
-		if (match($0, /"sniffHost":"[^"]+"/)) { h = substr($0, RSTART + 11, RLENGTH - 12) }
-		if (h == "" && match($0, /"host":"[^"]+"/)) { h = substr($0, RSTART + 7, RLENGTH - 8) }
+		if (match($0, /"sniffHost":"[^"]+"/)) { h = substr($0, RSTART + 13, RLENGTH - 14) }
+		if (h == "" && match($0, /"host":"[^"]+"/)) { h = substr($0, RSTART + 8, RLENGTH - 9) }
 		if (h == "*" || h ~ /\.(lan|local|arpa|internal)$/) h = ""
 		dst = ""
 		if (match($0, /"destinationIP":"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"/)) { dst = substr($0, RSTART + 17, RLENGTH - 18) }
@@ -249,9 +249,9 @@ qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":
 		proto = ""
 		if (match($0, /"network":"(tcp|udp)"/)) { proto = substr($0, RSTART + 11, RLENGTH - 12) }
 		up = ""
-		if (match($0, /"upload":[0-9]+/)) { up = substr($0, RSTART + 10, RLENGTH - 10) }
+		if (match($0, /"upload":[0-9]+/)) { up = substr($0, RSTART + 9, RLENGTH - 9) }
 		dn = ""
-		if (match($0, /"download":[0-9]+/)) { dn = substr($0, RSTART + 12, RLENGTH - 12) }
+		if (match($0, /"download":[0-9]+/)) { dn = substr($0, RSTART + 11, RLENGTH - 11) }
 		if (h == "" && dst == "") next
 		gsub(/[\\"]/, "", h)
 		if (n++ > 0) printf ","

@@ -137,6 +137,7 @@ cmd_status() {
 		_got="$(sha_of "$DATA_DIR/$_f")"
 		_st="ok"
 		if [ -z "$_want" ]; then _st="unmanaged"; elif [ "$_want" != "$_got" ]; then _st="modified"; _ok=0; fi
+		[ -n "$_items" ] && _items="$_items,"
 		_items="$_items{\"file\":\"$(esc "$_f")\",\"status\":\"$_st\"}"
 	done
 	printf '{"installed_version":"%s","integrity":%s,"files":[%s]}\n' \
@@ -159,6 +160,7 @@ cmd_check() {
 		_lsha="$(man_sha "$LOCAL_MANIFEST" "$_f" 2>/dev/null)"
 		[ -z "$_lsha" ] && _lsha="$(sha_of "$DATA_DIR/$_f")"
 		if [ "$_rsha" != "$_lsha" ]; then
+			[ -n "$_changed" ] && _changed="$_changed,"
 			_changed="$_changed{\"file\":\"$(esc "$_f")\",\"remote_sha256\":\"$_rsha\"}"
 			_n=$((_n + 1))
 		fi
@@ -211,6 +213,7 @@ cmd_update() {
 		cp -f "$WORK/dl/$_f" "$DATA_DIR/.${_f}.new" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
 		chmod 644 "$DATA_DIR/.${_f}.new" 2>/dev/null
 		mv -f "$DATA_DIR/.${_f}.new" "$DATA_DIR/$_f" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
+		[ -n "$_updated" ] && _updated="$_updated,"
 		_updated="$_updated{\"file\":\"$(esc "$_f")\",\"sha256\":\"$_rsha\"}"
 		_n=$((_n + 1))
 	done

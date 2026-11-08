@@ -2395,15 +2395,19 @@ renderSoftirqCard: function(text) {
 			return;
 		}
 		var cats = Object.keys(sum.platforms).sort(function(a, b) { return sum.platforms[b] - sum.platforms[a]; });
-		var chips = [E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('活跃连接 %d 条 · 命中平台：').format(sum.total))];
+		/* 信息层级: 总连接数/命中数 → 命中 badge → 最近连接明细 (命中带标签, 未命中灰显"未命中" — 避免误读为全部命中) */
+		var chips = [E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('活跃连接 %d 条 · 平台命中 %d：').format(sum.total, sum.hit))];
+		if (!cats.length) chips.push(E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('暂无（正常浏览流量）')));
 		cats.forEach(function(c) {
 			chips.push(E('span', { 'class': 'netsteer-badge', 'style': 'margin:2px' }, '%s ×%d'.format(c, sum.platforms[c])));
 		});
 		var kids = [E('div', { 'style': 'display:flex;gap:4px;flex-wrap:wrap;align-items:center' }, chips)];
 		var srcTag = { name: _('域名'), ip: _('IP 段'), port: _('端口') };
 		sum.last.slice(-3).reverse().forEach(function(r) {
-			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.1em 0;font-size:12px' },
-				(r.cat ? '[%s] '.format(r.cat) : '') + r.q + (r.cat && r.src && srcTag[r.src] ? ' · ' + srcTag[r.src] : '')));
+			var hit = !!r.cat;
+			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.1em 0;font-size:12px' + (hit ? '' : ';opacity:.55') },
+				(hit ? '[%s] '.format(r.cat) : '') + r.q +
+				(hit ? (r.src && srcTag[r.src] ? ' · ' + srcTag[r.src] : '') : ' · ' + _('未命中'))));
 		});
 		el.replaceChildren(E('div', {}, kids));
 	},

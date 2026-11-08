@@ -2152,9 +2152,12 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-card-title' }, _('智能场景识别')),
 				E('span', { 'class': 'netsteer-badge', 'style': 'font-weight:600' }, _('AI 智能识别'))
 			]),
-			E('div', { 'id': 'ns-sense-body' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))]),
-			E('div', { 'id': 'ns-sense-chips', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:.3em 0' }, []),
-			E('div', { 'style': 'display:flex;gap:8px;align-items:center;margin-top:.4em' }, [
+			E('div', { 'id': 'ns-sense-body', 'style': 'margin-bottom:10px' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))]),
+			E('div', { 'id': 'ns-sense-evwrap', 'style': 'display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;background:rgba(90,125,10,.06);border-radius:6px;padding:8px 10px' }, [
+				E('span', { 'class': 'netsteer-note', 'style': 'font-weight:600;white-space:nowrap;margin-top:2px' }, _('识别到：')),
+				E('div', { 'id': 'ns-sense-chips', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0' }, [])
+			]),
+			E('div', { 'style': 'display:flex;gap:8px;align-items:center;margin-top:10px' }, [
 				E('span', { 'id': 'ns-feed-status', 'class': 'netsteer-note', 'style': 'margin:0' }, '')
 			])
 		]);
@@ -2362,7 +2365,7 @@ renderSoftirqCard: function(text) {
 				}
 			});
 		}
-		if (chipsEl) chipsEl.replaceChildren.apply(chipsEl, chips.length ? chips : [E('span', { 'class': 'netsteer-note' }, '')]);
+		if (chipsEl) chipsEl.replaceChildren.apply(chipsEl, chips.length ? chips : [E('span', { 'class': 'netsteer-note' }, _('暂无已知平台流量'))]);
 
 		/* 依据句: 仅在需要时补一句 (chips 已表意时不重复) */
 		var whyTxt = '';
@@ -2770,6 +2773,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-tab:hover{color:var(--text,#14171a)}',
 			'.netsteer-tab.on{color:var(--text,#14171a);border-bottom-color:var(--vt-accent-line,var(--vt-accent,#c8f031))}',
 			'.netsteer-tabpanel{padding-top:6px}',
+			'#netsteer-panel-smart>.netsteer-card+.netsteer-card,#netsteer-panel-pro>.netsteer-card+.netsteer-card{margin-top:14px}',
 
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
 			'@media (max-width: 640px){',

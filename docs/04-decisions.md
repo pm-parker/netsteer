@@ -49,3 +49,11 @@
 - 勘误教训：两个观测面看到的是互补子集——mihomo 通道覆盖 TLS 连接（SNI），dnsmasq 通道覆盖明文查询（含绕过 fake-ip 劫持的直连 DNS 设备）；任何一方都不是全集，UI 按态如实标注边界
 - 运维坑：路由器是 busybox，没有 coreutils `install` 命令（`install -m 755` 静默走 old 文件）——部署用 `cp + chmod`；/tmp/netsteer 是状态目录，scp 单文件推 init.d 撞名失败
 - 单测基线 177 → 215（dnsObserverMeta 四态 + 兼容回退 + null 安全）
+
+## D10：L2 识别增强 = IP 段 + 端口启发式，nDPI 库路线判死（2026-11-08，用户拍板"执行 L2"）
+- 判死依据：25.12 packages feed 的 libndpi-5.0-r1 只含 `usr/lib/libndpi.so`（apk info -L 实测），无 ndpiReader CLI（官方 Makefile 不编 examples）；要用库只能自己交叉编译工具 × 4 架构随插件分发——违反 D2（零二进制依赖）且版本维护重
+- 替代路线对症 L1 真实盲区：裸 IP 直连（游戏 relay 无 SNI）+ 无 DNS 名字。纯数据文件零依赖零抓包，分类照旧在前端
+- 数据源分级（可靠性优先，宁缺毋假）：steam = Valve 官方 SDR API 实拉（GetSDRConfig appid=730，220 relay 归并 6 宽段 + 19 合作 POP /24）；console = 3074 官方 NAT 端口；psn = 3480/tcp；3478-3479 不收（通用 STUN 误判）；Xbox/PSN/Epic 官方 IP 段不公开 → 不造假数据，UI 如实显示覆盖范围
+- 实现要点：dnslog 采样加 d/p/t 字段（destinationIP/destinationPort/network，mihomo metadata 实测 destinationPort 是字符串）；q 为空但 d 有值的裸 IP 连接不再被丢弃；前端 buildIpMap 最长前缀匹配（mask 整数化）
+- 真机验证：TCP 到 relay 的裸 IP 连接进采样（d=155.133.248.36 无 q），UDP destinationIP 字段有值实锤（124.239.232.102）；沙箱构造的 UDP 测试包 relay 拒收进不了表——游戏 UDP 场景以字段实锤+单测覆盖，不虚报端到端
+- 单测基线 215 → 242

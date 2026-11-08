@@ -49,8 +49,8 @@
 - [x] B：出口延迟曲线（8s probe 采样，5 分钟滚动 sparkline）
 - [x] C：SQM 状态互显（五态徽标诚实降级 + 整形实况 + 双向分桶表）
 - [x] 质量门：单测 177 / e2e 12 项全绿 / 4 架构 apk verify / 真机装卸循环
-- [ ] L1：DNS 分类接 cache-domains（MIT，36 厂商域名）— v1.14 候选
-- [ ] L2：nDPI 可选软依赖（libndpi 已在 25.12 feed）— 后续
+- [x] L1：DNS 分类接 cache-domains（MIT，36 厂商域名）— v1.14 已交付
+- [x] L2：识别增强层 — v1.15 已交付（nDPI 路线判死，IP 段+端口启发式替代，见 D10）
 
 ## v1.14 — 游戏平台识别 + 环境自适应 ✅ 已交付 (2026-11-08)
 - [x] L1 平台识别：cache-domains 数据集（158 后缀/22 平台）+ 前端分类（路由器零负担）
@@ -61,3 +61,15 @@
 - [x] 通用化原则落地：不绑定特定代理品牌/网段/地区 DNS，全部探测式（用户要求：适合各种家庭网络环境）
 - [x] 质量门：单测 215 / e2e 13 项全绿 / 4 架构 apk verify
 - 待办：L2 nDPI 可选软依赖
+
+## v1.15 — L2 识别增强层（IP 段 + 端口启发式）✅ 已交付 (2026-11-08)
+- [x] nDPI 路线判死：25.12 feed 的 libndpi 只有 .so 库、无 ndpiReader CLI；用库需自编二进制 × 4 架构分发，违反 D2 零二进制依赖（见 D10）
+- [x] 替代路线 = 纯数据文件，对症 L1 盲区（裸 IP 直连、无 SNI/DNS 名字）：
+  - gameips.txt：Valve 官方 SDR API 实拉 relay IP 归并 + AS32590 共识段（6 宽段 + 19 合作 POP /24），steam 类别
+  - gameports.txt：3074（Xbox/PSN 官方 NAT 端口）console 类、3480/tcp PSN、27015-27050/udp + 27036-27037/tcp Steam
+  - 3478-3479 刻意不收（STUN/TURN 通用端口，误判率高）——透明注释写在文件里
+- [x] 采样升级：dnslog 每条带 d(目的地 IP)/p(端口)/t(协议)；裸 IP 连接不再丢弃
+- [x] 前端三级识别链：域名(name) → IP 段(ip) → 端口(port)，明细行显示识别来源
+- [x] buildIpMap/classifyIp/buildPortMap/classifyPort 纯函数（最长前缀匹配 + 容错）
+- [x] 质量门：单测 242 / e2e 13 项 / 4 架构 apk verify / 真机端到端（裸 IP 连接采样实锤）
+- 边界：IP 段/端口三级仅代理内核观测面可用（dnsmasq 查询日志无目的地信息）；UDP 测试流量无法从沙箱构造进连接表（relay 拒收），UDP 场景由 destinationIP 字段实锤 + 单测覆盖

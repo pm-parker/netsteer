@@ -69,4 +69,8 @@ JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
   || { echo "ERROR: packaged js differs from source"; exit 1; }
 GD="$WORK/check/usr/share/netsteer/gamedomains.txt"
 [ -s "$GD" ] || { echo "ERROR: package is missing gamedomains.txt (L1 DNS 分类数据集)"; exit 1; }
+GI="$WORK/check/usr/share/netsteer/gameips.txt"
+[ -s "$GI" ] || { echo "ERROR: package is missing gameips.txt (L2 IP 段数据集)"; exit 1; }
+GP="$WORK/check/usr/share/netsteer/gameports.txt"
+[ -s "$GP" ] || { echo "ERROR: package is missing gameports.txt (L2 端口数据集)"; exit 1; }
 echo ">> OK"

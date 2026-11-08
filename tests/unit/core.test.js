@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -31,7 +31,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -471,6 +471,52 @@ eq(TS.filter(function(t) { return t.id === 'smart'; })[0].cards.indexOf('game'),
   const m6 = api.dnsObserverMeta(null);
   eq(m6.state, 'mihomo', 'obs: null 安全');
   eq(m3.desc.length > 10 && m4.desc.length > 10, true, 'obs: 各态说明文案齐全');
+}
+
+{
+  // L2: IP 段 + 端口启发式 (纯数据文件, 裸 IP 直连盲区)
+  const ipTxt = '# comment\nsteam\t155.133.0.0/16\nsteam\t185.25.180.0/22\nconsole\t117.185.19.0/24 # relay\n';
+  const ipm = api.buildIpMap(ipTxt);
+  eq(ipm.length, 3, 'ipmap: 3 条有效 (注释剔除)');
+  eq(ipm[0].cat, 'steam', 'ipmap: 类别解析');
+  eq(ipm[0].bits, 16, 'ipmap: 前缀位解析');
+  eq(api.classifyIp('155.133.248.36', ipm), 'steam', 'ipmatch: /16 命中 (SDR relay)');
+  eq(api.classifyIp('117.185.19.5', ipm), 'console', 'ipmatch: /24 长前缀优先');
+  eq(api.classifyIp('117.185.20.5', ipm), null, 'ipmatch: 相邻段不误命中');
+  eq(api.classifyIp('8.8.8.8', ipm), null, 'ipmatch: 未命中 null');
+  eq(api.classifyIp('999.1.1.1', ipm), null, 'ipmatch: 非法 IP 安全');
+  eq(api.classifyIp('', null), null, 'ipmap: 空表安全');
+  eq(api.buildIpMap('steam\t2001:db8::/32\nbad-line\nsteam\t10.0.0.0/8').length, 1, 'ipmap: IPv6/坏行跳过');
+  const pm = api.buildPortMap('# c\nconsole\t3074-3074/udp\nsteam\t27015-27050/udp\npsn\t3480-3480/tcp\n');
+  eq(pm.length, 3, 'pmap: 3 条有效');
+  eq(api.classifyPort('3074', 'udp', pm), 'console', 'portmatch: Xbox NAT 端口');
+  eq(api.classifyPort('27050', 'udp', pm), 'steam', 'portmatch: 范围上界含');
+  eq(api.classifyPort('3480', 'tcp', pm), 'psn', 'portmatch: PSN 端口');
+  eq(api.classifyPort('3480', 'udp', pm), null, 'portmatch: 协议不符不命中');
+  eq(api.classifyPort('80', 'tcp', pm), null, 'portmatch: 未命中 null');
+  eq(api.classifyPort('abc', 'tcp', pm), null, 'portmatch: 非法端口安全');
+  eq(api.classifyPort('', '', []), null, 'pmap: 空表安全');
+
+  // dnsSummary 三级识别链
+  const dmap = api.buildDomainMap('steam\tsteamcontent.com\n');
+  const recs3 = [
+    { q: 'a.steamcontent.com', c: '1.1.1.1' },                          // name 命中
+    { q: '', d: '155.133.248.36', p: '27015', t: 'udp', c: '1.1.1.1' }, // 裸 IP: ip 命中
+    { q: '', d: '23.45.1.1', p: '3074', t: 'udp', c: '1.1.1.1' },       // 裸 IP 未命中 → port 命中 console
+    { q: '', d: '23.45.1.1', p: '80', t: 'tcp', c: '1.1.1.1' },         // 全未命中
+    { q: 'x.example.com', c: '1.1.1.1' }                                // name 未命中 (无 d/p)
+  ];
+  const s3 = api.dnsSummary(recs3, dmap, '-', ipm, pm);
+  eq(s3.total, 5, 'dnssum L2: total 含裸 IP 记录');
+  eq(s3.platforms.steam, 2, 'dnssum L2: steam 2 次 (name+ip)');
+  eq(s3.platforms.console, 1, 'dnssum L2: console 1 次 (port)');
+  eq(s3.last[0].src, 'name', 'dnssum L2: 来源 name');
+  eq(s3.last[1].src, 'ip', 'dnssum L2: 来源 ip');
+  eq(s3.last[2].src, 'port', 'dnssum L2: 来源 port');
+  eq(s3.last[1].q, '→155.133.248.36:27015', 'dnssum L2: 裸 IP 显示 →dst:port');
+  const sOld = api.dnsSummary([{ q: 'a.steamcontent.com', c: 'x' }], dmap, '-');
+  eq(sOld.total, 1, 'dnssum L2: 不传 ipmap/pmap 向后兼容 (total)');
+  eq(sOld.platforms.steam, 1, 'dnssum L2: 不传 ipmap/pmap 向后兼容 (域名命中)');
 }
 
 console.log(`PASS=${pass} FAIL=${fail}`);

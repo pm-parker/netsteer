@@ -221,7 +221,8 @@ qos_detect_proxy() { # 输出 "core|port|secret" 或 "|"
 	qos_api_ok 9090 "" && { echo "clash|9090|"; return; }
 	echo "|"
 }
-qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP}] (sniffHost 优先, 回退 host)
+qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":目的地IP,"p":目的端口,"t":协议}]
+	# q=sniffHost 优先回退 host, 可为空 (裸 IP 直连 — L2 IP 段/端口匹配的输入); dnsmasq 通道无 d/p/t
 	local n="${1:-200}"
 	local api=$(qos_detect_proxy)
 	local port="${api#*|}"; port="${port%%|*}"
@@ -239,10 +240,17 @@ qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP}] (s
 		h = ""
 		if (match($0, /"sniffHost":"[^"]+"/)) { h = substr($0, RSTART + 11, RLENGTH - 12) }
 		if (h == "" && match($0, /"host":"[^"]+"/)) { h = substr($0, RSTART + 7, RLENGTH - 8) }
-		if (h == "" || h == "*") next
+		if (h == "*" || h ~ /\.(lan|local|arpa|internal)$/) h = ""
+		dst = ""
+		if (match($0, /"destinationIP":"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"/)) { dst = substr($0, RSTART + 17, RLENGTH - 18) }
+		dport = ""
+		if (match($0, /"destinationPort":"[0-9]+"/)) { dport = substr($0, RSTART + 19, RLENGTH - 20) }
+		proto = ""
+		if (match($0, /"network":"(tcp|udp)"/)) { proto = substr($0, RSTART + 11, RLENGTH - 12) }
+		if (h == "" && dst == "") next
 		gsub(/[\\"]/, "", h)
 		if (n++ > 0) printf ","
-		printf "{\"q\":\"%s\",\"c\":\"%s\"}", h, ip
+		printf "{\"q\":\"%s\",\"c\":\"%s\",\"d\":\"%s\",\"p\":\"%s\",\"t\":\"%s\"}", h, ip, dst, dport, proto
 	}
 	END { printf "]\n" }'
 }

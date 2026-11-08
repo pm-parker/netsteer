@@ -306,19 +306,90 @@ function leaseSuggestions(leasesText) {
 	return out;
 }
 
-function dnsSummary(records, map, device) {
-	/* DNS 采样记录 → {total, hit, platforms:{cat:n}, last:[{q,cat}]} (纯函数; device '-' 或 '' = 不过滤) */
+function buildIpMap(text) {
+	/* gameips.txt → [{base:int, bits, cat}] (纯函数; 容错: 注释/空行/坏 CIDR/IPv6 跳过) */
+	var out = [];
+	(text || '').split('\n').forEach(function(line) {
+		var h = line.indexOf('#');
+		if (h >= 0) line = line.slice(0, h);
+		line = line.trim();
+		if (!line) return;
+		var tab = line.indexOf('	');
+		var cat = tab >= 0 ? line.slice(0, tab).trim() : '';
+		var cidr = tab >= 0 ? line.slice(tab + 1).trim() : line;
+		var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr);
+		if (!cat || !m) return;
+		var bits = +m[5];
+		if (bits < 8 || bits > 32) return;
+		var o = [+m[1], +m[2], +m[3], +m[4]], base = 0, i;
+		for (i = 0; i < 4; i++) { if (o[i] > 255) return; base = base * 256 + o[i]; }
+		out.push({ base: base, bits: bits, cat: cat });
+	});
+	return out;
+}
+function classifyIp(ip, ipmap) {
+	/* IPv4 → 平台类别 (最长前缀匹配); 非法输入 → null */
+	var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip || '').trim());
+	if (!ipmap || !ipmap.length || !m) return null;
+	var o = [+m[1], +m[2], +m[3], +m[4]], n = 0, i;
+	for (i = 0; i < 4; i++) { if (o[i] > 255) return null; n = n * 256 + o[i]; }
+	var best = null, bestBits = -1;
+	for (i = 0; i < ipmap.length; i++) {
+		var e = ipmap[i];
+		var mask = (e.bits === 0) ? 0 : (((0xffffffff << (32 - e.bits)) & 0xffffffff));
+		if ((n & mask) === (e.base & mask) && e.bits > bestBits) { best = e.cat; bestBits = e.bits; }
+	}
+	return best;
+}
+function buildPortMap(text) {
+	/* gameports.txt → [{lo, hi, proto, cat}] (纯函数; 格式 cat TAB lo-hi/proto; 坏行跳过) */
+	var out = [];
+	(text || '').split('\n').forEach(function(line) {
+		var h = line.indexOf('#');
+		if (h >= 0) line = line.slice(0, h);
+		line = line.trim();
+		if (!line) return;
+		var tab = line.indexOf('	');
+		if (tab < 0) return;
+		var cat = line.slice(0, tab).trim();
+		var spec = line.slice(tab + 1).trim();
+		var m = /^(\d+)-(\d+)\/(tcp|udp)$/.exec(spec);
+		if (!cat || !m) return;
+		var lo = +m[1], hi = +m[2];
+		if (lo < 1 || hi > 65535 || lo > hi) return;
+		out.push({ lo: lo, hi: hi, proto: m[3], cat: cat });
+	});
+	return out;
+}
+function classifyPort(port, proto, pmap) {
+	/* 端口+协议 → 平台类别; 非法输入 → null */
+	var p = parseInt(port, 10);
+	if (!pmap || !pmap.length || !p || p < 1 || p > 65535) return null;
+	proto = String(proto || '').toLowerCase();
+	for (var i = 0; i < pmap.length; i++) {
+		var e = pmap[i];
+		if (p >= e.lo && p <= e.hi && (proto === e.proto || proto === '')) return e.cat;
+	}
+	return null;
+}
+function dnsSummary(records, map, device, ipmap, pmap) {
+	/* 采样记录 → {total, hit, platforms:{cat:n}, last:[{q,cat,src}]} (纯函数)
+	 * 三级识别: q 域名(src=name) → d 裸 IP(src=ip) → p+t 端口(src=port); 全未命中 cat=''
+	 * device '-' 或 '' = 不过滤; q 与 d 都空的记录不计入 */
 	var res = { total: 0, hit: 0, platforms: {}, last: [] };
 	(records || []).forEach(function(r) {
-		if (!r || !r.q) return;
+		if (!r || (!r.q && !r.d)) return;
 		if (device && device !== '-' && r.c !== device) return;
 		res.total++;
-		var cat = classifyDomain(r.q, map);
+		var cat = '', src = '';
+		if (r.q) { cat = classifyDomain(r.q, map); if (cat) src = 'name'; }
+		if (!cat && r.d) { cat = classifyIp(r.d, ipmap); if (cat) src = 'ip'; }
+		if (!cat && r.p) { cat = classifyPort(r.p, r.t, pmap); if (cat) src = 'port'; }
 		if (cat) {
 			res.hit++;
 			res.platforms[cat] = (res.platforms[cat] || 0) + 1;
 		}
-		res.last.push({ q: r.q, cat: cat || '' });
+		res.last.push({ q: r.q || ('→' + (r.d || '') + (r.p ? ':' + r.p : '')), cat: cat || '', src: src });
 	});
 	if (res.last.length > 8) res.last = res.last.slice(-8);
 	return res;
@@ -345,7 +416,7 @@ function dnsObserverMeta(st) {
 	if (o === 'dnsmasq') return { state: 'dnsmasq', badge: _('查询日志'), desc: _('观察这台设备的 DNS 查询记录（dnsmasq 查询日志），标注它正在访问的游戏平台（Steam/Epic/PSN/Xbox…，识别数据来自 cache-domains 开源项目）。主机名来自查询日志，明文 DNS 才可见；样本受系统日志容量限制，短连接可能不出现——这是观测边界，不影响加速通道本身。分类在前端完成，路由器零负担。'), btn: 'off' };
 	if (o === 'dnsmasq_off') return { state: 'dnsmasq_off', badge: _('未开启'), desc: _('本机未检测到代理内核，DNS 识别将走 dnsmasq 查询日志通道。需要开启查询日志（会重启 dnsmasq 约 1 秒，日志体积略增）。开启后即自动观测。'), btn: 'on' };
 	if (o === 'none') return { state: 'none', badge: _('不可用'), desc: _('未检测到代理内核，也没有可用的 dnsmasq——DNS 识别不可用。这只影响平台标注，不影响加速通道本身。'), btn: null };
-	return { state: 'mihomo', badge: _('实时嗅探'), desc: _('观察这台设备的实时连接，标注它正在访问的游戏平台（Steam/Epic/PSN/Xbox…，识别数据来自 cache-domains 开源项目）。主机名来自代理内核的连接嗅探（SNI/Host），零配置零日志开销；样本是活跃连接的快照，短连接可能不出现——这是观测边界，不影响加速通道本身。分类在前端完成，路由器零负担。'), btn: null };
+	return { state: 'mihomo', badge: _('实时嗅探'), desc: _('观察这台设备的实时连接，三级标注它正在访问的游戏平台（Steam/Epic/PSN/Xbox…，识别数据来自 cache-domains 与 Valve 官方 SDR 公开数据）：①连接主机名（SNI 嗅探）②裸 IP 直连（官方 IP 段匹配，覆盖无域名的游戏relay）③知名端口（3074 主机 NAT 等）。样本是活跃连接的快照，短连接可能不出现——这是观测边界，不影响加速通道本身。分类在前端完成，路由器零负担。'), btn: null };
 }
 
 /* ---- 网络体检: 依赖矩阵 + 冲突检测 + 两档方案构建 (纯函数层) ---- */
@@ -2088,14 +2159,17 @@ renderSoftirqCard: function(text) {
 	},
 
 	loadGameDomains: function() {
-		/* gamedomains.txt 加载一次并缓存 → {suffix: category} */
+		/* 三个数据文件加载一次并缓存: 域名表 + L2 IP 段表 + 端口表 */
 		var self = this;
 		if (self._domainMapP) return self._domainMapP;
-		self._domainMapP = fs.read('/usr/share/netsteer/gamedomains.txt').then(function(text) {
-			self._domainMap = buildDomainMap(text || '');
-			return self._domainMap;
-		}).catch(function() {
-			self._domainMap = {};
+		self._domainMapP = Promise.all([
+			fs.read('/usr/share/netsteer/gamedomains.txt').catch(function() { return ''; }),
+			fs.read('/usr/share/netsteer/gameips.txt').catch(function() { return ''; }),
+			fs.read('/usr/share/netsteer/gameports.txt').catch(function() { return ''; })
+		]).then(function(txts) {
+			self._domainMap = buildDomainMap(txts[0] || '');
+			self._ipmap = buildIpMap(txts[1] || '');
+			self._pmap = buildPortMap(txts[2] || '');
 			return self._domainMap;
 		});
 		return self._domainMapP;
@@ -2114,8 +2188,10 @@ renderSoftirqCard: function(text) {
 			chips.push(E('span', { 'class': 'netsteer-badge', 'style': 'margin:2px' }, '%s ×%d'.format(c, sum.platforms[c])));
 		});
 		var kids = [E('div', { 'style': 'display:flex;gap:4px;flex-wrap:wrap;align-items:center' }, chips)];
+		var srcTag = { name: _('域名'), ip: _('IP 段'), port: _('端口') };
 		sum.last.slice(-3).reverse().forEach(function(r) {
-			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.1em 0;font-size:12px' }, (r.cat ? '[%s] '.format(r.cat) : '') + r.q));
+			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.1em 0;font-size:12px' },
+				(r.cat ? '[%s] '.format(r.cat) : '') + r.q + (r.cat && r.src && srcTag[r.src] ? ' · ' + srcTag[r.src] : '')));
 		});
 		el.replaceChildren(E('div', {}, kids));
 	},
@@ -2159,7 +2235,7 @@ renderSoftirqCard: function(text) {
 			var recs = [];
 			try { recs = JSON.parse(((res[2] && res[2].stdout) || '').trim()) || []; } catch (e) {}
 			self.loadGameDomains().then(function(map) {
-				self.paintGameDns(dnsSummary(recs, map, self._gameDevice));
+				self.paintGameDns(dnsSummary(recs, map, self._gameDevice, self._ipmap, self._pmap));
 			});
 		});
 	},

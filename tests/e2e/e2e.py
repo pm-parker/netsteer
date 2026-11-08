@@ -78,36 +78,34 @@ with sync_playwright() as p:
     pg.keyboard.press("Escape"); pg.wait_for_timeout(400)
     assert pg.locator(f".netsteer-preset[data-preset='{cur}'].on").count() == 1
     ok(f"预设往返 {other}→{cur}")
-
-    # v1.13 游戏设备优先通道 (真机 UI 往返)
-    pg.locator(".netsteer-tab[data-tab='game']").first.click(); pg.wait_for_timeout(1500)
-    assert pg.locator("#netsteer-game").count() == 1
-    ok("游戏通道: tab 可进, 卡片在位")
-    for sel in ("#netsteer-game-badge", "#netsteer-game-ip", "#ns-game-spark",
-                "#ns-game-tins", "#ns-game-cakeinfo"):
+    # v1.17: 整形分桶卡归专家调教 (术语只出现在这一页)
+    for sel in ("#netsteer-tins", "#ns-tins", "#ns-cakeinfo"):
         assert pg.locator(sel).count() == 1, f"missing {sel}"
-    ok("游戏通道: 徽标/IP输入/延迟曲线/分桶/整形实况 5 元素在位")
-    # v1.14 DNS 识别块 + 设备建议区 (mihomo 连接嗅探, 常开无开关)
-    for sel in ("#ns-game-dns", "#ns-game-dns-badge", "#ns-game-dns-body", "#ns-game-suggest"):
-        assert pg.locator(sel).count() == 1, f"missing {sel}"
-    assert "DNS 识别" in pg.inner_text("#ns-game-dns")
-    ok("DNS 识别块: 徽标/说明/建议区在位 (v1.14)")
+    ok("专家调教: 整形分桶卡在位 (tc 计数)")
 
-    # v1.16 场景感知卡 + 数据源行 (D11/D12: sense 引擎 + feed)
-    for sel in ("#ns-sense-body", "#ns-feed-status"):
+    # v1.16 场景感知横幅: 升到总览 C 位 (方案 A), 默认 tab 直接断言
+    for sel in ("#netsteer-scene", "#ns-sense-body"):
         assert pg.locator(sel).count() == 1, f"missing {sel}"
     import time as _t
     sense_txt = ""
-    for _ in range(15):  # 轮询最长 15s: pollGame 周期 8s + rpc dnslog 往返
+    for _ in range(15):  # 轮询最长 15s: pollLive 周期 8s + rpc dnslog 往返
         sense_txt = pg.inner_text("#ns-sense-body")
-        if any(k in sense_txt for k in ("游戏", "会议", "流媒体", "下载", "日常", "异常")):
+        if any(k in sense_txt for k in ("游戏", "会议", "视频", "下载", "浏览", "异常")):
             break
         _t.sleep(1.0)
-    assert any(k in sense_txt for k in ("游戏", "会议", "流媒体", "下载", "日常", "异常")), f"sense body empty: {sense_txt!r}"
-    feed_txt = pg.inner_text("#ns-feed-status")
-    assert ("识别数据集" in feed_txt), f"feed status empty: {feed_txt!r}"
-    assert pg.locator("#ns-feed-btn").count() == 1, "feed check button missing"
-    ok(f"场景感知: 卡片/判定/数据源行在位 (v1.16) → {sense_txt.splitlines()[0][:24]}")
+    assert any(k in sense_txt for k in ("游戏", "会议", "视频", "下载", "浏览", "异常")), f"sense body empty: {sense_txt!r}"
+    ok(f"总览: 场景感知横幅在位 (方案 A) → {sense_txt.splitlines()[0][:24]}")
+
+    # v1.17 智能优先 = 设备加速 + 识别详情 + 识别库 (原游戏通道正名重组)
+    pg.locator(".netsteer-tab[data-tab='smart']").first.click(); pg.wait_for_timeout(1500)
+    assert pg.locator("#netsteer-game").count() == 1
+    ok("智能优先: tab 可进, 设备加速卡在位")
+    for sel in ("#netsteer-game-badge", "#netsteer-game-ip", "#ns-game-spark",
+                "#ns-game-dns", "#ns-game-dns-badge", "#ns-game-dns-body", "#ns-game-suggest",
+                "#ns-feed-status", "#ns-feed-btn"):
+        assert pg.locator(sel).count() == 1, f"missing {sel}"
+    assert "设备加速" in pg.inner_text("#netsteer-game")
+    ok("智能优先: 徽标/IP输入/延迟曲线/识别详情/识别库 9 元素在位")
 
     b0 = pg.inner_text("#netsteer-game-badge").strip()
     if "优先中" in b0:  # 若初始为开, 先关掉保证起点确定
@@ -118,11 +116,11 @@ with sync_playwright() as p:
     pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
     b1 = pg.inner_text("#netsteer-game-badge").strip()
     assert "优先中" in b1 and "192.168.11.123" in b1, f"toggle-on failed: {b1}"
-    ok(f"游戏通道: UI 开启生效 ({b1})")
+    ok(f"设备加速: UI 开启生效 ({b1})")
     pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
     b2 = pg.inner_text("#netsteer-game-badge").strip()
     assert "未开启" in b2, f"toggle-off failed: {b2}"
-    ok(f"游戏通道: UI 关闭还原 ({b2})")
+    ok(f"设备加速: UI 关闭还原 ({b2})")
 
     # mobile popover (新 context 需重新登录)
     m = b.new_context(viewport={"width": 390, "height": 844}, ignore_https_errors=True)

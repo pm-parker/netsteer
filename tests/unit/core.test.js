@@ -202,15 +202,15 @@ eq(api.fmtBps(2.3e9), '2.3 Gbit/s', 'fmtBps G');
 
 // ---------- Tab 结构 ----------
 const TABS = api.tabStructure();
-eq(TABS.length, 4, 'tabs: 4 个');
-eq(TABS.map(t=>t.id).join(','), 'overview,smart,game,pro', 'tabs: 顺序 overview/smart/game/pro');
+eq(TABS.length, 3, 'tabs: 三分组 (v1.17 方案 A)');
+eq(TABS.map(t=>t.id).join(','), 'overview,smart,pro', 'tabs: 顺序 overview/smart/pro');
 const allCards = TABS.reduce((a,t)=>a.concat(t.cards),[]);
 const tabById = id => TABS.filter(t=>t.id===id)[0];
 eq(allCards.length, new Set(allCards).size, 'tabs: 卡片归属无重复');
-eq(TABS[0].cards.join(','), 'wires,health,traffic', 'tabs: 总览三卡');
-eq(tabById('pro').cards.join(','), 'presets,ifaces,softirq,irq', 'tabs: 专家四卡');
-eq(allCards.slice().sort().join(','), 'audit,game,health,ifaces,irq,p2p,presets,softirq,traffic,wires', 'tabs: 十卡全归组');
-eq(TABS[1].cards.includes('audit') && TABS[1].cards.includes('p2p'), true, 'tabs: 智能优化含体检+P2P');
+eq(TABS[0].cards.join(','), 'scene,wires,health,traffic', 'tabs: 总览四卡 (场景感知 C 位)');
+eq(tabById('pro').cards.join(','), 'presets,ifaces,softirq,irq,audit,tins', 'tabs: 专家六卡');
+eq(allCards.slice().sort().join(','), 'audit,device,health,ifaces,irq,p2p,presets,scene,softirq,tins,traffic,wires', 'tabs: 十二卡全归组');
+eq(TABS[1].cards.includes('device') && TABS[1].cards.includes('p2p'), true, 'tabs: 智能优先=设备加速+P2P');
 eq(tabById('pro').cards.includes('presets') && tabById('pro').cards.includes('ifaces'), true, 'tabs: 专家含预设+接口');
 eq(tabById('pro').cards.includes('softirq') && tabById('pro').cards.includes('irq'), true, 'tabs: 专家含软中断+IRQ');
 TABS.forEach(t => eq(typeof t.hint === 'string' && t.hint.length > 6, true, 'tabs: '+t.id+' hint 非空'));
@@ -374,13 +374,18 @@ eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv3'})
 eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv4', device:'192.168.11.101'}).state, 'on', 'game meta: 全链路就绪');
 eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv4', device:'192.168.11.101'}).label, '优先中 · 192.168.11.101', 'game meta: on 徽标文案');
 
-// tabStructure: 游戏通道 tab 归位
+// tabStructure: v1.17 方案 A 三分组 (总览/智能优先/专家调教 — game tab 消亡, 场景感知升总览)
 const TS = api.tabStructure();
-eq(TS.length, 4, 'tabs: 四分组');
-const gtab = TS.filter(function(t) { return t.id === 'game'; })[0];
-eq(!!gtab, true, 'tabs: game tab 存在');
-eq(gtab && gtab.cards.join(','), 'game', 'tabs: game 卡归类唯一');
-eq(TS.filter(function(t) { return t.id === 'smart'; })[0].cards.indexOf('game'), -1, 'tabs: game 不在 smart 组');
+eq(TS.length, 3, 'tabs: 三分组 (方案 A)');
+eq(TS.map(function(t) { return t.id; }).join(','), 'overview,smart,pro', 'tabs: id 序 overview/smart/pro');
+const ovt = TS.filter(function(t) { return t.id === 'overview'; })[0];
+eq(ovt.cards.indexOf('scene') >= 0, true, 'tabs: 场景感知在总览 (C 位)');
+eq(TS.filter(function(t) { return t.id === 'smart'; })[0].cards.join(','), 'device,p2p', 'tabs: smart=设备加速+P2P');
+eq(TS.filter(function(t) { return t.id === 'pro'; })[0].cards.join(','), 'presets,ifaces,softirq,irq,audit,tins', 'tabs: pro=分核+体检+整形分桶');
+// 卡片归类唯一 (一个卡只出现在一个 tab)
+const uniqCards = [];
+TS.forEach(function(t) { uniqCards.push.apply(uniqCards, t.cards); });
+eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
 
 // ---- v1.13 防回归: ACL 与 fs.exec 一致性 (rpcd 403 病根) ----
 {

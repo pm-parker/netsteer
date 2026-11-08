@@ -1,0 +1,102 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>NetSteer 实现逻辑图</title>
+<style>body{margin:0;background:#f1f5f9;display:flex;justify-content:center;padding:16px}
+svg{background:#f8fafc;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.08);max-width:100%;height:auto}
+text{font-family:'PingFang SC','Microsoft YaHei',system-ui,sans-serif}</style></head>
+<body><svg viewBox="0 0 1320 980" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="ah-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker><marker id="as-blue" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#2563eb"/></marker><marker id="ah-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker><marker id="as-green" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#059669"/></marker><marker id="ah-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker><marker id="as-orange" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#d97706"/></marker><marker id="ah-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker><marker id="as-slate" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#64748b"/></marker><marker id="ah-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker><marker id="as-purple" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#7c3aed"/></marker></defs>
+<text x="660" y="42" font-size="24" font-weight="800" fill="#0f172a" text-anchor="middle">NetSteer 实现逻辑 — 两条核心链路</text>
+<text x="660" y="64" font-size="12" fill="#475569" text-anchor="middle">上: 游戏平台识别三级链 (观测→分类) · 下: 设备优先通道 enforcement (标记→调度→回读验证)</text>
+<rect x="50" y="82" width="1220" height="64" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="66" y="106" font-size="13" font-weight="700" fill="#64748b" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">前置 · 环境自适应探测 (开机预热 + status 自举, 结果缓存 uci)</text>
+<text x="66" y="130" font-size="11.5" fill="#475569">代理内核: nikki → openclash → 裸 clash (按 API 存活)  ·  DNS 观测面: 有代理=连接表 SNI 嗅探 / 无代理=dnsmasq 查询日志(一键) / 都无=诚实不可用  ·  延迟探测目标: WAN 网关优先回退公网</text>
+<rect x="50" y="164" width="1220" height="270" rx="14" fill="#ecfdf5" stroke="#a7f3d0"/>
+<text x="66" y="190" font-size="13" font-weight="700" fill="#059669" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">链路 A · 游戏平台识别 (三级识别链, 前端分类零路由器负担)</text>
+<rect x="70" y="204" width="184" height="92" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="70" y="204" width="5" height="92" rx="2.5" fill="#059669"/>
+<text x="88" y="228" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">LAN 设备流量</text>
+<text x="88" y="250" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">游戏主机/PC</text>
+<text x="88" y="267" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">TLS·UDP·DNS</text>
+<rect x="270" y="204" width="184" height="92" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="270" y="204" width="5" height="92" rx="2.5" fill="#059669"/>
+<text x="288" y="228" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">观测面采样</text>
+<text x="288" y="250" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">dnslog 快照</text>
+<text x="288" y="267" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">{q 主机名, c 源IP,</text>
+<text x="288" y="284" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">d 目的IP, p 端口, t 协议}</text>
+<rect x="470" y="204" width="184" height="92" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="470" y="204" width="5" height="92" rx="2.5" fill="#059669"/>
+<text x="488" y="228" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">①级 域名匹配</text>
+<text x="488" y="250" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">SNI / DNS 查询名</text>
+<text x="488" y="267" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">gamedomains.txt</text>
+<text x="488" y="284" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">最长后缀匹配</text>
+<rect x="670" y="204" width="184" height="92" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="670" y="204" width="5" height="92" rx="2.5" fill="#059669"/>
+<text x="688" y="228" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">②级 IP 段匹配</text>
+<text x="688" y="250" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">裸 IP 直连盲区</text>
+<text x="688" y="267" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">gameips.txt</text>
+<text x="688" y="284" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">Valve SDR 官方段</text>
+<rect x="870" y="204" width="184" height="92" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="870" y="204" width="5" height="92" rx="2.5" fill="#059669"/>
+<text x="888" y="228" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">③级 端口启发</text>
+<text x="888" y="250" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">gameports.txt</text>
+<text x="888" y="267" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">3074 console·3480 psn</text>
+<text x="888" y="284" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">27015+ steam</text>
+<rect x="1070" y="204" width="184" height="92" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="1070" y="204" width="5" height="92" rx="2.5" fill="#059669"/>
+<text x="1088" y="228" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">平台标注 chips</text>
+<text x="1088" y="250" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">来源标签: 域名/IP段/端口</text>
+<text x="1088" y="267" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">+ DHCP 主机名建议</text>
+<line x1="254" y1="250" x2="270" y2="250" stroke="#059669" stroke-width="2.2" marker-end="url(#ah-059669)" />
+<line x1="454" y1="250" x2="470" y2="250" stroke="#059669" stroke-width="2.2" marker-end="url(#ah-059669)" />
+<line x1="654" y1="250" x2="670" y2="250" stroke="#059669" stroke-width="2.2" marker-end="url(#ah-059669)" />
+<line x1="854" y1="250" x2="870" y2="250" stroke="#059669" stroke-width="2.2" marker-end="url(#ah-059669)" />
+<line x1="1054" y1="250" x2="1070" y2="250" stroke="#059669" stroke-width="2.2" marker-end="url(#ah-059669)" />
+<text x="470" y="318" font-size="10.5" fill="#475569">未命中逐级下探 (域名→IP→端口), 全未命中如实显示</text>
+<text x="66" y="412" font-size="11.5" fill="#475569">裸路由器环境: 无连接表 → dnsmasq 查询日志通道 (仅域名级, 边界如实标注) · 加密 DNS 不影响 SNI 嗅探 · 短连接快照边界 UI 注明</text>
+<rect x="50" y="450" width="1220" height="292" rx="14" fill="#fffbeb" stroke="#fde68a"/>
+<text x="66" y="476" font-size="13" font-weight="700" fill="#d97706" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">链路 B · 游戏设备优先通道 (设备级 DSCP CS4 → cake video tin, 实测满载份额 2.47×)</text>
+<rect x="70" y="490" width="184" height="100" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="70" y="490" width="5" height="100" rx="2.5" fill="#2563eb"/>
+<text x="88" y="514" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">UI 指定设备开启</text>
+<text x="88" y="536" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">DHCP 建议 chips 回填 IP</text>
+<text x="88" y="553" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">五态徽标诚实降级</text>
+<rect x="270" y="490" width="184" height="100" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="270" y="490" width="5" height="100" rx="2.5" fill="#2563eb"/>
+<text x="288" y="514" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">netsteer-qos on</text>
+<text x="288" y="536" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">幂等·可还原</text>
+<text x="288" y="553" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">prev_script 记忆</text>
+<rect x="470" y="490" width="184" height="100" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="470" y="490" width="5" height="100" rx="2.5" fill="#d97706"/>
+<text x="488" y="514" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">nft 双向标记</text>
+<text x="488" y="536" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">forward egress 改写</text>
+<text x="488" y="553" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">inet ingress 钩子改写</text>
+<text x="488" y="570" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">DSCP CS4 全流量</text>
+<rect x="670" y="490" width="184" height="100" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="670" y="490" width="5" height="100" rx="2.5" fill="#d97706"/>
+<text x="688" y="514" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">SQM 切换</text>
+<text x="688" y="536" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">diffserv3→4 四桶</text>
+<text x="688" y="553" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">+ 上行 ack-filter</text>
+<text x="688" y="570" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">1-2s 瞬断如实提示</text>
+<rect x="870" y="490" width="184" height="100" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="870" y="490" width="5" height="100" rx="2.5" fill="#d97706"/>
+<text x="888" y="514" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">cake video tin</text>
+<text x="888" y="536" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">满载下带宽份额保护</text>
+<text x="888" y="553" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">2.47× (4 轮实测)</text>
+<text x="888" y="570" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">流隔离延迟 ~6ms</text>
+<rect x="1070" y="490" width="184" height="100" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="1070" y="490" width="5" height="100" rx="2.5" fill="#d97706"/>
+<text x="1088" y="514" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">tc -s 回读验证</text>
+<text x="1088" y="536" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">双向分桶速率表</text>
+<text x="1088" y="553" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">真实内核计数器</text>
+<text x="1088" y="570" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">不黑箱可自行复核</text>
+<line x1="254" y1="540" x2="270" y2="540" stroke="#d97706" stroke-width="2.2" marker-end="url(#ah-d97706)" />
+<line x1="454" y1="540" x2="470" y2="540" stroke="#d97706" stroke-width="2.2" marker-end="url(#ah-d97706)" />
+<line x1="654" y1="540" x2="670" y2="540" stroke="#d97706" stroke-width="2.2" marker-end="url(#ah-d97706)" />
+<line x1="854" y1="540" x2="870" y2="540" stroke="#d97706" stroke-width="2.2" marker-end="url(#ah-d97706)" />
+<line x1="1054" y1="540" x2="1070" y2="540" stroke="#d97706" stroke-width="2.2" marker-end="url(#ah-d97706)" />
+<path d="M 1162,590 L 1162,606 L 162,606 L 162,594" fill="none" stroke="#2563eb" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#ah-blue)"/>
+<text x="660" y="632" font-size="10.5" fill="#2563eb" text-anchor="middle" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">效果回读闭环: 分桶计数 8s 轮询刷新, 用户可直接核对 video tin 增量</text>
+<text x="66" y="722" font-size="11.5" fill="#475569">关闭即还原: nft 规则删除 + simple.qos 恢复 (卸载亦自动还原) · 卸载残留规则检测 (stale 态) · 诚实边界: 仅 IPv4 · 需 cake 运行 · 极速模式自动降级</text>
+<rect x="50" y="758" width="1220" height="60" rx="12" fill="#ecfdf5" stroke="#a7f3d0"/>
+<text x="66" y="784" font-size="13" font-weight="700" fill="#059669" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">守护: Guardian 每分钟对账 (配置 vs 运行时, 漂移自动修复+证据)  |  init.d/hotplug 双挂: 开机/网卡事件自动 reapply  |  开机 env 后台预热</text>
+<text x="66" y="848" font-size="11.5" fill="#475569">图例: 绿=识别/观测数据流 · 橙=内核 enforcement · 蓝=UI 控制流 · 虚线=验证回读闭环 · 全链路五件套质量门 (单测 242 / e2e 13 / CI 4 架构 / 真机装卸 / CI 产物终装)</text>
+</svg></body></html>

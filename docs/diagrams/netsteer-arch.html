@@ -1,0 +1,136 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>NetSteer 架构图</title>
+<style>body{margin:0;background:#f1f5f9;display:flex;justify-content:center;padding:16px}
+svg{background:#f8fafc;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.08);max-width:100%;height:auto}
+text{font-family:'PingFang SC','Microsoft YaHei',system-ui,sans-serif}</style></head>
+<body><svg viewBox="0 0 1320 980" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="ah-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker><marker id="as-blue" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#2563eb"/></marker><marker id="ah-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker><marker id="as-green" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#059669"/></marker><marker id="ah-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker><marker id="as-orange" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#d97706"/></marker><marker id="ah-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker><marker id="as-slate" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#64748b"/></marker><marker id="ah-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker><marker id="as-purple" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#7c3aed"/></marker></defs>
+<text x="660" y="42" font-size="24" font-weight="800" fill="#0f172a" text-anchor="middle">NetSteer v1.15 插件架构 — The cFosSpeed for OpenWrt</text>
+<text x="660" y="64" font-size="12" fill="#475569" text-anchor="middle">零二进制依赖 · 纯 shell/awk/busybox · 纯函数逻辑层 242 项单测 · 通用家庭环境自适应</text>
+<rect x="50" y="86" width="1220" height="148" rx="14" fill="#eff6ff" stroke="#bfdbfe"/>
+<text x="66" y="108" font-size="13" font-weight="700" fill="#2563eb" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">① 浏览器层 · LuCI 单页应用 (luci-app-netsteer)</text>
+<rect x="66" y="118" width="400" height="104" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="66" y="118" width="5" height="104" rx="2.5" fill="#2563eb"/>
+<text x="84" y="142" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">纯函数逻辑层 (可单测)</text>
+<text x="84" y="164" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">buildDomainMap / classifyDomain / dnsSummary</text>
+<text x="84" y="181" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">buildIpMap · classifyIp (最长前缀)</text>
+<text x="84" y="198" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">buildPortMap · classifyPort · dnsObserverMeta</text>
+<text x="84" y="215" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">modeDefs / auditConflicts / parseTinStats …</text>
+<rect x="490" y="118" width="146" height="104" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="490" y="118" width="5" height="104" rx="2.5" fill="#2563eb"/>
+<text x="508" y="142" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">游戏通道</text>
+<text x="508" y="164" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">优先标记+识别</text>
+<text x="508" y="181" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5"></text>
+<rect x="646" y="118" width="146" height="104" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="646" y="118" width="5" height="104" rx="2.5" fill="#2563eb"/>
+<text x="664" y="142" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">网络体检</text>
+<text x="664" y="164" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">冲突/依赖审计</text>
+<text x="664" y="181" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5"></text>
+<rect x="802" y="118" width="146" height="104" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="802" y="118" width="5" height="104" rx="2.5" fill="#2563eb"/>
+<text x="820" y="142" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">专家调教</text>
+<text x="820" y="164" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">RPS·XPS·IRQ</text>
+<text x="820" y="181" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5"></text>
+<rect x="958" y="118" width="146" height="104" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="958" y="118" width="5" height="104" rx="2.5" fill="#2563eb"/>
+<text x="976" y="142" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">P2P 直通</text>
+<text x="976" y="164" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">UDP 全端口</text>
+<text x="976" y="181" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5"></text>
+<rect x="1114" y="118" width="146" height="104" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="1114" y="118" width="5" height="104" rx="2.5" fill="#2563eb"/>
+<text x="1132" y="142" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">仪表盘</text>
+<text x="1132" y="164" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">负载·软中断</text>
+<text x="1132" y="181" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5"></text>
+<line x1="660" y1="234" x2="660" y2="274" stroke="#2563eb" stroke-width="2.2" marker-end="url(#ah-2563eb)" />
+<rect x="440" y="276" width="440" height="40" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+<rect x="440" y="276" width="5" height="40" rx="2.5" fill="#64748b"/>
+<text x="458" y="300" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">rpcd 通道 · ACL 白名单 (exec 一致性单测防回归)</text>
+<line x1="660" y1="316" x2="660" y2="350" stroke="#2563eb" stroke-width="2.2" marker-end="url(#ah-2563eb)" />
+<text x="66" y="372" font-size="13" font-weight="700" fill="#2563eb" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">② CLI 后端层 · 幂等 · busybox shell (apk 安装, 4 架构) — 读取 ④ 观测源 · 写入 ⑤ 内核</text>
+<rect x="66" y="386" width="230" height="96" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="66" y="386" width="5" height="96" rx="2.5" fill="#2563eb"/>
+<text x="84" y="410" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">netsteer-detect</text>
+<text x="84" y="432" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">接口/核心探测</text>
+<text x="84" y="449" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">首装自动生成配置</text>
+<rect x="312" y="386" width="230" height="96" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="312" y="386" width="5" height="96" rx="2.5" fill="#2563eb"/>
+<text x="330" y="410" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">netsteer-apply</text>
+<text x="330" y="432" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">RPS/XPS 应用</text>
+<text x="330" y="449" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">场景模式动作集</text>
+<rect x="558" y="386" width="230" height="96" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="558" y="386" width="5" height="96" rx="2.5" fill="#2563eb"/>
+<text x="576" y="410" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">netsteer-qos</text>
+<text x="576" y="432" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">游戏通道 on/off</text>
+<text x="576" y="449" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">dnslog 采样·env 探测</text>
+<text x="576" y="466" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">dns-en 端口开关</text>
+<rect x="804" y="386" width="230" height="96" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="804" y="386" width="5" height="96" rx="2.5" fill="#2563eb"/>
+<text x="822" y="410" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">netsteer-irq</text>
+<text x="822" y="432" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">IRQ 亲和读写</text>
+<text x="822" y="449" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">softirq 增量测量</text>
+<rect x="1050" y="386" width="230" height="96" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="1050" y="386" width="5" height="96" rx="2.5" fill="#2563eb"/>
+<text x="1068" y="410" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">netsteer-p2p</text>
+<text x="1068" y="432" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">UDP 全端口 DNAT</text>
+<text x="1068" y="449" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">Fullcone 等效</text>
+<text x="66" y="518" font-size="13" font-weight="700" fill="#64748b" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">③ 数据文件层 (透明可审计) — 由 ① 前端直接读取, 分类在浏览器</text>
+<rect x="66" y="530" width="190" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="66" y="530" width="5" height="84" rx="2.5" fill="#64748b"/>
+<text x="84" y="554" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">gamedomains.txt</text>
+<text x="84" y="576" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">cache-domains MIT</text>
+<text x="84" y="593" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">158 后缀 · 22 平台</text>
+<rect x="272" y="530" width="190" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="272" y="530" width="5" height="84" rx="2.5" fill="#64748b"/>
+<text x="290" y="554" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">gameips.txt</text>
+<text x="290" y="576" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">Valve 官方 SDR API</text>
+<text x="290" y="593" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">6 宽段 + 19 POP /24</text>
+<rect x="478" y="530" width="190" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="478" y="530" width="5" height="84" rx="2.5" fill="#64748b"/>
+<text x="496" y="554" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">gameports.txt</text>
+<text x="496" y="576" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">官方 NAT 端口</text>
+<text x="496" y="593" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">3074·3480·27015+</text>
+<text x="720" y="518" font-size="13" font-weight="700" fill="#059669" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">④ 环境观测源 (探测式, 不做假设)</text>
+<rect x="720" y="530" width="264" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="720" y="530" width="5" height="84" rx="2.5" fill="#059669"/>
+<text x="738" y="554" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">mihomo 连接表</text>
+<text x="738" y="576" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">nikki/openclash/clash</text>
+<text x="738" y="593" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">SNI·dst IP·端口·协议</text>
+<rect x="1000" y="530" width="264" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="1000" y="530" width="5" height="84" rx="2.5" fill="#059669"/>
+<text x="1018" y="554" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">dnsmasq 查询日志</text>
+<text x="1018" y="576" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">裸路由器通道</text>
+<text x="1018" y="593" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">logqueries 一键开关</text>
+<rect x="720" y="626" width="264" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="720" y="626" width="5" height="84" rx="2.5" fill="#059669"/>
+<text x="738" y="650" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">/proc/softirqs</text>
+<text x="738" y="672" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">软中断集中度</text>
+<text x="738" y="689" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">IRQ 调优依据</text>
+<rect x="1000" y="626" width="264" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="1000" y="626" width="5" height="84" rx="2.5" fill="#059669"/>
+<text x="1018" y="650" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">tc -s 计数器</text>
+<text x="1018" y="672" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">双向分桶速率</text>
+<text x="1018" y="689" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">效果透明可验证</text>
+<text x="66" y="744" font-size="13" font-weight="700" fill="#d97706" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">⑤ 内核与系统层 · enforcement — 由 ② CLI 后端写入, 变更幂等可还原</text>
+<rect x="66" y="756" width="290" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="66" y="756" width="5" height="84" rx="2.5" fill="#d97706"/>
+<text x="84" y="780" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">sysfs RPS/XPS</text>
+<text x="84" y="802" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">per-queue per-core</text>
+<text x="84" y="819" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">网络中断分流</text>
+<rect x="372" y="756" width="290" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="372" y="756" width="5" height="84" rx="2.5" fill="#d97706"/>
+<text x="390" y="780" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">nftables 标记</text>
+<text x="390" y="802" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">DSCP CS4 双向</text>
+<text x="390" y="819" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">forward + ingress 钩子</text>
+<rect x="678" y="756" width="290" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="678" y="756" width="5" height="84" rx="2.5" fill="#d97706"/>
+<text x="696" y="780" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">tc cake (ifb 双向)</text>
+<text x="696" y="802" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">diffserv3/4 分桶</text>
+<text x="696" y="819" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">video tin 优先调度</text>
+<rect x="984" y="756" width="290" height="84" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="984" y="756" width="5" height="84" rx="2.5" fill="#d97706"/>
+<text x="1002" y="780" font-size="14" font-weight="700" fill="#0f172a" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">DHCP leases / uci</text>
+<text x="1002" y="802" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">设备发现·主机名</text>
+<text x="1002" y="819" font-size="11.5" fill="#475569" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="3.5">启发式建议 chips</text>
+<rect x="50" y="872" width="1220" height="52" rx="12" fill="#ecfdf5" stroke="#a7f3d0"/>
+<text x="66" y="904" font-size="13" font-weight="700" fill="#059669" style="paint-order:stroke" stroke="#FFFFFF" stroke-width="4">守护闭环: Guardian 每分钟配置-运行时对账·漂移自动修复+证据落盘  |  init.d/hotplug 双挂自愈  |  开机 env 探测预热 (后台)</text>
+<text x="66" y="950" font-size="11.5" fill="#475569">图例: 蓝=UI/控制流 · 绿=观测/守护 · 橙=内核 enforcement · 灰=数据文件 · 单测 242 项 / e2e 13 项 / CI 4 架构 / 真机装卸五件套质量门</text>
+</svg></body></html>

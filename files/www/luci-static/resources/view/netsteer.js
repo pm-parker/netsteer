@@ -6,10 +6,11 @@
 'require view';
 'require fs';
 'require uci';
-
-/* 插件版本 (页脚显示; build-apk.sh 打包时按发布版本覆盖注入, 源内默认值为开发版标识) */
-var NS_VERSION = 'dev';
 'require ui';
+
+/* 插件版本 (页脚显示; build-apk.sh 打包时按发布版本覆盖注入, 源内默认值为开发版标识)
+ * 注意: 必须放在全部 'require' 声明之后 — LuCI 模块加载器把首个非字符串语句当模块体起点 */
+var NS_VERSION = 'dev';
 
 /* 直调 ubus 的轻量应用链 (rpc.declare 在本环境调用挂起，改用裸 fetch /ubus/) */
 function ubusCall(obj, method, params) {

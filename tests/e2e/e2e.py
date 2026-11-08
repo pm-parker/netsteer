@@ -42,15 +42,14 @@ with sync_playwright() as p:
 
     if "把网络负载摊到全部" in body and len([l for l in body.split("\n") if "把网络负载摊到全部" in l][0]) < 60:
         ok("lede 精简")
-    ok("问号浮窗 (原理+用法)" if "?" in body else "FAIL 问号按钮缺失")
 
     n_chips = pg.locator(".netsteer-chip[data-sec='eth0'][data-kind='rps']").count()
     assert n_chips >= 2, f"chip count {n_chips}"
     ok(f"NCPU 运行时探测: {n_chips} 芯片")
 
-    n_cards = pg.locator(".netsteer-card[data-sec]").count()
-    assert n_cards >= 2
-    ok(f"uci 动态接口: {n_cards} 卡")
+    n_cards = pg.locator(".netsteer-card").count()
+    assert n_cards >= 6, f"card count {n_cards}"
+    ok(f"卡片全景: {n_cards} 卡 (仪表盘/审计/P2P/游戏/软中断/IRQ)")
 
     assert pg.locator(".netsteer-chip[data-sec='eth0'][data-kind='irq']").count() > 0
     ok("IRQ radio 在位")
@@ -62,6 +61,14 @@ with sync_playwright() as p:
     assert "当前" in badge
     ok(f"徽标: {badge.strip()}")
 
+    # 问号浮窗 (按钮在专家调教面板头部)
+    pg.locator(".netsteer-tab[data-tab='pro']").first.click(); pg.wait_for_timeout(800)
+    pg.locator(".netsteer-help").first.click(); pg.wait_for_timeout(500)
+    assert pg.locator("#netsteer-help-pop").count() == 1
+    ok("问号浮窗可打开 (专家调教页)")
+    pg.keyboard.press("Escape"); pg.wait_for_timeout(300)
+    # 预设卡在本面板 (专家调教), 直接往返
+
     # preset round-trip
     cur = pg.locator(".netsteer-preset.on").first.get_attribute("data-preset")
     other = "pairs" if cur != "pairs" else "all"
@@ -72,13 +79,41 @@ with sync_playwright() as p:
     assert pg.locator(f".netsteer-preset[data-preset='{cur}'].on").count() == 1
     ok(f"预设往返 {other}→{cur}")
 
-    # mobile popover
+    # v1.13 游戏设备优先通道 (真机 UI 往返)
+    pg.locator(".netsteer-tab[data-tab='game']").first.click(); pg.wait_for_timeout(1500)
+    assert pg.locator("#netsteer-game").count() == 1
+    ok("游戏通道: tab 可进, 卡片在位")
+    for sel in ("#netsteer-game-badge", "#netsteer-game-ip", "#ns-game-spark",
+                "#ns-game-tins", "#ns-game-cakeinfo"):
+        assert pg.locator(sel).count() == 1, f"missing {sel}"
+    ok("游戏通道: 徽标/IP输入/延迟曲线/分桶/整形实况 5 元素在位")
+    b0 = pg.inner_text("#netsteer-game-badge").strip()
+    if "优先中" in b0:  # 若初始为开, 先关掉保证起点确定
+        pg.locator("#netsteer-game .netsteer-minibtn").first.click(); pg.wait_for_timeout(9000)
+        b0 = pg.inner_text("#netsteer-game-badge").strip()
+    assert "未开启" in b0, f"unexpected initial badge: {b0}"
+    pg.locator("#netsteer-game-ip").fill("192.168.11.123")
+    pg.locator("#netsteer-game .netsteer-minibtn").first.click(); pg.wait_for_timeout(9000)
+    b1 = pg.inner_text("#netsteer-game-badge").strip()
+    assert "优先中" in b1 and "192.168.11.123" in b1, f"toggle-on failed: {b1}"
+    ok(f"游戏通道: UI 开启生效 ({b1})")
+    pg.locator("#netsteer-game .netsteer-minibtn").first.click(); pg.wait_for_timeout(9000)
+    b2 = pg.inner_text("#netsteer-game-badge").strip()
+    assert "未开启" in b2, f"toggle-off failed: {b2}"
+    ok(f"游戏通道: UI 关闭还原 ({b2})")
+
+    # mobile popover (新 context 需重新登录)
     m = b.new_context(viewport={"width": 390, "height": 844})
     mp = m.new_page()
+    mp.goto(BASE, wait_until="domcontentloaded"); mp.wait_for_timeout(1000)
+    mp.locator("input[type='password']").first.fill(PW)
+    mp.locator("button:has-text('Log in')").first.click(); mp.wait_for_timeout(2200)
     mp.goto(BASE + "/admin/services/netsteer", wait_until="domcontentloaded"); mp.wait_for_timeout(4500)
     if mp.get_by_text("稍后再说").count():
         mp.get_by_text("稍后再说").click(); mp.wait_for_timeout(400)
-    mp.get_by_text("?", exact=True).first.click(); mp.wait_for_timeout(500)
+    # 390px 视口下 tab 条可能横向滚动, JS 直发 click 切到专家页
+    mp.locator(".netsteer-tab[data-tab='pro']").first.evaluate("el => el.click()"); mp.wait_for_timeout(800)
+    mp.locator(".netsteer-help").first.click(); mp.wait_for_timeout(500)
     assert mp.locator("#netsteer-help-pop").count() == 1
     ok("移动端: 问号浮窗可开")
     m.close(); ctx.close(); b.close()

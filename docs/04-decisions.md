@@ -27,3 +27,10 @@
 - 机理：LuCI ucode dispatcher 只对 `admin/...` 前缀节点做登录墙；acl.d 的顶层 key（如 "luci-app-netsteer"）是 ACL 组名，与菜单路径无关，depends.acl 引用的是组名
 - 修正：单页 app 用 `"admin/services/netsteer"` 单节点 + depends（acl + uci），无需 firstchild 包装
 - 附带教训：`node --check` 只保语法，this 绑定丢失（map 回调里 createHandlerFn(this,...)）和 menu 挂载错误这类运行时/结构错误必须真机渲染验证；LuCI session 绑定创建者 IP，从 CLI 建的会话无法给别的 IP 的浏览器用
+
+## D7：游戏通道 = 设备级 DSCP CS4 → cake diffserv4 video tin（2026-11-08）
+- 逆向厂商固件（TP-Link GE800 GPL / ASUS RT-AX86U）结论：DPI 清单拿不到也不值得追（加密+按机型授权，明文部分过时十年）；自建透明数据文件更优
+- 识别三级路线：L0 端口/启发式（零依赖）→ L1 DNS 分类（uklans/cache-domains，MIT）→ L2 nDPI 可选软依赖；不做内核态每包 DPI（R5C 4×A55 上 cake 已吃 29% 吞吐）
+- 实现：设备 IP nft 双向标记（forward egress 改写 + inet ingress 钩子改写）；sqm 脚本薄包装切 diffserv4 + ack-filter；关闭自动还原 simple.qos；幂等 reapply + init.d/hotplug 双挂自愈
+- 教训：rpcd ACL 必须放行新二进制 exec——UI fs.exec 未白名单 = 静默 403 且难定位；已加单测（ACL 与 fs.exec 一致性）防回归
+- 实测边界：cake 流隔离在开/关两态都把满载 ping 压在 ~6ms，通道增益 = 带宽份额（2.47×）非延迟；四桶调度 +0.7ms 开销如实标注

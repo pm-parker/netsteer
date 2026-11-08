@@ -44,3 +44,10 @@
 - [x] UI: 接口卡加「中断应门 (IRQ)」行 (radio 单选, pppoe 虚拟口无), 徽标匹配纳入 IRQ, preset 切换联动
 - [ ] 整机重启后 IRQ 号重发现持久化验证 (待下次重启顺带)
 - 踩坑: msi_irqs/ 下文件名才是 IRQ 号, 文件内容是中断类型字符串 ("msix"); 20 并发压测时 NET_RX 集中度下限 ≈ WAN 流量占比 (单队列物理瓶颈)
+## v1.13 — 游戏设备优先通道 ✅ 已交付 (2026-11-08)
+- [x] A：设备级优先通道（DSCP CS4 → diffserv4 video tin，双向标记，幂等，hotplug 自愈）
+- [x] B：出口延迟曲线（8s probe 采样，5 分钟滚动 sparkline）
+- [x] C：SQM 状态互显（五态徽标诚实降级 + 整形实况 + 双向分桶表）
+- [x] 质量门：单测 177 / e2e 12 项全绿 / 4 架构 apk verify / 真机装卸循环
+- [ ] L1：DNS 分类接 cache-domains（MIT，36 厂商域名）— v1.14 候选
+- [ ] L2：nDPI 可选软依赖（libndpi 已在 25.12 feed）— 后续

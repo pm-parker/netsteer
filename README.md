@@ -26,6 +26,7 @@ Each direction has standalone tools: SQM for shaping, hand-written sysfs for spr
 | **Live dashboard** | Wire-path particle flow (speed = live traffic, 3 tiers), RX-concentration / smart-queue / forwarding health cards, up/down throughput curves + gain reference line |
 | **One-click audit** | Multi-dimensional checks (SQM / softirq concentration / forwarding / offloading) with conflict flags; missing deps get two-tier suggestions (no-install alternative or the exact install command) |
 | **Scenario modes** | Balanced / throughput / low-latency / core-steering / P2P — each a declarative action set (cake profile, RPS masks, IRQ policy), instant and reboot-persistent |
+| **Game device priority lane** | Pin one device (console/PC): all its traffic is DSCP CS4-marked (nftables, both directions) into cake's video tin — bandwidth-share protection under saturation (**2.47x** measured share under full load), with live per-tin rate counters on the page so the effect is verifiable, not a black box |
 | **P2P passthrough** | One-click UDP full-port inbound DNAT (Fullcone-equivalent) for any LAN device — big win for BT/PT/online-game NAT traversal; native fw4 rules, idempotent add/remove |
 | **Expert tuning** | Per-interface per-core RPS/XPS switches, visual IRQ affinity editor with before/after softirq delta measurement; PPPoE virtual interfaces included |
 | **Guardian** | Config-vs-runtime reconciliation every minute; drift auto-repaired and evidence persisted |
@@ -95,6 +96,7 @@ NetSteer is an integration layer — it invents no new mechanisms, it drives exi
 - **RPS/XPS** (`/sys/class/net/*/queues/*/rps_cpus`, `xps_cpus`): spreads packet processing across cores — fixes single-core saturation on single-queue NICs
 - **IRQ affinity** (`/proc/irq/*/smp_affinity`): pins NIC interrupts to less busy cores, staggered across interfaces
 - **P2P passthrough**: fw4/nftables rules for UDP full-port DNAT (Fullcone-equivalent)
+- **Game priority lane**: nftables DSCP CS4 marking for one device IP -> cake diffserv4 video tin (up+down) + egress ack-filter; idempotent, hotplug self-healing, honest five-state badge that visibly degrades when SQM is off; turning it off restores the stock sqm script
 - **Gain measurement**: `netsteer-bench` runs an 8-second window of real ping latency + per-interface throughput sampling, baselines persisted to uci; triggered automatically in the background on master-toggle switches and compared on the page
 - **netsteer-apply** declaratively writes sysfs from UCI config, records applied state, idempotent at boot
 - **netsteer-check** (cron, every minute) reconciles runtime vs config, auto-repairs drift and persists evidence to `/etc/netsteer/incidents/`

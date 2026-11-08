@@ -1,0 +1,207 @@
+#!/bin/sh
+# netsteer-qos: 游戏设备优先通道 (设备级 DSCP CS4 → cake diffserv4 video tin)
+#
+# 原理 (对位厂商 L3 设备级优先 + L4 AQM):
+#   上行: nft forward 钩子  ip saddr <dev> dscp set cs4 → pppoe-wan cake video tin
+#   下行: nft netdev ingress 钩子 (tc ingress 之前, 早于 ifb 重定向)
+#         ip daddr <dev> dscp set cs4 → ifb4<wan> cake video tin
+#   整形: sqm.script 切到 netsteer-gaming.qos (双向 diffserv4 + 上行 ack-filter);
+#         关闭时恢复原脚本 (prev_script 记在 netsteer.qos.prev_script)
+#
+# 边界 (诚实声明):
+#   仅 IPv4 标记 (游戏主机/PC 场景绝大多数走 v4); IPv6 流量不标记不分桶。
+#   throughput 模式 / mode off 会停 SQM → 通道降级为无整形直通 (status 如实上报)。
+#
+# 用法: netsteer-qos on <ip> | off | device <ip> | reapply | status | probe | tins
+
+. /lib/functions.sh
+
+LOG_TAG=netsteer
+TABLE=netsteer_qos
+RULES=/tmp/netsteer/qos-rules.nft
+GAMING_QOS="netsteer-gaming.qos"
+BASE_QOS="simple.qos"
+PROBE_TARGET="223.5.5.5"
+
+log() { logger -t $LOG_TAG "qos: $@"; }
+
+# ---- 校验 (与 netsteer-p2p 同规) ----
+valid_ip() {
+	echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+	local o
+	for o in $(echo "$1" | tr '.' ' '); do
+		[ "$o" -le 255 ] 2>/dev/null || return 1
+	done
+	case "$1" in
+		192.168.*.*|10.*.*.*|172.1[6-9].*.*|172.2[0-9].*.*|172.3[01].*.*) return 0;;
+		*) return 1;;
+	esac
+}
+
+# ---- SQM 状态 ----
+sqm_section() {
+	uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d. -f2 | cut -d= -f1
+}
+sqm_enabled() {
+	local sec=$(sqm_section)
+	[ -n "$sec" ] && [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" = "1" ]
+}
+wan_dev() {
+	local sec=$(sqm_section)
+	uci -q get sqm.$sec.interface 2>/dev/null || echo pppoe-wan
+}
+cake_have() { grep -q '^sch_cake' /proc/modules 2>/dev/null; }
+
+# ---- nft 标记规则 (绝对幂等: 整表删除重建) ----
+write_rules() { # $1=device ip  $2=wan dev
+	mkdir -p /tmp/netsteer
+	nft list table inet $TABLE >/dev/null 2>&1 && nft delete table inet $TABLE >/dev/null 2>&1
+	cat > "$RULES" <<EOF
+table inet $TABLE {
+
+	chain mark_fwd {
+		type filter hook forward priority -150; policy accept;
+		ip saddr $1 ip dscp set cs4 comment "netsteer game up"
+	}
+
+	chain mark_ing {
+		type filter hook ingress priority -450; policy accept;
+		iifname "$2" ip daddr $1 ip dscp set cs4 comment "netsteer game down"
+	}
+}
+EOF
+	nft -f "$RULES" 2>/dev/null
+}
+remove_rules() {
+	nft delete table inet $TABLE >/dev/null 2>&1
+	rm -f "$RULES"
+}
+rules_active() {
+	nft list table inet $TABLE >/dev/null 2>&1 && echo 1 || echo 0
+}
+
+# ---- 整形脚本切换 ----
+qos_get() { # $1=option $2=default
+	config_load netsteer 2>/dev/null
+	config_get v "qos" "$1" "$2"
+	echo "$v"
+}
+ensure_section() {
+	uci -q get netsteer.qos >/dev/null 2>&1 || { uci set netsteer.qos='qos'; uci commit netsteer; }
+}
+script_switch_on() {
+	local sec=$(sqm_section)
+	[ -n "$sec" ] || { echo "ERR: sqm config missing"; return 1; }
+	local cur="$(uci -q get sqm.$sec.script 2>/dev/null)"
+	if [ "$cur" != "$GAMING_QOS" ]; then
+		uci set netsteer.qos.prev_script="${cur:-$BASE_QOS}"
+		uci set sqm.$sec.script="$GAMING_QOS"
+		uci commit sqm
+		/etc/init.d/sqm restart >/dev/null 2>&1
+	fi
+	return 0
+}
+script_switch_off() {
+	local sec=$(sqm_section)
+	local prev="$(qos_get prev_script "$BASE_QOS")"
+	if [ -n "$sec" ] && [ "$(uci -q get sqm.$sec.script 2>/dev/null)" = "$GAMING_QOS" ]; then
+		uci set sqm.$sec.script="$prev"
+		uci commit sqm
+		/etc/init.d/sqm restart >/dev/null 2>&1
+	fi
+	uci -q delete netsteer.qos.prev_script 2>/dev/null
+	uci commit netsteer 2>/dev/null
+	return 0
+}
+
+# ---- 动作 ----
+qos_on() { # $1=device ip
+	ensure_section
+	local ip="$1"
+	valid_ip "$ip" || { log "ERR: 非法内网 IP '$ip'"; echo "ERR: invalid ip"; exit 1; }
+	sqm_enabled || { log "ERR: SQM 未启用 (先应用均衡/低延迟模式)"; echo "ERR: sqm disabled"; exit 1; }
+	cake_have || { log "ERR: kmod-sch-cake 未加载"; echo "ERR: no cake"; exit 1; }
+
+	local wan="$(wan_dev)"
+	script_switch_on || exit 1
+	write_rules "$ip" "$wan"
+	uci set netsteer.qos.enabled='1'
+	uci set netsteer.qos.device="$ip"
+	uci commit netsteer
+	log "ON: 设备 $ip → cs4 (up:forward + down:ingress@pppoe), 整形=$GAMING_QOS"
+	echo "OK: on $ip"
+}
+
+qos_off() {
+	ensure_section
+	remove_rules
+	script_switch_off
+	uci set netsteer.qos.enabled='0'
+	uci commit netsteer
+	log "OFF: 游戏通道已关闭, 整形恢复 $(qos_get prev_script "$BASE_QOS")"
+	echo "OK: off"
+}
+
+qos_device() { # $1=device ip (enabled 时热切换)
+	ensure_section
+	local ip="$1"
+	valid_ip "$ip" || { log "ERR: 非法内网 IP '$ip'"; echo "ERR: invalid ip"; exit 1; }
+	uci set netsteer.qos.device="$ip"
+	uci commit netsteer
+	if [ "$(qos_get enabled 0)" = "1" ] && [ "$(rules_active)" = "1" ]; then
+		write_rules "$ip" "$(wan_dev)"
+		log "DEVICE: 标记规则热切换 → $ip"
+	fi
+	echo "OK: device $ip"
+}
+
+qos_reapply() { # boot/hotplug 兜底: enabled 才动作, 静默
+	[ "$(qos_get enabled 0)" = "1" ] || exit 0
+	local ip="$(qos_get device "")"
+	[ -n "$ip" ] || exit 0
+	# SQM 在跑但脚本被外部改走 → 拉回 gaming 脚本 (boot 时序竞态兜底)
+	if sqm_enabled; then
+		local sec=$(sqm_section)
+		[ "$(uci -q get sqm.$sec.script 2>/dev/null)" = "$GAMING_QOS" ] || script_switch_on
+	fi
+	write_rules "$ip" "$(wan_dev)"
+	log "REAPPLY: $ip"
+}
+
+qos_status() {
+	ensure_section
+	local wan="$(wan_dev)"
+	local up_mode="$(tc qdisc show dev "$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
+	local dn_mode="$(tc qdisc show dev "ifb4$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
+	echo "{\"enabled\":$(qos_get enabled 0),\"device\":\"$(qos_get device -)\",\"active\":$(rules_active),\"script\":\"$(uci -q get sqm.$(sqm_section).script 2>/dev/null || echo '-')\",\"prev_script\":\"$(qos_get prev_script '-')\",\"sqm_enabled\":$(sqm_enabled && echo 1 || echo 0),\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"mode\":\"$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)\"}"
+}
+
+qos_probe() { # 轻量延迟采样: 3 ping 取平均 (供游戏通道页 8s 轮询画曲线); busybox ping 只支持整数 -i
+	local rtts sum=0 n=0 r
+	rtts="$(ping -c 3 -i 1 -w 4 "$PROBE_TARGET" 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)"
+	for r in $rtts; do
+		sum=$(awk -v a="$sum" -v b="$r" 'BEGIN{printf "%.3f", a+b}')
+		n=$((n + 1))
+	done
+	[ "$n" -gt 0 ] || { echo "{\"latency_ms\":null,\"n\":0,\"ts\":$(date +%s)}"; return; }
+	awk -v s="$sum" -v n="$n" -v t="$(date +%s)" 'BEGIN{printf "{\"latency_ms\":%.1f,\"n\":%d,\"ts\":%d}\n", s/n, n, t}'
+}
+
+qos_tins() { # 原始 tc -s 双向输出 (前端 parseTinStats 解析, 指标行保持原文可测)
+	local wan="$(wan_dev)"
+	echo "#UP dev $wan"
+	tc -s qdisc show dev "$wan" 2>/dev/null
+	echo "#DOWN dev ifb4$wan"
+	tc -s qdisc show dev "ifb4$wan" 2>/dev/null
+}
+
+case "$1" in
+	on)      shift; qos_on "$@";;
+	off)     qos_off;;
+	device)  shift; qos_device "$@";;
+	reapply) qos_reapply;;
+	status)  qos_status;;
+	probe)   qos_probe;;
+	tins)    qos_tins;;
+	*)       echo "usage: $0 on <ip> | off | device <ip> | reapply | status | probe | tins"; exit 1;;
+esac

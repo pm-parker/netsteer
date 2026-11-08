@@ -6,6 +6,8 @@ start() {
 	# 无配置时自动探测接口生成 (已有配置则跳过)
 	/usr/bin/netsteer-detect >/dev/null 2>&1
 	/usr/bin/netsteer-apply >/dev/null 2>&1
+	# 游戏通道标记规则 + 整形脚本一致性兜底 (内部自判 enabled, 关闭态零动作)
+	/usr/bin/netsteer-qos reapply >/dev/null 2>&1
 }
 
 boot() {

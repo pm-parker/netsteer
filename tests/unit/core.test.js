@@ -12,12 +12,11 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
-  if (!m) { console.error('FATAL: function %s not found in source', name); process.exit(2); }
-  // brace-match to find the end
+  if (!m) { console.error('FATAL: function %s not found in source', name); process.exit(2); }  // brace-match to find the end
   let i = SRC.indexOf('{', m.index), depth = 0, end = -1;
   for (; i < SRC.length; i++) {
     if (SRC[i] === '{') depth++;
@@ -32,7 +31,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -189,16 +188,17 @@ eq(api.fmtBps(2.3e9), '2.3 Gbit/s', 'fmtBps G');
 
 // ---------- Tab 结构 ----------
 const TABS = api.tabStructure();
-eq(TABS.length, 3, 'tabs: 3 个');
-eq(TABS.map(t=>t.id).join(','), 'overview,smart,pro', 'tabs: 顺序 overview/smart/pro');
+eq(TABS.length, 4, 'tabs: 4 个');
+eq(TABS.map(t=>t.id).join(','), 'overview,smart,game,pro', 'tabs: 顺序 overview/smart/game/pro');
 const allCards = TABS.reduce((a,t)=>a.concat(t.cards),[]);
+const tabById = id => TABS.filter(t=>t.id===id)[0];
 eq(allCards.length, new Set(allCards).size, 'tabs: 卡片归属无重复');
 eq(TABS[0].cards.join(','), 'wires,health,traffic', 'tabs: 总览三卡');
-eq(TABS[2].cards.join(','), 'presets,ifaces,softirq,irq', 'tabs: 专家四卡');
-eq(allCards.slice().sort().join(','), 'audit,health,ifaces,irq,p2p,presets,softirq,traffic,wires', 'tabs: 九卡全归组');
+eq(tabById('pro').cards.join(','), 'presets,ifaces,softirq,irq', 'tabs: 专家四卡');
+eq(allCards.slice().sort().join(','), 'audit,game,health,ifaces,irq,p2p,presets,softirq,traffic,wires', 'tabs: 十卡全归组');
 eq(TABS[1].cards.includes('audit') && TABS[1].cards.includes('p2p'), true, 'tabs: 智能优化含体检+P2P');
-eq(TABS[2].cards.includes('presets') && TABS[2].cards.includes('ifaces'), true, 'tabs: 专家含预设+接口');
-eq(TABS[2].cards.includes('softirq') && TABS[2].cards.includes('irq'), true, 'tabs: 专家含软中断+IRQ');
+eq(tabById('pro').cards.includes('presets') && tabById('pro').cards.includes('ifaces'), true, 'tabs: 专家含预设+接口');
+eq(tabById('pro').cards.includes('softirq') && tabById('pro').cards.includes('irq'), true, 'tabs: 专家含软中断+IRQ');
 TABS.forEach(t => eq(typeof t.hint === 'string' && t.hint.length > 6, true, 'tabs: '+t.id+' hint 非空'));
 
 // ---------- 依赖矩阵四态 ----------
@@ -298,6 +298,102 @@ eq(api.benchFromUci(null), null, 'bench: null 配置 → null');
 const bf3 = api.benchFromUci({ bench_off: { mode:'off', latency_ms:'abc', rx_bps:'x', ts:'123' } });
 eq(bf3.off.latency_ms, 0, 'bench: 非法数字守卫 → 0');
 eq(bf3.off.rx_bps, 0, 'bench: 非法 rx → 0');
+
+// ---- 游戏通道: parseTinStats / gameStatusMeta ----
+// fixture: 真机 diffserv3 列式输出 (R5C pppoe-wan, 2026-11-08 采集)
+const TC_UP_D3 = [
+'qdisc cake 8141: root refcnt 2 bandwidth 48Mbit diffserv3 triple-isolate nonat nowash no-ack-filter split-gso rtt 100ms raw overhead 0 ',
+' Sent 1177733192115 bytes 1526053036 pkt (dropped 203213445, overlimits 2045634877 requeues 0) ',
+'',
+'                   Bulk  Best Effort        Voice',
+'  thresh          3Mbit       48Mbit       12Mbit',
+'  target         6.05ms          5ms          5ms',
+'  pkts         97761226   1440158011    191348939',
+'  bytes     50148570374 1216786722663 146818242974',
+'  drops         7701496    195504292         7657',
+'  marks               0         1102            0',
+''].join('\n');
+// fixture: diffserv4 (启用游戏通道后的目标形态, Video 列在 Best Effort 与 Voice 之间)
+const TC_UP_D4 = [
+'qdisc cake 9001: root refcnt 2 bandwidth 48Mbit diffserv4 triple-isolate nonat nowash ack-filter split-gso rtt 100ms raw overhead 0 ',
+'',
+'                   Bulk  Best Effort        Video        Voice',
+'  thresh          3Mbit       48Mbit       36Mbit       12Mbit',
+'  pkts         97761226   1440158011      8346194    191348939',
+'  bytes     50148570374 1216786722663   11234887204 146818242974',
+'  drops         7701496    195504292         10204         7657',
+'  marks               0         1102              0            0',
+''].join('\n');
+
+let t3 = api.parseTinStats(TC_UP_D3);
+eq(t3 && t3.mode, 'diffserv3', 'tin: 模式识别 diffserv3');
+eq(t3 && t3.bandwidth, '48Mbit', 'tin: 带宽识别');
+eq(t3 && Object.keys(t3.tins).length, 3, 'tin: diffserv3 三桶');
+eq(t3 && t3.tins.bulk.pkts, '97761226', 'tin: bulk pkts 按列切片');
+eq(t3 && t3.tins.best_effort.pkts, '1440158011', 'tin: best_effort pkts');
+eq(t3 && t3.tins.voice.drops, '7657', 'tin: voice drops');
+eq(t3 && t3.tins.bulk.marks, '0', 'tin: marks 列不错位');
+
+let t4 = api.parseTinStats(TC_UP_D4);
+eq(t4 && t4.mode, 'diffserv4', 'tin: 模式识别 diffserv4');
+eq(t4 && Object.keys(t4.tins).length, 4, 'tin: diffserv4 四桶');
+eq(t4 && t4.tins.video.pkts, '8346194', 'tin: video pkts (游戏桶)');
+eq(t4 && t4.tins.video.bytes, '11234887204', 'tin: video bytes');
+eq(t4 && t4.tins.video.drops, '10204', 'tin: video drops');
+eq(t4 && t4.tins.voice.pkts, '191348939', 'tin: video 插列后 voice 不错位');
+eq(t4 && t4.tins.bulk.thresh, '3Mbit', 'tin: thresh 行解析');
+
+// besteffort (下行默认形态): 无分桶表头 → tins:null
+eq(api.parseTinStats('qdisc cake 8142: root bandwidth 900Mbit besteffort triple-isolate\n Sent 1 bytes 2 pkt\n').tins, null, 'tin: besteffort → tins null');
+// 非 cake 输出 → null
+eq(api.parseTinStats('qdisc fq_codel 123: root\n'), null, 'tin: 非 cake → null');
+eq(api.parseTinStats(''), null, 'tin: 空输入 → null');
+eq(api.parseTinStats(null), null, 'tin: null 输入 → null');
+
+// gameStatusMeta 五态状态机
+eq(api.gameStatusMeta(null).state, 'unknown', 'game meta: 未知');
+eq(api.gameStatusMeta({enabled:0, active:0}).state, 'off', 'game meta: 关闭');
+eq(api.gameStatusMeta({enabled:0, active:1}).state, 'stale', 'game meta: 残留规则');
+eq(api.gameStatusMeta({enabled:1, active:0}).state, 'missing', 'game meta: 标记缺失');
+eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:0}).state, 'no_sqm', 'game meta: SQM 停 → 降级');
+eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv3'}).state, 'degraded', 'game meta: 整形未切 → 降级');
+eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv4', device:'192.168.11.101'}).state, 'on', 'game meta: 全链路就绪');
+eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv4', device:'192.168.11.101'}).label, '优先中 · 192.168.11.101', 'game meta: on 徽标文案');
+
+// tabStructure: 游戏通道 tab 归位
+const TS = api.tabStructure();
+eq(TS.length, 4, 'tabs: 四分组');
+const gtab = TS.filter(function(t) { return t.id === 'game'; })[0];
+eq(!!gtab, true, 'tabs: game tab 存在');
+eq(gtab && gtab.cards.join(','), 'game', 'tabs: game 卡归类唯一');
+eq(TS.filter(function(t) { return t.id === 'smart'; })[0].cards.indexOf('game'), -1, 'tabs: game 不在 smart 组');
+
+// ---- v1.13 防回归: ACL 与 fs.exec 一致性 (rpcd 403 病根) ----
+{
+  const aclPath = path.join(__dirname, '..', '..', 'files', 'usr', 'share', 'rpcd', 'acl.d', 'luci-app-netsteer.json');
+  const acl = JSON.parse(fs.readFileSync(aclPath, 'utf8'));
+  const allowed = Object.keys(((acl['luci-app-netsteer'] || {}).write || {}).file || {});
+  eq(allowed.length >= 8, true, 'acl: write.file 条目数 ' + allowed.length);
+  const re = /fs\.exec\('([^']+)'/g;
+  let m, execed = 0, miss = 0;
+  while ((m = re.exec(SRC))) {
+    execed++;
+    if (allowed.indexOf(m[1]) < 0) { miss++; console.error('ACL 缺失 exec 白名单:', m[1]); }
+  }
+  eq(execed >= 8, true, 'acl: 源码 fs.exec 目标数 ' + execed);
+  eq(miss, 0, 'acl: 每个 fs.exec 目标都在 ACL 白名单 (防 403)');
+  // 交付文件存在 (防 v1.8/v1.9 缺新文件复发)
+  const must = [
+    ['files/usr/bin/netsteer-qos', 'netsteer-qos 主脚本'],
+    ['files/usr/lib/sqm/netsteer-gaming.qos', 'sqm gaming 包装脚本'],
+    ['files/etc/init.d/netsteer', 'init.d'],
+    ['files/etc/hotplug.d/iface/99-netsteer', 'hotplug 自愈'],
+    ['files/usr/share/rpcd/acl.d/luci-app-netsteer.json', 'ACL'],
+  ];
+  must.forEach(function(p) {
+    eq(fs.existsSync(path.join(__dirname, '..', '..', p[0])), true, 'ship: ' + p[1] + ' 在包内');
+  });
+}
 
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail ? 1 : 0);

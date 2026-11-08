@@ -72,6 +72,9 @@
         ],
         "/usr/bin/netsteer-bench": [
           "exec"
+        ],
+        "/usr/bin/netsteer-qos": [
+          "exec"
         ]
       }
     }

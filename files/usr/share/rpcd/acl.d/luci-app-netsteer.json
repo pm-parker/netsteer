@@ -23,8 +23,11 @@
         "/sys/devices/platform/*/net/*/queues/*/*": [
           "read"
         ],
-        "/sys/devices/virtual/net/*/queues/*/*": [
-          "read"
+        "/sys/devices/virtual/net/*/*": [
+            "read"
+        ],
+        "/usr/share/netsteer/*": [
+            "read"
         ],
         "/tmp/netsteer/state.json": [
           "read"

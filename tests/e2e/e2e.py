@@ -87,17 +87,22 @@ with sync_playwright() as p:
                 "#ns-game-tins", "#ns-game-cakeinfo"):
         assert pg.locator(sel).count() == 1, f"missing {sel}"
     ok("游戏通道: 徽标/IP输入/延迟曲线/分桶/整形实况 5 元素在位")
+    # v1.14 DNS 识别块 + 设备建议区 (mihomo 连接嗅探, 常开无开关)
+    for sel in ("#ns-game-dns", "#ns-game-dns-badge", "#ns-game-dns-body", "#ns-game-suggest"):
+        assert pg.locator(sel).count() == 1, f"missing {sel}"
+    assert "DNS 识别" in pg.inner_text("#ns-game-dns")
+    ok("DNS 识别块: 徽标/说明/建议区在位 (v1.14)")
     b0 = pg.inner_text("#netsteer-game-badge").strip()
     if "优先中" in b0:  # 若初始为开, 先关掉保证起点确定
-        pg.locator("#netsteer-game .netsteer-minibtn").first.click(); pg.wait_for_timeout(9000)
+        pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
         b0 = pg.inner_text("#netsteer-game-badge").strip()
     assert "未开启" in b0, f"unexpected initial badge: {b0}"
     pg.locator("#netsteer-game-ip").fill("192.168.11.123")
-    pg.locator("#netsteer-game .netsteer-minibtn").first.click(); pg.wait_for_timeout(9000)
+    pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
     b1 = pg.inner_text("#netsteer-game-badge").strip()
     assert "优先中" in b1 and "192.168.11.123" in b1, f"toggle-on failed: {b1}"
     ok(f"游戏通道: UI 开启生效 ({b1})")
-    pg.locator("#netsteer-game .netsteer-minibtn").first.click(); pg.wait_for_timeout(9000)
+    pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
     b2 = pg.inner_text("#netsteer-game-badge").strip()
     assert "未开启" in b2, f"toggle-off failed: {b2}"
     ok(f"游戏通道: UI 关闭还原 ({b2})")

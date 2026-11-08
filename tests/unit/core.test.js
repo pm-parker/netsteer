@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -31,7 +31,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -393,6 +393,84 @@ eq(TS.filter(function(t) { return t.id === 'smart'; })[0].cards.indexOf('game'),
   must.forEach(function(p) {
     eq(fs.existsSync(path.join(__dirname, '..', '..', p[0])), true, 'ship: ' + p[1] + ' 在包内');
   });
+}
+
+// ---- v1.14: L1 DNS 分类纯函数 ----
+{
+  // buildDomainMap: 真实数据集解析 + 边界
+  const dsPath = path.join(__dirname, '..', '..', 'files', 'usr', 'share', 'netsteer', 'gamedomains.txt');
+  const dsText = fs.readFileSync(dsPath, 'utf8');
+  const map = api.buildDomainMap(dsText);
+  const keys = Object.keys(map);
+  eq(keys.length >= 80, true, 'domap: 真实数据集 ≥80 后缀 (实测 ' + keys.length + ')');
+  eq(!!keys.length && keys.every(function(k) { return map[k] && !/\s/.test(k); }), true, 'domap: 全部条目 类别非空/后缀无空白');
+  eq(Object.keys(api.buildDomainMap('')).length, 0, 'domap: 空文本 → 空表');
+  const mini = api.buildDomainMap('# 注释\nsteam\tsteamcontent.com\nepic\tcdn1.epicgames.com\n\nxbox   xboxlive.com\n');
+  eq(Object.keys(mini).length, 3, 'domap: tab/空格分隔+注释+空行');
+  eq(mini['steamcontent.com'], 'steam', 'domap: tab 行解析');
+  eq(mini['xboxlive.com'], 'xbox', 'domap: 空格行解析');
+
+  // classifyDomain: 最长后缀 + 边界
+  eq(api.classifyDomain('cdn.steampowered.com.localhost', {}), null, 'cls: 未命中 null');
+  eq(api.classifyDomain('lancache.steamcontent.com', map), 'steam', 'cls: steam 命中');
+  eq(api.classifyDomain('A.CDN1.EPICGAMES.COM.', map), 'epic', 'cls: 大小写+尾点归一');
+  eq(api.classifyDomain('example.com', map), null, 'cls: 普通域不误报');
+  eq(api.classifyDomain(null, map), null, 'cls: null 输入');
+  eq(api.classifyDomain('steamcontent.com', map), 'steam', 'cls: 精确等于后缀');
+  // 最长后缀: map 里 a.b → X, b → Y 时 x.a.b 应得 X (更具体)
+  const lm = api.buildDomainMap('xlong\ta.b\nylong\tb\n');
+  eq(api.classifyDomain('x.a.b', lm), 'xlong', 'cls: 更长后缀优先');
+
+  // leaseSuggestions: dhcp.leases 文本启发式
+  const leases = '# duid 00:03:00:01:aa\n1728800000 aa:bb 192.168.11.50 PS5 01:xx\n1728800000 cc:dd 192.168.11.51 Xbox-Series-X -\n1728800000 ee:ff 192.168.11.52 * -\n1728800000 11:22 192.168.11.53 DESKTOP-ABC -\n';
+  const sug = api.leaseSuggestions(leases);
+  eq(sug.length, 2, 'lease: 只命中游戏主机 (' + JSON.stringify(sug) + ')');
+  eq(sug[0] && sug[0].ip, '192.168.11.50', 'lease: PS5 ip 列取第3列');
+  eq(sug[1] && sug[1].name, 'Xbox-Series-X', 'lease: 大小写不敏感匹配');
+  eq(api.leaseSuggestions('').length, 0, 'lease: 空文本 → []');
+
+  // dnsSummary: 过滤 + 计数 + last 截断
+  const recs = [
+    { q: 'lancache.steamcontent.com', c: '192.168.11.50' },
+    { q: 'cdn1.epicgames.com', c: '192.168.11.50' },
+    { q: 'www.baidu.com', c: '192.168.11.50' },
+    { q: 'xboxlive.com', c: '192.168.11.99' },
+    null
+  ];
+  const s1 = api.dnsSummary(recs, map, '192.168.11.50');
+  eq(s1.total, 3, 'dnssum: 只统计目标设备');
+  eq(s1.hit, 2, 'dnssum: 命中平台 2 条');
+  eq(s1.platforms.steam, 1, 'dnssum: steam 计数 1');
+  eq(s1.platforms.epic, 1, 'dnssum: epic 计数 1');
+  eq(s1.platforms.xbox, undefined, 'dnssum: 其他设备查询不入账');
+  eq(s1.last.length, 3, 'dnssum: last 含未命中记录 (cat="")');
+  const s2 = api.dnsSummary(recs, map, '-');
+  eq(s2.total, 4, 'dnssum: device=- 不过滤');
+  const many = []; for (let i = 0; i < 20; i++) many.push({ q: 'a.steamcontent.com', c: '1.2.3.4' });
+  eq(api.dnsSummary(many, map, '1.2.3.4').last.length, 8, 'dnssum: last 上限 8');
+  eq(api.dnsSummary(null, map, '-').total, 0, 'dnssum: null 记录安全');
+}
+
+{
+  // dnsObserverMeta: 环境自适应四态 (通用化核心 — 不同家庭自动选观测面)
+  const m1 = api.dnsObserverMeta({ dns_observer: 'mihomo' });
+  eq(m1.state, 'mihomo', 'obs: mihomo 态');
+  eq(m1.btn, null, 'obs: mihomo 无动作按钮');
+  eq(m1.badge.length > 0, true, 'obs: mihomo 徽标非空');
+  const m2 = api.dnsObserverMeta({ dns_observer: 'dnsmasq' });
+  eq(m2.state, 'dnsmasq', 'obs: dnsmasq 态 (日志已开)');
+  eq(m2.btn, 'off', 'obs: dnsmasq 给关闭按钮');
+  const m3 = api.dnsObserverMeta({ dns_observer: 'dnsmasq_off' });
+  eq(m3.state, 'dnsmasq_off', 'obs: dnsmasq_off 态 (裸路由器未开日志)');
+  eq(m3.btn, 'on', 'obs: dnsmasq_off 给开启按钮');
+  const m4 = api.dnsObserverMeta({ dns_observer: 'none' });
+  eq(m4.state, 'none', 'obs: none 态');
+  eq(m4.btn, null, 'obs: none 无动作');
+  const m5 = api.dnsObserverMeta({});
+  eq(m5.state, 'mihomo', 'obs: 缺省回退 mihomo (向后兼容旧 status)');
+  const m6 = api.dnsObserverMeta(null);
+  eq(m6.state, 'mihomo', 'obs: null 安全');
+  eq(m3.desc.length > 10 && m4.desc.length > 10, true, 'obs: 各态说明文案齐全');
 }
 
 console.log(`PASS=${pass} FAIL=${fail}`);

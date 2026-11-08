@@ -67,4 +67,6 @@ JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
 [ -s "$JS" ] || { echo "ERROR: package is missing netsteer.js — build is broken"; exit 1; }
 [ "$(md5sum < "$JS" | cut -d' ' -f1)" = "$(md5sum < "$HERE/files/www/luci-static/resources/view/netsteer.js" | cut -d' ' -f1)" ] \
   || { echo "ERROR: packaged js differs from source"; exit 1; }
+GD="$WORK/check/usr/share/netsteer/gamedomains.txt"
+[ -s "$GD" ] || { echo "ERROR: package is missing gamedomains.txt (L1 DNS 分类数据集)"; exit 1; }
 echo ">> OK"

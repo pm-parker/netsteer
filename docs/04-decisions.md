@@ -34,3 +34,18 @@
 - 实现：设备 IP nft 双向标记（forward egress 改写 + inet ingress 钩子改写）；sqm 脚本薄包装切 diffserv4 + ack-filter；关闭自动还原 simple.qos；幂等 reapply + init.d/hotplug 双挂自愈
 - 教训：rpcd ACL 必须放行新二进制 exec——UI fs.exec 未白名单 = 静默 403 且难定位；已加单测（ACL 与 fs.exec 一致性）防回归
 - 实测边界：cake 流隔离在开/关两态都把满载 ping 压在 ~6ms，通道增益 = 带宽份额（2.47×）非延迟；四桶调度 +0.7ms 开销如实标注
+
+## D8：L1 平台识别 = mihomo 连接表采样（dnsmasq log-queries 判死）（2026-11-08）
+- 实测：本机 DNS 全链被 mihomo 接管（LAN/本机 nslookup 均返回 fake-ip），dnsmasq 是旁观者——log-queries 永远观测不到查询（三次实测 0 条查询日志，重启 dnsmasq 无济于事）
+- 改用 mihomo `/connections` API：每连接自带 sniffHost（SNI 嗅探，TLS 443 全覆盖），零配置零日志开销，与 DNS 是否加密无关；快照只含活跃连接，短连接可能漏——观测边界，如实写在 UI 上
+- 分类在前端完成：netsteer-qos dnslog 只采样（sourceIP RFC1918 过滤 + sniffHost 回退 host），LuCI 读 /usr/share/netsteer/gamedomains.txt（cache-domains MIT 策划集 + 上游已移除通配行的平台补裸后缀）后做最长后缀匹配——路由器零分类成本
+- DHCP 主机名启发式（ps/xbox/switch/steam…）出「疑似游戏设备」chips 一键回填 IP，真机命中 2 台 Xbox
+- e2e 教训：注入式 UI 元素（建议 chips）会劫持 `.netsteer-minibtn` first 选择器——交互目标必须给稳定 id（#netsteer-game-toggle）
+
+## D9：通用家庭方案 = 探测式环境自适应，不做环境假设（2026-11-08，用户拍板）
+- 用户要求：不只为自己家设计，要适合各种家庭网络环境，并根据环境矛盾自动调整
+- 实现原则：凡是依赖"某环境某组件存在"的能力，一律运行时探测（API 存活为准，不是看配置文件存在），探测结果缓存在 uci（netsteer.qos.dns_observer / probe_target），init.d 开机预热 + status 首调自举
+- 探测矩阵：代理内核 Nikki(/etc/nikki/run/config.yaml) → OpenClash(uci cn_port/dashboard_password) → 裸 clash 9090 → 无；DNS 观测面 = 有代理内核 → 连接表嗅探 / 无代理 → dnsmasq 查询日志(UI 一键开关 dns-en，会重启 dnsmasq ~1s) / 都没有 → 诚实不可用；出口探测 = WAN 网关优先(ip route show default)，不可 ping 回退 223.5.5.5
+- 勘误教训：两个观测面看到的是互补子集——mihomo 通道覆盖 TLS 连接（SNI），dnsmasq 通道覆盖明文查询（含绕过 fake-ip 劫持的直连 DNS 设备）；任何一方都不是全集，UI 按态如实标注边界
+- 运维坑：路由器是 busybox，没有 coreutils `install` 命令（`install -m 755` 静默走 old 文件）——部署用 `cp + chmod`；/tmp/netsteer 是状态目录，scp 单文件推 init.d 撞名失败
+- 单测基线 177 → 215（dnsObserverMeta 四态 + 兼容回退 + null 安全）

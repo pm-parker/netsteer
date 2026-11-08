@@ -8,6 +8,8 @@ start() {
 	/usr/bin/netsteer-apply >/dev/null 2>&1
 	# 游戏通道标记规则 + 整形脚本一致性兜底 (内部自判 enabled, 关闭态零动作)
 	/usr/bin/netsteer-qos reapply >/dev/null 2>&1
+	# 环境探测 (代理内核/DNS 观测面/出口探测目标) 后台预热, 结果缓存供 dnslog/probe 用
+	(/usr/bin/netsteer-qos env >/dev/null 2>&1 &)
 }
 
 boot() {

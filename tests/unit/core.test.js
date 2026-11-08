@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isWorkDomain', 'senseClassify', 'senseDebounce'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isDlDomain', 'isWorkDomain', 'senseClassify', 'senseDebounce'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -45,7 +45,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isWorkDomain, senseClassify, senseDebounce,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isDlDomain, isWorkDomain, senseClassify, senseDebounce,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -574,7 +574,7 @@ eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
   eq(api.isWorkDomain(''), false, 'work: null 安全');
 
   // 场景判定: 每场景独立逻辑
-  let r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '2048', v: '8192' })], maps);
+  let r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '1048576', v: '4194304' })], maps);
   eq(r.scene, 'gaming', 'scene: steam 对局连接 (light) → gaming');
   eq(r.evidence.gaming.length, 1, 'scene: gaming 证据链在位');
 
@@ -584,10 +584,29 @@ eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
   r = api.senseClassify([conn({ q: 'upos-sz-mirrorhw.bilivideo.com', u: '12808', v: '33190008' })], maps);
   eq(r.scene, 'streaming', 'scene: B 站 CDN 命中 → streaming');
 
-  r = api.senseClassify([conn({ q: 'us02web.zoom.us', u: '5000', v: '5000' })], maps);
+  // v1.17.3 量门槛: 保活心跳不算场景证据 (宁漏勿误)
+  r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '1024', v: '4096' })], maps);
+  eq(r.scene, 'normal', 'scene: 游戏平台心跳 5KB → normal (保活不算对局)');
+  r = api.senseClassify([conn({ q: 'upos-sz-mirrorhw.bilivideo.com', u: '2048', v: '6144' })], maps);
+  eq(r.scene, 'normal', 'scene: B 站域名 8KB → normal (预加载不算看视频)');
+  r = api.senseClassify([conn({ q: 'msg-frontier.feishu.cn', u: '2048', v: '8192', t: 'tcp', p: '443' })], maps);
+  eq(r.scene, 'normal', 'scene: 会议域名心跳 10KB → normal (保活不算开会)');
+  r = api.senseClassify([conn({ q: 'webrtcice.video.qq.com', u: '262144', v: '524288', t: 'udp', p: '3478' })], maps);
+  eq(r.scene, 'work', 'scene: STUN 双向 768KB → work (真通话)');
+  r = api.senseClassify([conn({ q: 'webrtcice.video.qq.com', u: '296', v: '112', t: 'udp', p: '3478' })], maps);
+  eq(r.scene, 'normal', 'scene: STUN 心跳 408B → normal (ICE 探测不算会议)');
+  // v1.17.3 网盘下载 ≠ 视频
+  r = api.senseClassify([conn({ q: 'yqd0.baidupcs.com', u: '2967', v: '82839745' })], maps);
+  eq(r.scene, 'download', 'scene: 百度网盘 CDN heavy 83MB → download (不是流媒体)');
+  r = api.senseClassify([conn({ q: 'nj.h.bcsp2p.baidu.com', u: '204546', v: '81161', t: 'udp', p: '8829' })], maps);
+  eq(r.scene, 'download', 'scene: 网盘 P2P 加速域名 → download');
+  r = api.senseClassify([conn({ q: 'cdn.unknown-cdn.example', u: '1024', v: '53000000' })], maps);
+  eq(r.scene, 'streaming', 'scene: 未知 CDN heavy 53MB → streaming (bulk 证据保留)');
+
+  r = api.senseClassify([conn({ q: 'us02web.zoom.us', u: '2097152', v: '3145728' })], maps);
   eq(r.scene, 'work', 'scene: 会议域名 → work');
 
-  r = api.senseClassify([conn({ q: '', d: '1.2.3.4', p: '3478', t: 'udp', u: '800', v: '900' })], maps);
+  r = api.senseClassify([conn({ q: '', d: '1.2.3.4', p: '3478', t: 'udp', u: '1048576', v: '1572864' })], maps);
   eq(r.scene, 'work', 'scene: STUN UDP 双向有量 → work (WebRTC)');
 
   r = api.senseClassify([conn({ q: 'tracker.example.com', d: '5.6.7.8', p: '6881', t: 'tcp', u: '999', v: '999' })], maps);
@@ -597,18 +616,18 @@ eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
   eq(r.scene, 'normal', 'scene: 普通浏览 → normal');
 
   // 裸 IP 三级链: 游戏对局走 SDR relay 无域名 (L2 覆盖)
-  r = api.senseClassify([conn({ q: '', d: '155.133.248.36', p: '27017', t: 'udp', u: '4000', v: '4200' })], maps);
+  r = api.senseClassify([conn({ q: '', d: '155.133.248.36', p: '27017', t: 'udp', u: '2097152', v: '2202009' })], maps);
   eq(r.scene, 'gaming', 'scene: 裸 IP 命中 steam SDR 段 → gaming');
 
   // 混合场景: 会议域名(3分) vs 流媒体域名(2分) → work 胜
   r = api.senseClassify([
-    conn({ q: 'us02web.zoom.us', u: '5000', v: '5000' }),
+    conn({ q: 'us02web.zoom.us', u: '2097152', v: '3145728' }),
     conn({ q: 'upos-sz-mirrorhw.bilivideo.com', u: '12808', v: '33190008' })
   ], maps);
   eq(r.scene, 'work', 'scene: 混合 会议+流媒体 → work (分高)');
 
   // 置信度 = 最高分占满分比
-  r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '2048', v: '8192' })], maps);
+  r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '1048576', v: '4194304' })], maps);
   eq(r.confidence, 100, 'scene: 单场景证据 confidence=100');
   eq(api.senseClassify([], maps).scene, 'normal', 'scene: 空采样安全');
   eq(api.senseClassify(null, maps).scene, 'normal', 'scene: null 安全');

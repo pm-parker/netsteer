@@ -411,6 +411,9 @@ var SENSE_STUN_PORTS = { 3478: 1, 3479: 1, 19302: 1 }; /* STUN/TURN + Google Mee
 var SENSE_HEAVY_BYTES = 5242880;    /* 5MB: 单连接下行累计超过此值且 down>>up → bulk */
 var SENSE_HEAVY_RATIO = 20;         /* down > up*20 */
 var SENSE_BULK_DOWN = 52428800;     /* 50MB: 无域名命中时的"大下行"流媒体/下载证据 */
+var SENSE_MIN_KEEPALIVE = 32768;    /* 32KB: 平台域名连接低于此量 = App 后台保活/预加载, 不算场景证据 */
+var SENSE_WORK_MIN_BYTES = 65536;   /* 64KB: 会议域名/STUN 需双向累计超过此值 (心跳级 ICE 探测不算会议) */
+var SENSE_STREAM_MIN_BYTES = 524288; /* 512KB: 流媒体域名需真实下行超过此值 (推荐图/预加载不算在看视频) */
 
 function isConnHeavy(r) {
 	/* cFosSpeed bulk_detect 对应物: 同一域名/连接区分交互流(light)与批量流(heavy) (纯函数) */
@@ -418,6 +421,15 @@ function isConnHeavy(r) {
 	return v > SENSE_HEAVY_BYTES && (u === 0 || v > u * SENSE_HEAVY_RATIO);
 }
 
+/* 网盘下载 CDN 域名后缀 (实测确认; TODO: 后续迁 feed 数据文件 dl_domains.txt) */
+var SENSE_DL_DOMAINS = ['.baidupcs.com', '.bcsp2p.baidu.com'];
+function isDlDomain(host) {
+	if (!host) return false;
+	for (var i = 0; i < SENSE_DL_DOMAINS.length; i++) {
+		if (host.indexOf(SENSE_DL_DOMAINS[i], host.length - SENSE_DL_DOMAINS[i].length) !== -1) return true;
+	}
+	return false;
+}
 function isWorkDomain(host) {
 	if (!host) return false;
 	var h = String(host).toLowerCase().replace(/\.$/, '');
@@ -445,17 +457,20 @@ function senseClassify(records, maps) {
 		var streamCat = host ? classifyDomain(host, maps.stream) : null;
 		var stun = (r.t === 'udp') && SENSE_STUN_PORTS[p];
 
-		/* gaming: 三级链命中且 light (对局连接是双向小流量) */
-		if (gameCat && !heavy) ev.gaming.push({ via: 'chain', host: host || r.d, cat: gameCat });
-		/* work: 会议域名 (强) / STUN-UDP 双向有量 (中) */
-		if (isWorkDomain(host)) ev.work.push({ via: 'domain', host: host });
-		else if (stun && (+r.u || 0) > 0 && (+r.v || 0) > 0) ev.work.push({ via: 'stun', host: host || ((r.d || '') + ':' + r.p) });
-		/* streaming: 流媒体域名命中 / 大体量持续下行 */
-		if (streamCat) ev.streaming.push({ via: 'domain', host: host, cat: streamCat, heavy: heavy });
+		var traffic = (+r.u || 0) + (+r.v || 0);
+		/* gaming: 三级链命中且 light 且流量超过保活线 (对局连接持续双向; 心跳连接只几 KB) */
+		if (gameCat && !heavy && traffic >= SENSE_MIN_KEEPALIVE) ev.gaming.push({ via: 'chain', host: host || r.d, cat: gameCat });
+		/* work: 会议域名 / STUN-UDP — 均需双向累计超 64KB (App 后台 ICE 探测/信令心跳不算会议) */
+		if (isWorkDomain(host) && traffic >= SENSE_WORK_MIN_BYTES) ev.work.push({ via: 'domain', host: host });
+		else if (stun && traffic >= SENSE_WORK_MIN_BYTES) ev.work.push({ via: 'stun', host: host || ((r.d || '') + ':' + r.p) });
+		/* streaming: 流媒体域名需真实下行 ≥512KB (待机电视拉推荐图/App 预加载不算在看视频) */
+		if (streamCat && (+r.v || 0) >= SENSE_STREAM_MIN_BYTES) ev.streaming.push({ via: 'domain', host: host, cat: streamCat, heavy: heavy });
 		else if (!gameCat && heavy && (+r.v || 0) > SENSE_BULK_DOWN) ev.streaming.push({ via: 'bulk', host: host || r.d, cat: '' });
 		/* download: 知名 P2P 端口 / 游戏平台域名下的 heavy 流 (平台商店下载≠对局, cFosSpeed light-heavy 分析的对症移植) */
 		if (classifyPort(r.p, r.t, maps.dlports)) ev.download.push({ via: 'port', host: host || r.d, cat: 'p2p' });
 		if (gameCat && heavy) ev.download.push({ via: 'game-heavy', host: host, cat: gameCat });
+		/* 网盘下载域名 → download (baidupcs/bcsp2p 本身就是下载 CDN, 不看量级; 但过保活线防心跳) */
+		if (isDlDomain(host) && traffic >= SENSE_MIN_KEEPALIVE) ev.download.push({ via: 'domain', host: host, cat: 'netdisk' });
 	});
 	var nDom = function(a, v) { return a.filter(function(e) { return e.via === v; }).length; };
 	var score = {

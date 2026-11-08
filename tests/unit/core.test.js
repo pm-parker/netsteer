@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isWorkDomain', 'senseClassify', 'senseDebounce'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -24,6 +24,20 @@ for (const name of WANT) {
   }
   extracted += SRC.slice(m.index, end) + '\n';
 }
+// top-level SENSE_* constants (scene-sensing engine vars, not functions) — track source
+{
+  const re = /var (SENSE_[A-Z_]+)\s*=/g;
+  let mm; const seen = [];
+  while ((mm = re.exec(SRC))) if (seen.indexOf(mm[1]) < 0) seen.push(mm[1]);
+  for (const name of seen) {
+    const start = SRC.indexOf('var ' + name);
+    const rest = SRC.slice(start);
+    const isArray = /^var [A-Z_]+\s*=\s*\[/.test(rest);
+    const end = isArray ? rest.indexOf('];') : rest.indexOf(';');
+    if (start < 0 || end < 0) { console.error('FATAL: var %s not extractable', name); process.exit(2); }
+    extracted += rest.slice(0, isArray ? end + 2 : end + 1) + '\n';
+  }
+}
 
 // build an API object inside a single sloppy-mode eval so the extracted functions
 // share one scope; NCPU/IFACES live on the global (matching the LuCI view's vars)
@@ -31,7 +45,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isWorkDomain, senseClassify, senseDebounce,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -517,6 +531,89 @@ eq(TS.filter(function(t) { return t.id === 'smart'; })[0].cards.indexOf('game'),
   const sOld = api.dnsSummary([{ q: 'a.steamcontent.com', c: 'x' }], dmap, '-');
   eq(sOld.total, 1, 'dnssum L2: 不传 ipmap/pmap 向后兼容 (total)');
   eq(sOld.platforms.steam, 1, 'dnssum L2: 不传 ipmap/pmap 向后兼容 (域名命中)');
+}
+
+
+{
+  // ---- v1.16: 场景感知引擎 (D12, 对标 cFosSpeed bulk_detect/场景模式) ----
+  const maps = {
+    game: api.buildDomainMap('steam\tsteampowered.com\nsteam\tsteamcontent.com\n'),
+    gameips: api.buildIpMap('steam\t155.133.248.0/22\n'),
+    gameports: api.buildPortMap('console\t3074-3074/udp\n'),
+    stream: api.buildDomainMap('bilibili\thdslb.com\nbilibili\tbilivideo.com\n'),
+    dlports: api.buildPortMap('bt\t6881-6889/tcp\nemule\t4662/tcp\n')
+  };
+  const conn = (o) => Object.assign({ q: '', c: '192.168.11.5', d: '', p: '443', t: 'tcp', u: '0', v: '0' }, o);
+
+  // light/heavy 判据 (cFosSpeed bulk_detect 对应物)
+  eq(api.isConnHeavy(conn({ v: '6291456' })), true, 'heavy: down>5MB up=0 → bulk');
+  eq(api.isConnHeavy(conn({ v: '6291456', u: '1048576' })), false, 'light: down 6MB up 1MB (比值不足 20)');
+  eq(api.isConnHeavy(conn({ v: '4194304', u: '0' })), false, 'light: down<5MB');
+  eq(api.isConnHeavy(conn({ v: '62914560', u: '2097152' })), true, 'heavy: down 60MB up 2MB (30x)');
+  eq(api.isConnHeavy(conn({})), false, 'light: 空计数安全');
+
+  // work 域名
+  eq(api.isWorkDomain('zoom.us'), true, 'work: zoom.us');
+  eq(api.isWorkDomain('us02web.zoom.us'), true, 'work: 子域 zoom');
+  eq(api.isWorkDomain('meeting.qq.com'), true, 'work: 腾讯会议');
+  eq(api.isWorkDomain('notzoom.us.example.com'), false, 'work: 非会议域');
+  eq(api.isWorkDomain(''), false, 'work: null 安全');
+
+  // 场景判定: 每场景独立逻辑
+  let r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '2048', v: '8192' })], maps);
+  eq(r.scene, 'gaming', 'scene: steam 对局连接 (light) → gaming');
+  eq(r.evidence.gaming.length, 1, 'scene: gaming 证据链在位');
+
+  r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '1048576', v: '2684354560' })], maps);
+  eq(r.scene, 'download', 'scene: steam 域名 + heavy 2.5GB → download (商店下载≠对局)');
+
+  r = api.senseClassify([conn({ q: 'upos-sz-mirrorhw.bilivideo.com', u: '12808', v: '33190008' })], maps);
+  eq(r.scene, 'streaming', 'scene: B 站 CDN 命中 → streaming');
+
+  r = api.senseClassify([conn({ q: 'us02web.zoom.us', u: '5000', v: '5000' })], maps);
+  eq(r.scene, 'work', 'scene: 会议域名 → work');
+
+  r = api.senseClassify([conn({ q: '', d: '1.2.3.4', p: '3478', t: 'udp', u: '800', v: '900' })], maps);
+  eq(r.scene, 'work', 'scene: STUN UDP 双向有量 → work (WebRTC)');
+
+  r = api.senseClassify([conn({ q: 'tracker.example.com', d: '5.6.7.8', p: '6881', t: 'tcp', u: '999', v: '999' })], maps);
+  eq(r.scene, 'download', 'scene: BT 知名端口 → download');
+
+  r = api.senseClassify([conn({ q: 'www.baidu.com', u: '100', v: '900' })], maps);
+  eq(r.scene, 'normal', 'scene: 普通浏览 → normal');
+
+  // 裸 IP 三级链: 游戏对局走 SDR relay 无域名 (L2 覆盖)
+  r = api.senseClassify([conn({ q: '', d: '155.133.248.36', p: '27017', t: 'udp', u: '4000', v: '4200' })], maps);
+  eq(r.scene, 'gaming', 'scene: 裸 IP 命中 steam SDR 段 → gaming');
+
+  // 混合场景: 会议域名(3分) vs 流媒体域名(2分) → work 胜
+  r = api.senseClassify([
+    conn({ q: 'us02web.zoom.us', u: '5000', v: '5000' }),
+    conn({ q: 'upos-sz-mirrorhw.bilivideo.com', u: '12808', v: '33190008' })
+  ], maps);
+  eq(r.scene, 'work', 'scene: 混合 会议+流媒体 → work (分高)');
+
+  // 置信度 = 最高分占满分比
+  r = api.senseClassify([conn({ q: 'store.steampowered.com', u: '2048', v: '8192' })], maps);
+  eq(r.confidence, 100, 'scene: 单场景证据 confidence=100');
+  eq(api.senseClassify([], maps).scene, 'normal', 'scene: 空采样安全');
+  eq(api.senseClassify(null, maps).scene, 'normal', 'scene: null 安全');
+  eq(api.senseClassify([conn({})]).scene, 'normal', 'scene: 无 maps 兼容');
+
+  // 防抖状态机: 连续 2 窗口才切换
+  let st = api.senseDebounce(null, 'gaming', 1000);
+  eq(st.scene, 'normal', 'debounce: 首窗口不切');
+  eq(st.cand, 'gaming', 'debounce: 候选记录');
+  st = api.senseDebounce(st, 'gaming', 2000);
+  eq(st.scene, 'gaming', 'debounce: 第二窗口确认切换');
+  st = api.senseDebounce(st, 'gaming', 3000);
+  eq(st.scene, 'gaming', 'debounce: 稳定态保持');
+  st = api.senseDebounce(st, 'streaming', 4000);
+  eq(st.scene, 'gaming', 'debounce: 新候选不立即切');
+  st = api.senseDebounce(st, 'normal', 5000);
+  eq(st.scene, 'gaming', 'debounce: 候选变更重置计数');
+  st = api.senseDebounce(st, 'normal', 6000);
+  eq(st.scene, 'normal', 'debounce: 连续两窗 normal 才回日常');
 }
 
 console.log(`PASS=${pass} FAIL=${fail}`);

@@ -50,6 +50,35 @@
 - 运维坑：路由器是 busybox，没有 coreutils `install` 命令（`install -m 755` 静默走 old 文件）——部署用 `cp + chmod`；/tmp/netsteer 是状态目录，scp 单文件推 init.d 撞名失败
 - 单测基线 177 → 215（dnsObserverMeta 四态 + 兼容回退 + null 安全）
 
+## D11：数据远程动态更新 = repo data/ + jsdelivr CDN 主源，sha256 清单原子替换（2026-11-08，用户需求"数据部署在服务器/CF/GitHub，刷新后用户动态拉取"）
+- 分发模型：数据文件（gamedomains/gameips/gameports/downloadports/streamdomains）随包内置保底，同时发布到 repo `data/` 目录 + `data/manifest.json`（version/generated_at/files{name:{sha256,size}}）
+- 源优先级：jsdelivr CDN（cdn.jsdelivr.net/gh/pm-parker/netsteer@main/data/，国内可达好）→ raw.githubusercontent.com → uci `netsteer.feed.url` 自定义源（用户可指向自建镜像）。多源依次回退，全挂如实报错不硬刷
+- 更新流程（netsteer-feed update）：拉 manifest → 对比本地 sha256 → 逐文件下载 /tmp → sha256 校验 → 校验全过才原子 mv 替换（.bak 留旧版）→ 任一步失败保留现状；rollback 一键回退。数据文件每次调用现读，热生效零重启
+- 宁缺毋假原则沿用 D10：manifest 只收录有官方来源的数据；无源可验证的条目不进远程通道
+
+## D12：场景感知引擎 = 连接表采样 + 每场景独立判定逻辑 + light/heavy 分析（2026-11-08，对标 cFosSpeed 场景模式/bulk_detect）
+- 分层：既有 5 档位（均衡/P2P/极速/低延迟/纯分核）是 QoS 架构层不动；新加场景层（gaming/streaming/work/download/normal）回答"用户此刻在干什么"，驱动档位内参数微调与推荐
+- 判定数据面 = mihomo /connections 快照（SNI 嗅探 + upload/download 计数 + 目标 IP/端口），复用 D8 通道，零新增开销
+- 每场景独立判定逻辑（netsteer-sense，规则可被新数据文件直接增强）：
+  - gaming = 三级链命中（域名/IP段/端口）且该连接 light（累计 down < 5MB 或 down/up < 20）
+  - streaming = streamdomains 命中，或单连接持续大下行（down > 50MB）
+  - work = STUN/WebRTC 特征（UDP 3478-3479 双向）或会议域名（zoom/teams/meet）
+  - download = downloadports 命中，或游戏平台域名下 heavy 流（命中游戏域名但 down > 50MB——平台商店下载不是游戏对局，这是 cFosSpeed light/heavy 分析的对症移植：防"Steam 下载"误进快车道）
+  - normal = 无显著特征
+- light/heavy 判据（bulk_detect 对应物）：单连接 down > 5MB 且 down/up > 20 → heavy；证据里明确标注每条连接的 light/heavy 与命中来源，判定可解释
+- 防抖：连续 2 个采样窗口同判定才切换场景（hysteresis），状态带 since 时间戳；判定函数纯数据进纯数据出（可单测）
+
+## D13：线路校准 = 空载基线 → 双向压测 → 写 SQM，运行中延迟反馈动态收紧（2026-11-08，对标 cFosSpeed Calibrate/online calibration）（v1.17）
+- 安装后向导触发：空载 ping 基线（20 次取中位）→ 下行压测（国内镜像大文件多轮取稳定值，探测式选源：腾讯镜像→阿里镜像）→ 上行压测（候选端点探测，无可达源回退 uci wan 速率/手填并如实标 measured:false，宁诚实不造假）
+- 应用：SQM 整形值 = 实测 × headroom（默认 95%），用户确认才写（不静默改用户配置）
+- online calibration（adapt，cron 周期）：基线延迟恶化超阈值 → cake bandwidth 收 3%（下限 85% 校准值）；持续空闲零恶化 → 放 2%（上限 98%）——cFosSpeed maxdelay/variance 思想的 cake 版
+- 中国家庭现实约束：测速源必须国内直连可达（走代理测的是隧道带宽不是线路），探测式多源是 D9 原则的延伸
+
+## D14：场景 × 档位联动（2026-11-08）（v1.17）
+- auto 场景模式：sense 判定 → 档位内参数微调（gaming → 游戏通道自动开启+低延迟整形；download → headroom 放宽；streaming → video tin 保权重；work → 保持低延迟+不收紧）
+- manual 锁定优先于 auto；auto 切换必须 UI 可见（证据卡），不静默改变用户网络行为
+- UI：场景横条卡（当前场景+证据+置信度+一键锁定/auto）+ 数据源状态行（数据版本/日期/检查更新按钮）
+
 ## D10：L2 识别增强 = IP 段 + 端口启发式，nDPI 库路线判死（2026-11-08，用户拍板"执行 L2"）
 - 判死依据：25.12 packages feed 的 libndpi-5.0-r1 只含 `usr/lib/libndpi.so`（apk info -L 实测），无 ndpiReader CLI（官方 Makefile 不编 examples）；要用库只能自己交叉编译工具 × 4 架构随插件分发——违反 D2（零二进制依赖）且版本维护重
 - 替代路线对症 L1 真实盲区：裸 IP 直连（游戏 relay 无 SNI）+ 无 DNS 名字。纯数据文件零依赖零抓包，分类照旧在前端

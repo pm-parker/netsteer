@@ -71,6 +71,12 @@ GD="$WORK/check/usr/share/netsteer/gamedomains.txt"
 [ -s "$GD" ] || { echo "ERROR: package is missing gamedomains.txt (L1 DNS 分类数据集)"; exit 1; }
 GI="$WORK/check/usr/share/netsteer/gameips.txt"
 [ -s "$GI" ] || { echo "ERROR: package is missing gameips.txt (L2 IP 段数据集)"; exit 1; }
+SD="$WORK/check/usr/share/netsteer/streamdomains.txt"
+[ -s "$SD" ] || { echo "ERROR: package is missing streamdomains.txt (流媒体场景数据集)"; exit 1; }
+DP="$WORK/check/usr/share/netsteer/downloadports.txt"
+[ -s "$DP" ] || { echo "ERROR: package is missing downloadports.txt (下载场景端口数据集)"; exit 1; }
+MF="$WORK/check/usr/share/netsteer/manifest.tsv"
+[ -s "$MF" ] || { echo "ERROR: package is missing manifest.tsv (数据集清单, feed 基线)"; exit 1; }
 GP="$WORK/check/usr/share/netsteer/gameports.txt"
 [ -s "$GP" ] || { echo "ERROR: package is missing gameports.txt (L2 端口数据集)"; exit 1; }
 echo ">> OK"

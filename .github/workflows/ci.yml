@@ -16,6 +16,8 @@ jobs:
           node-version: 20
       - name: Unit tests (multi-core logic)
         run: node tests/unit/core.test.js
+      - name: feed e2e tests (remote data update)
+        run: sh tests/unit/feed.test.sh
       - name: JS syntax check
         run: node --check files/www/luci-static/resources/view/netsteer.js
       - name: Shell syntax check

@@ -92,6 +92,23 @@ with sync_playwright() as p:
         assert pg.locator(sel).count() == 1, f"missing {sel}"
     assert "DNS 识别" in pg.inner_text("#ns-game-dns")
     ok("DNS 识别块: 徽标/说明/建议区在位 (v1.14)")
+
+    # v1.16 场景感知卡 + 数据源行 (D11/D12: sense 引擎 + feed)
+    for sel in ("#ns-sense-body", "#ns-feed-status"):
+        assert pg.locator(sel).count() == 1, f"missing {sel}"
+    import time as _t
+    sense_txt = ""
+    for _ in range(15):  # 轮询最长 15s: pollGame 周期 8s + rpc dnslog 往返
+        sense_txt = pg.inner_text("#ns-sense-body")
+        if any(k in sense_txt for k in ("游戏", "会议", "流媒体", "下载", "日常", "异常")):
+            break
+        _t.sleep(1.0)
+    assert any(k in sense_txt for k in ("游戏", "会议", "流媒体", "下载", "日常", "异常")), f"sense body empty: {sense_txt!r}"
+    feed_txt = pg.inner_text("#ns-feed-status")
+    assert ("识别数据集" in feed_txt), f"feed status empty: {feed_txt!r}"
+    assert pg.locator("#ns-feed-btn").count() == 1, "feed check button missing"
+    ok(f"场景感知: 卡片/判定/数据源行在位 (v1.16) → {sense_txt.splitlines()[0][:24]}")
+
     b0 = pg.inner_text("#netsteer-game-badge").strip()
     if "优先中" in b0:  # 若初始为开, 先关掉保证起点确定
         pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)

@@ -221,8 +221,9 @@ qos_detect_proxy() { # 输出 "core|port|secret" 或 "|"
 	qos_api_ok 9090 "" && { echo "clash|9090|"; return; }
 	echo "|"
 }
-qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":目的地IP,"p":目的端口,"t":协议}]
-	# q=sniffHost 优先回退 host, 可为空 (裸 IP 直连 — L2 IP 段/端口匹配的输入); dnsmasq 通道无 d/p/t
+qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":目的地IP,"p":目的端口,"t":协议,"u":上行字节,"v":下行字节}]
+	# q=sniffHost 优先回退 host, 可为空 (裸 IP 直连 — L2 IP 段/端口匹配的输入); dnsmasq 通道无 d/p/t/u/v
+	# u/v = mihomo 连接表 upload/download 字节计数 (场景感知 light/heavy 判据, D12)
 	local n="${1:-200}"
 	local api=$(qos_detect_proxy)
 	local port="${api#*|}"; port="${port%%|*}"
@@ -247,10 +248,14 @@ qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":
 		if (match($0, /"destinationPort":"[0-9]+"/)) { dport = substr($0, RSTART + 19, RLENGTH - 20) }
 		proto = ""
 		if (match($0, /"network":"(tcp|udp)"/)) { proto = substr($0, RSTART + 11, RLENGTH - 12) }
+		up = ""
+		if (match($0, /"upload":[0-9]+/)) { up = substr($0, RSTART + 10, RLENGTH - 10) }
+		dn = ""
+		if (match($0, /"download":[0-9]+/)) { dn = substr($0, RSTART + 12, RLENGTH - 12) }
 		if (h == "" && dst == "") next
 		gsub(/[\\"]/, "", h)
 		if (n++ > 0) printf ","
-		printf "{\"q\":\"%s\",\"c\":\"%s\",\"d\":\"%s\",\"p\":\"%s\",\"t\":\"%s\"}", h, ip, dst, dport, proto
+		printf "{\"q\":\"%s\",\"c\":\"%s\",\"d\":\"%s\",\"p\":\"%s\",\"t\":\"%s\",\"u\":\"%s\",\"v\":\"%s\"}", h, ip, dst, dport, proto, up, dn
 	}
 	END { printf "]\n" }'
 }

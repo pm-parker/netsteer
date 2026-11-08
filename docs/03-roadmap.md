@@ -73,3 +73,12 @@
 - [x] buildIpMap/classifyIp/buildPortMap/classifyPort 纯函数（最长前缀匹配 + 容错）
 - [x] 质量门：单测 242 / e2e 13 项 / 4 架构 apk verify / 真机端到端（裸 IP 连接采样实锤）
 - 边界：IP 段/端口三级仅代理内核观测面可用（dnsmasq 查询日志无目的地信息）；UDP 测试流量无法从沙箱构造进连接表（relay 拒收），UDP 场景由 destinationIP 字段实锤 + 单测覆盖
+
+
+## v1.16 — 场景感知引擎 + 数据远程动态更新 ✅ 已交付 (2026-11-08)
+- [x] 场景感知 (D12, 对标 cFosSpeed 场景模式/bulk_detect): 每场景独立判定逻辑 + light/heavy 轻重分析 (Steam 商店下载≠对局) + 打分制 (gaming>work>streaming>download) + 防抖状态机 (连续 2 窗口) + 证据链可解释
+- [x] 数据动态更新 (D11): streamdomains.txt + downloadports.txt 两新数据集; netsteer-feed 四命令 (status/check/update/rollback); jsdelivr→GitHub raw→自定义源三级回退; sha256 清单 + 原子替换 + 失败保留现状; 数据热生效零重启
+- [x] dnslog 采样扩 u/v 体积字段 (mihomo 连接表 upload/download 计数) — light/heavy 判据数据面
+- [x] 质量门: 单测 273 (+31) / feed shell 测试 11 (CI 新增) / e2e 14 (场景卡真机断言) / 4 架构 verify / 真机终装
+- 边界: 场景感知依赖 mihomo 连接表 (dnsmasq 观测面无体积信息, 降级为域名证据); 数据源完全接管场景 sha256 无法防 (威胁模型=CDN 损坏/传输错误)
+- v1.17 路线 (已立决策 D13/D14): 线路校准 (空载→双向压测→自动写 SQM) + 场景×档位联动

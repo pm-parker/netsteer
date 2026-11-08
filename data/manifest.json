@@ -1,0 +1,27 @@
+{
+  "files": {
+    "downloadports.txt": {
+      "sha256": "c43563daa21c00efc8d0b9af637c39e08f5429a0b8023943caf7e7b2e834b276",
+      "size": 406
+    },
+    "gamedomains.txt": {
+      "sha256": "5c8049cec22b430b2075747c38d0ffff280ab23468756d69d7d59165214abf02",
+      "size": 5454
+    },
+    "gameips.txt": {
+      "sha256": "9d5fcb31bdb1db4b568559e1887085d60fc99b14a34699e1ea0102f119fb6c91",
+      "size": 1685
+    },
+    "gameports.txt": {
+      "sha256": "a9f76c556eece0049291ca6eed0613711fd4e2426287c0523717eb9a493e3c4f",
+      "size": 516
+    },
+    "streamdomains.txt": {
+      "sha256": "61c479c687d8af72b22b5169544e6f590df68b3db8f32d03f71fb9d6a60431b9",
+      "size": 1370
+    }
+  },
+  "generated_at": "2026-11-08T22:36:33.802456+08:00",
+  "schema": 1,
+  "version": "2026.11.08-24bdaf"
+}

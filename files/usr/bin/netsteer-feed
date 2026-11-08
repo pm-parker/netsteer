@@ -1,0 +1,257 @@
+#!/bin/sh
+# NetSteer 远程数据集更新 (D11)
+#
+# 子命令:
+#   status    本地数据集状态 (版本/文件校验)
+#   check     拉远程 manifest 比对 (不落地)
+#   update    下载+校验+原子替换 (失败保留现状)
+#   rollback  回退到上一版本 (.bak)
+#
+# 设计约束 (通用家庭, D9):
+#   - 零 jq 依赖: manifest 以 TSV 分发, shell 只做行解析
+#   - 多源回退: jsdelivr CDN → raw.githubusercontent → uci 自定义源
+#   - sha256 校验后才落地, 逐文件原子替换, 任一步失败不动现有数据
+#   - 离线可用: 内置数据集随包, 无网络时一切照常
+
+set -u
+
+DATA_DIR="/usr/share/netsteer"
+STATE_DIR="/tmp/netsteer"
+LOCAL_MANIFEST="$DATA_DIR/manifest.tsv"
+WORK="$STATE_DIR/feed"
+DEFAULT_SOURCES="
+https://cdn.jsdelivr.net/gh/pm-parker/netsteer@main/data
+https://raw.githubusercontent.com/pm-parker/netsteer/main/data
+"
+
+log() { logger -t netsteer-feed "$*" 2>/dev/null; }
+
+# ---- 输出助手 ----
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+fetch() { # $1=url -> stdout (空=失败)
+	local _url="$1"
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --max-time 25 "$_url" 2>/dev/null
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -T 25 -O - "$_url" 2>/dev/null
+	else
+		return 1
+	fi
+}
+
+fetch_to() { # $1=url $2=file
+	local _url="$1" _dst="$2"
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --max-time 120 -o "$_dst" "$_url" 2>/dev/null
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -T 120 -O "$_dst" "$_url" 2>/dev/null
+	else
+		return 1
+	fi
+}
+
+sha_of() { # $1=file -> sha256 (空=失败)
+	local _p="$1"
+	[ -f "$_p" ] || return 1
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$_p" 2>/dev/null | cut -d' ' -f1
+	else
+		return 1
+	fi
+}
+
+sources() {
+	local _custom
+	_custom="$(uci -q get netsteer.feed.url 2>/dev/null)"
+	if [ -n "$_custom" ]; then
+		printf '%s\n%s\n' "$_custom" "$DEFAULT_SOURCES"
+	else
+		printf '%s\n' "$DEFAULT_SOURCES"
+	fi
+}
+
+# 从 manifest.tsv 读出版本行
+man_version() {
+	local _p="$1"
+	[ -f "$_p" ] || return 1
+	head -1 "$_p" 2>/dev/null | sed -n 's/.* v=\([^ ]*\) .*/\1/p'
+}
+
+# 从 manifest.tsv 读某文件 sha256
+man_sha() { # $1=manifest $2=name
+	local _p="$1" _n="$2"
+	[ -f "$_p" ] || return 1
+	awk -F'	' -v n="$_n" '$1==n {print $2; exit}' "$_p"
+}
+
+man_size() { # $1=manifest $2=name
+	local _p="$1" _n="$2"
+	[ -f "$_p" ] || return 1
+	awk -F'	' -v n="$_n" '$1==n {print $3; exit}' "$_p"
+}
+
+man_names() { # $1=manifest
+	local _p="$1"
+	[ -f "$_p" ] || return 1
+	awk -F'	' '$1 !~ /^#/ && NF>=2 {print $1}' "$_p"
+}
+
+# 拉远程 manifest, 落到 $WORK/manifest.tsv; 成功返回 0
+pull_manifest() {
+	local _s
+	mkdir -p "$WORK" 2>/dev/null
+	_found=1
+	for _s in $(sources); do
+		[ -n "$_s" ] || continue
+		if fetch "$_s/manifest.tsv" > "$WORK/manifest.tsv" 2>/dev/null && [ -s "$WORK/manifest.tsv" ]; then
+			# 格式校验: 首行必须含 v=
+			if head -1 "$WORK/manifest.tsv" | grep -q 'v='; then
+				rm -f "$WORK/source"
+				printf '%s' "$_s" > "$WORK/source"
+				_found=0
+				break
+			fi
+		fi
+	done
+	return $_found
+}
+
+# ---- status ----
+cmd_status() {
+	_v="$(man_version "$LOCAL_MANIFEST" 2>/dev/null || echo '-')"
+	_items=""
+	_ok=1
+	_manifest_files=""
+	if [ -f "$LOCAL_MANIFEST" ]; then
+		_manifest_files="$(man_names "$LOCAL_MANIFEST")"
+	fi
+	if [ -z "$_manifest_files" ]; then
+		# 包内无 manifest (老包): 列目录里的数据文件
+		for _f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt; do
+			[ -f "$DATA_DIR/$_f" ] && _manifest_files="$_manifest_files $_f"
+		done
+	fi
+	for _f in $_manifest_files; do
+		_want="$(man_sha "$LOCAL_MANIFEST" "$_f" 2>/dev/null)"
+		_got="$(sha_of "$DATA_DIR/$_f")"
+		_st="ok"
+		if [ -z "$_want" ]; then _st="unmanaged"; elif [ "$_want" != "$_got" ]; then _st="modified"; _ok=0; fi
+		_items="$_items{\"file\":\"$(esc "$_f")\",\"status\":\"$_st\"}"
+	done
+	printf '{"installed_version":"%s","integrity":%s,"files":[%s]}\n' \
+		"$(esc "$_v")" "$([ "$_ok" = 1 ] && echo true || echo false)" "$_items"
+}
+
+# ---- check ----
+cmd_check() {
+	if ! pull_manifest; then
+		printf '{"error":"no_source","detail":"所有数据源不可达"}\n'
+		return 1
+	fi
+	_src="$(cat "$WORK/source" 2>/dev/null)"
+	_rv="$(man_version "$WORK/manifest.tsv" 2>/dev/null || echo '-')"
+	_lv="$(man_version "$LOCAL_MANIFEST" 2>/dev/null || echo '-')"
+	_changed=""
+	_n=0
+	for _f in $(man_names "$WORK/manifest.tsv"); do
+		_rsha="$(man_sha "$WORK/manifest.tsv" "$_f")"
+		_lsha="$(man_sha "$LOCAL_MANIFEST" "$_f" 2>/dev/null)"
+		[ -z "$_lsha" ] && _lsha="$(sha_of "$DATA_DIR/$_f")"
+		if [ "$_rsha" != "$_lsha" ]; then
+			_changed="$_changed{\"file\":\"$(esc "$_f")\",\"remote_sha256\":\"$_rsha\"}"
+			_n=$((_n + 1))
+		fi
+	done
+	printf '{"remote_version":"%s","installed_version":"%s","source":"%s","update_available":%s,"changed":[%s]}\n' \
+		"$(esc "$_rv")" "$(esc "$_lv")" "$(esc "$_src")" \
+		"$([ "$_n" -gt 0 ] && echo true || echo false)" "$_changed"
+	return 0
+}
+
+# ---- update ----
+cmd_update() {
+	if ! pull_manifest; then
+		printf '{"error":"no_source","detail":"所有数据源不可达, 保持现有数据集"}\n'
+		return 1
+	fi
+	_src="$(cat "$WORK/source" 2>/dev/null)"
+	_rv="$(man_version "$WORK/manifest.tsv" 2>/dev/null || echo '-')"
+	_mkdir_ok=0
+	mkdir -p "$WORK/dl" 2>/dev/null && _mkdir_ok=1
+	if [ "$_mkdir_ok" != 1 ]; then
+		printf '{"error":"no_tmp","detail":"无法创建临时目录 %s"}\n' "$WORK/dl"
+		return 1
+	fi
+	_updated=""
+	_n=0
+	_failed=""
+	for _f in $(man_names "$WORK/manifest.tsv"); do
+		_rsha="$(man_sha "$WORK/manifest.tsv" "$_f")"
+		_rsize="$(man_size "$WORK/manifest.tsv" "$_f")"
+		_lsha="$(man_sha "$LOCAL_MANIFEST" "$_f" 2>/dev/null)"
+		[ -z "$_lsha" ] && _lsha="$(sha_of "$DATA_DIR/$_f")"
+		[ "$_rsha" = "$_lsha" ] && continue
+		if ! fetch_to "$_src/$_f" "$WORK/dl/$_f"; then
+			_failed="$_failed$_f(download),"
+			continue
+		fi
+		_got="$(sha_of "$WORK/dl/$_f")"
+		if [ "$_got" != "$_rsha" ]; then
+			_failed="$_failed$_f(sha256),"
+			continue
+		fi
+		if [ -n "$_rsize" ]; then
+			_gotsz="$(wc -c < "$WORK/dl/$_f" 2>/dev/null | tr -d ' ')"
+			[ "$_gotsz" = "$_rsize" ] || { _failed="$_failed$_f(size),"; continue; }
+		fi
+		# 备份旧版 (首次无备份则不生成)
+		[ -f "$DATA_DIR/$_f" ] && cp -f "$DATA_DIR/$_f" "$DATA_DIR/$_f.bak" 2>/dev/null
+		# 原子替换
+		cp -f "$WORK/dl/$_f" "$DATA_DIR/.${_f}.new" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
+		chmod 644 "$DATA_DIR/.${_f}.new" 2>/dev/null
+		mv -f "$DATA_DIR/.${_f}.new" "$DATA_DIR/$_f" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
+		_updated="$_updated{\"file\":\"$(esc "$_f")\",\"sha256\":\"$_rsha\"}"
+		_n=$((_n + 1))
+	done
+	# manifest 同步落地 (本地版本基线 = 远端版本)
+	if [ "$_n" -gt 0 ] || [ "$_rv" != "$(man_version "$LOCAL_MANIFEST" 2>/dev/null || echo '-')" ]; then
+		[ -f "$LOCAL_MANIFEST" ] && cp -f "$LOCAL_MANIFEST" "$LOCAL_MANIFEST.bak" 2>/dev/null
+		cp -f "$WORK/manifest.tsv" "$DATA_DIR/.manifest.tsv.new" 2>/dev/null && \
+			mv -f "$DATA_DIR/.manifest.tsv.new" "$LOCAL_MANIFEST" 2>/dev/null
+	fi
+	printf '{"updated":[%s],"count":%d,"version":"%s","source":"%s"%s}\n' \
+		"$_updated" "$_n" "$(esc "$_rv")" "$(esc "$_src")" \
+		"$( [ -n "$_failed" ] && printf ',"failed":"%s"' "$(esc "$_failed")" )"
+	log "feed update: version=$_rv updated=$_n failed=${_failed:-none} src=$_src"
+	[ -n "$_failed" ] && return 2
+	return 0
+}
+
+# ---- rollback ----
+cmd_rollback() {
+	_restored=""
+	_n=0
+	for _f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt; do
+		[ -f "$DATA_DIR/$_f.bak" ] || continue
+		cp -f "$DATA_DIR/$_f.bak" "$DATA_DIR/.${_f}.new" 2>/dev/null || continue
+		mv -f "$DATA_DIR/.${_f}.new" "$DATA_DIR/$_f" 2>/dev/null || continue
+		rm -f "$DATA_DIR/$_f.bak"
+		_restored="$_restored{\"file\":\"$(esc "$_f")\"}"
+		_n=$((_n + 1))
+	done
+	if [ -f "$LOCAL_MANIFEST.bak" ]; then
+		cp -f "$LOCAL_MANIFEST.bak" "$LOCAL_MANIFEST" 2>/dev/null && rm -f "$LOCAL_MANIFEST.bak"
+	fi
+	printf '{"restored":[%s],"count":%d}\n' "$_restored" "$_n"
+	[ "$_n" -gt 0 ] && log "feed rollback: restored $_n files"
+	return 0
+}
+
+case "${1:-status}" in
+	status)   cmd_status;;
+	check)    cmd_check;;
+	update)   cmd_update;;
+	rollback) cmd_rollback;;
+	*)        echo "usage: netsteer-feed {status|check|update|rollback}" >&2; exit 2;;
+esac

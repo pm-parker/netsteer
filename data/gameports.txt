@@ -1,0 +1,10 @@
+# netsteer L2: game platform well-known ports (category TAB lo-hi/proto)
+# source: platform official documentation (Xbox Support / PlayStation "PSN ports")
+# 3074 = Xbox Live & PSN NAT traversal (official); 3480/tcp PSN-specific
+# 27015-27050/udp = Steam game servers & SDR relays; 27036-27037/tcp Steam Remote Play
+# caveat: 3478-3479 deliberately excluded (shared STUN/TURN — too generic, false positives)
+console	3074-3074/udp
+console	3074-3074/tcp
+psn	3480-3480/tcp
+steam	27015-27050/udp
+steam	27036-27037/tcp

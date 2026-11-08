@@ -334,6 +334,10 @@
     <h2>5. 快速开始</h2>
     <hr class="rule">
     <p class="lead">从 Releases 下载对应架构的 APK（aarch64 / x86_64 / arm_cortex-a7 / arm_cortex-a9），推到路由器安装：</p>
+    <div style="background:#fff7ed;border:1px solid #fdba74;border-left:4px solid #ea580c;border-radius:10px;padding:12px 16px;margin:10px 0 18px;font-size:14px;line-height:1.7">
+      <b>⚠️ 仅支持 OpenWrt 25.x+（apk 包管理器）。</b>24.10 及更早的稳定版用 opkg/.ipk 体系，装本插件的 .apk 会报
+      <code>Malformed package file</code>。安装前先在路由器上执行 <code>apk --version</code> 确认。
+    </div>
 <pre><span class="c"># 沙箱/电脑 → 路由器（按架构选包）</span>
 scp -O luci-app-netsteer-1.12.4-aarch64_generic.apk root@<span class="s">192.168.1.1</span>:/tmp/
 

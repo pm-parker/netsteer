@@ -60,6 +60,9 @@ Mobile is a first-class citizen: 44px touch targets, tap equivalents for every h
 
 ## Install
 
+> [!IMPORTANT]
+> **Requires OpenWrt 25.x+ (apk package manager).** Older stable releases (24.10 and earlier) ship `opkg` and cannot install these `.apk` files — you'll get `pkg_init_from_file: Malformed package file`. Verify with `apk --version` on your router before downloading.
+
 ### Option A — Release package (recommended)
 
 Grab the `.apk` matching your architecture from [Releases](https://github.com/pm-parker/netsteer/releases) (check `cat /etc/apk/arch` on the router), copy it over, then:

@@ -83,29 +83,30 @@ with sync_playwright() as p:
         assert pg.locator(sel).count() == 1, f"missing {sel}"
     ok("专家调教: 整形分桶卡在位 (tc 计数)")
 
-    # v1.16 场景感知横幅: 升到总览 C 位 (方案 A), 默认 tab 直接断言
-    for sel in ("#netsteer-scene", "#ns-sense-body"):
-        assert pg.locator(sel).count() == 1, f"missing {sel}"
+    # v1.17.1 总览=纯展示: 四格统计首格=当前场景 (AI 智能识别), 无总开关
+    assert pg.locator("#ns-scene-tile-value").count() == 1, "missing scene tile"
+    assert pg.locator("#netsteer-panel-overview #ns-master").count() == 0, "总开关不应在总览"
+    assert pg.locator("#netsteer-panel-smart #ns-master").count() == 1, "总开关应在智能模式页"
+    ok("总览: 当前场景格在位 (AI 智能识别), 无开关; 总开关归位智能模式")
+
+    # v1.17.1 智能模式 = 总开关 + 场景识别 + 设备加速 + P2P
+    pg.locator(".netsteer-tab[data-tab='smart']").first.click(); pg.wait_for_timeout(1500)
     import time as _t
+    for sel in ("#ns-master", "#ns-toggle", "#netsteer-scene", "#ns-sense-body",
+                "#ns-feed-status", "#ns-feed-btn", "#netsteer-game", "#netsteer-game-badge",
+                "#netsteer-game-ip", "#ns-game-spark", "#ns-game-suggest", "#netsteer-p2p"):
+        assert pg.locator(sel).count() == 1, f"missing {sel}"
+    tabnames = pg.locator(".netsteer-tab").all_inner_texts()
+    assert "智能模式" in tabnames and "专家模式" in tabnames, f"tab 名不对: {tabnames}"
     sense_txt = ""
     for _ in range(15):  # 轮询最长 15s: pollLive 周期 8s + rpc dnslog 往返
         sense_txt = pg.inner_text("#ns-sense-body")
-        if any(k in sense_txt for k in ("游戏", "会议", "视频", "下载", "浏览", "异常")):
+        if any(k in sense_txt for k in ("游戏", "会议", "视频", "下载", "浏览", "流量")):
             break
         _t.sleep(1.0)
-    assert any(k in sense_txt for k in ("游戏", "会议", "视频", "下载", "浏览", "异常")), f"sense body empty: {sense_txt!r}"
-    ok(f"总览: 场景感知横幅在位 (方案 A) → {sense_txt.splitlines()[0][:24]}")
-
-    # v1.17 智能优先 = 设备加速 + 识别详情 + 识别库 (原游戏通道正名重组)
-    pg.locator(".netsteer-tab[data-tab='smart']").first.click(); pg.wait_for_timeout(1500)
-    assert pg.locator("#netsteer-game").count() == 1
-    ok("智能优先: tab 可进, 设备加速卡在位")
-    for sel in ("#netsteer-game-badge", "#netsteer-game-ip", "#ns-game-spark",
-                "#ns-game-dns", "#ns-game-dns-badge", "#ns-game-dns-body", "#ns-game-suggest",
-                "#ns-feed-status", "#ns-feed-btn"):
-        assert pg.locator(sel).count() == 1, f"missing {sel}"
-    assert "设备加速" in pg.inner_text("#netsteer-game")
-    ok("智能优先: 徽标/IP输入/延迟曲线/识别详情/识别库 9 元素在位")
+    assert any(k in sense_txt for k in ("游戏", "会议", "视频", "下载", "浏览", "流量")), f"sense body empty: {sense_txt!r}"
+    assert "置信度" not in sense_txt, "置信度百分比不应再展示"
+    ok(f"智能模式: 总开关+场景识别+设备加速+P2P 在位 → {sense_txt.splitlines()[0][:20]}")
 
     b0 = pg.inner_text("#netsteer-game-badge").strip()
     if "优先中" in b0:  # 若初始为开, 先关掉保证起点确定

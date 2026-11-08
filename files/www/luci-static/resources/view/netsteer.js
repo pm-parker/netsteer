@@ -646,14 +646,14 @@ function fmtBps(bps) {
 
 function tabStructure() {
 	/* 横向 Tab 分组: 卡片归类唯一 (单测校验)。
-	 * 信息架构 v1.17 (方案 A): 总览=状态仪表盘 (零术语, 所有人)
-	 * 智能优先=场景识别 + 设备加速 (普通~进阶), 专家调教=内核/整形细节 (极客) */
+	 * 信息架构 v1.17.1 (用户反馈二轮): 总览=纯展示仪表盘 (无操作)
+	 * 智能模式=总开关+场景识别+能力开关 (操作页), 专家模式=内核/整形细节 (极客) */
 	return [
-		{ id: 'overview', name: _('总览'), cards: ['scene', 'wires', 'health', 'traffic'],
+		{ id: 'overview', name: _('总览'), cards: ['wires', 'health', 'traffic'],
 			hint: _('网络当前在做什么、快不快、谁在占用 — 一眼看懂。') },
-		{ id: 'smart', name: _('智能优先'), cards: ['device', 'p2p'],
-			hint: _('自动识别网络场景；想让某台设备（游戏主机/电脑）优先时，一键开启设备加速。') },
-		{ id: 'pro', name: _('专家调教'), cards: ['presets', 'ifaces', 'softirq', 'irq', 'audit', 'tins'],
+		{ id: 'smart', name: _('智能模式'), cards: ['master', 'scene', 'device', 'p2p'],
+			hint: _('一个总开关自动优化；想让某台设备（游戏主机/电脑）低延迟时，单独开启设备加速。') },
+		{ id: 'pro', name: _('专家模式'), cards: ['presets', 'ifaces', 'softirq', 'irq', 'audit', 'tins'],
 			hint: _('分核方案、逐口 RPS/XPS、软中断分布、IRQ 亲和、体检报告与整形分桶细节 — 精确到每一颗核心。') }
 	];
 }
@@ -880,7 +880,7 @@ return view.extend({
 	renderMaster: function() {
 		var el = E('div', { 'class': 'vt-tile ns-master', 'id': 'ns-master' }, [
 			E('div', { 'class': 'vt-tile-head' }, [
-				E('span', { 'class': 'vt-tile-title' }, _('加速总开关')),
+				E('span', { 'class': 'vt-tile-title' }, _('智能模式')),
 				E('span', { 'class': 'vt-hint ns-master-state' }, _('读取中…'))
 			]),
 			E('div', { 'class': 'ns-master-body' }, [
@@ -888,7 +888,7 @@ return view.extend({
 					E('span', { 'class': 'ns-toggle-knob' })
 				]),
 				E('div', { 'class': 'ns-master-info' }, [
-					E('p', { 'class': 'ns-master-desc' }, _('开启后应用 cake 整形 + 全核分摊 + P2P 直通；关闭则恢复系统默认，用于建立对比基线。')),
+					E('p', { 'class': 'ns-master-desc' }, _('开启后自动识别游戏、视频会议、视频、下载流量并动态优化；关闭恢复系统默认（可对比效果）。')),
 					E('p', { 'class': 'ns-master-gain', 'id': 'ns-master-gain' }, '')
 				])
 			])
@@ -1323,7 +1323,17 @@ return view.extend({
 		if (o.flow) fwd.push(_('分载开'));
 		if (pp.active) fwd.push(_('P2P 直通'));
 		var mode = 'steering';
+		/* 四格首格 = 当前场景 (AI 识别; paintSense 实时刷新 #ns-scene-tile-value) */
+		var sst = this._senseState || { scene: 'normal' };
+		var smeta = SENSE_SCENE_META[sst.scene] || SENSE_SCENE_META.normal;
+		var sceneValEl = E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-scene-tile-value' }, smeta.icon + ' ' + smeta.name);
+		var sceneSubEl = E('span', { 'class': 'vt-dcard-sub', 'id': 'ns-scene-tile-sub' }, _('AI 智能识别'));
 		return E('div', { 'class': 'vt-health ns-health' }, [
+			E('div', { 'class': 'vt-dcard ns-hc ns-good' }, [
+				E('span', { 'class': 'vt-dcard-label' }, _('当前场景')),
+				sceneValEl,
+				sceneSubEl
+			]),
 			card(_('收包集中度'), softirqTxt,
 				a && a.softirq_conc != null && a.softirq_conc > (a.softirq_warn || 45) ? 'ns-bad' : 'ns-good',
 				a && a.softirq_conc != null ? (a.softirq_conc > (a.softirq_warn || 45) ? _('单核偏热 — 建议调 IRQ') : _('分布均衡')) : _('采样中')),
@@ -2082,7 +2092,7 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-card-title' }, _('P2P 直通 (Fullcone 等效)')),
 				E('span', { 'class': 'netsteer-badge' + meta.cls, 'id': 'netsteer-p2p-badge' }, _(meta.label))
 			]),
-			E('p', { 'class': 'netsteer-note' }, _('给指定设备开放 UDP 全端口入站（防火墙原生 DNAT 规则）。配合系统 NAT 的端口保留特性，效果等同 Fullcone NAT——P2P 下载、网心云类设备的打洞成功率显著提升。仅放行 UDP，TCP 不受影响。')),
+			E('p', { 'class': 'netsteer-note' }, _('让指定设备的下载类流量走独立通道：P2P 下载、网盘同步不拖累游戏和视频通话，连接成功率也更高。')),
 			E('div', { 'class': 'netsteer-row', 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
 				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ip' }, _('设备 IP')),
 				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'min-height:32px' }),
@@ -2134,48 +2144,36 @@ renderSoftirqCard: function(text) {
 	},
 
 	/* ---- 游戏设备优先通道卡 (设备级 DSCP cs4 → cake diffserv4 video tin) ---- */
-	renderSenseBanner: function() {
-		/* 总览 C 位: 场景感知横幅 — 全屋网络当前在做什么 (自动判定, 零术语) */
-		var banner = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-scene', 'style': 'margin-bottom:12px' }, [
+	renderSceneCard: function() {
+		/* 智能模式页: 智能场景识别 — 大字场景 + 一句依据 + 平台标签 (不堆明细, 不显示置信度) */
+		var self = this;
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-scene' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
-				E('span', { 'class': 'netsteer-card-title' }, _('网络当前状态')),
-				E('span', { 'class': 'netsteer-note', 'id': 'ns-sense-sub' }, _('自动识别中…'))
+				E('span', { 'class': 'netsteer-card-title' }, _('智能场景识别')),
+				E('span', { 'class': 'netsteer-badge', 'style': 'font-weight:600' }, _('AI 智能识别'))
 			]),
-			E('div', { 'id': 'ns-sense-body' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))])
+			E('div', { 'id': 'ns-sense-body' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))]),
+			E('div', { 'id': 'ns-sense-chips', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:.3em 0' }, []),
+			E('div', { 'style': 'display:flex;gap:8px;align-items:center;margin-top:.4em' }, [
+				E('span', { 'id': 'ns-feed-status', 'class': 'netsteer-note', 'style': 'margin:0' }, '')
+			])
 		]);
-		return banner;
+		window.setTimeout(function() { self.paintFeedStatus(); }, 300);
+		return card;
 	},
 
 	renderDeviceCard: function(st) {
-		/* 智能优先核心: 设备加速 (原"游戏通道"正名) + 识别证据 + 识别库 */
+		/* 智能模式页: 设备加速 — 一句话说明 + 标准化操作行 + 延迟曲线 */
 		var self = this;
 		var meta = gameStatusMeta(st);
-		var dmeta = dnsObserverMeta(st);
 		var defIp = (st && st.device && st.device !== '-') ? st.device : '';
 		self._gameDevice = (st && st.device) || '-';
-		var dnsChildren = [
-			E('div', { 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, [
-				E('strong', { 'class': 'netsteer-note', 'style': 'margin:0' }, _('识别详情')),
-				E('span', { 'class': 'netsteer-badge', 'id': 'ns-game-dns-badge' }, dmeta.badge),
-				E('span', { 'id': 'ns-feed-status', 'class': 'netsteer-note', 'style': 'margin-left:auto' }, '')
-			]),
-			E('p', { 'class': 'netsteer-note', 'style': 'margin:.3em 0 .2em' }, dmeta.desc)
-		];
-		if (dmeta.btn)
-			dnsChildren.push(E('div', { 'id': 'ns-game-dns-actions', 'style': 'margin:.3em 0' }, [
-				E('button', {
-					'id': 'ns-game-dns-toggle',
-					'class': 'netsteer-minibtn', 'type': 'button',
-					'click': ui.createHandlerFn(self, 'gameDnsEnToggle', dmeta.btn)
-				}, dmeta.btn === 'on' ? _('开启查询日志') : _('关闭查询日志'))
-			]));
-		dnsChildren.push(E('div', { 'id': 'ns-game-dns-body' }, [E('p', { 'class': 'netsteer-note' }, _('等待采样…'))]));
 		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-game' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('span', { 'class': 'netsteer-card-title' }, _('设备加速')),
 				E('span', { 'class': 'netsteer-badge' + meta.cls, 'id': 'netsteer-game-badge' }, _(meta.label))
 			]),
-			E('p', { 'class': 'netsteer-note' }, _('指定一台设备（游戏主机、电脑均可），家里有人大量下载或看视频时，这台设备的流量仍然优先发出，延迟几乎不受影响。开启后可在下方实时延迟曲线看到效果。')),
+			E('p', { 'class': 'netsteer-note' }, _('让选定的设备（如游戏主机）在网络繁忙时仍然低延迟——家里有人下载、看视频也不卡。下方实时延迟曲线可验证效果。')),
 			E('div', { 'id': 'ns-game-suggest', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:.4em 0' }, []),
 			E('div', { 'class': 'netsteer-row', 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
 				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-game-ip' }, _('设备 IP')),
@@ -2191,8 +2189,7 @@ renderSoftirqCard: function(text) {
 				E('div', { 'id': 'ns-game-spark' }, [E('p', { 'class': 'netsteer-note' }, _('等待采样…'))]),
 				E('p', { 'class': 'netsteer-note', 'id': 'ns-game-lat', 'style': 'margin:.2em 0' }, '')
 			]),
-			E('div', { 'id': 'ns-game-dns', 'style': 'margin:.6em 0;padding-top:.5em;border-top:1px dashed var(--line-2,#c1c7ce)' }, dnsChildren),
-			E('p', { 'class': 'netsteer-foot' }, _('说明：需要智能队列（cake 整形）在运行；仅对 IPv4 流量生效（游戏主机/电脑的绝大多数流量走 IPv4）。加速开关关闭或整形停止时，这里会如实显示降级状态。'))
+			E('p', { 'class': 'netsteer-foot' }, _('需智能模式开启；仅对 IPv4 流量生效。'))
 		]);
 		window.setTimeout(function() { self.gameDetectSuggest(); }, 400);
 		return card;
@@ -2325,30 +2322,55 @@ renderSoftirqCard: function(text) {
 	},
 
 	paintSense: function(res) {
+		/* 双渲染目标: 智能页场景卡 (#ns-sense-body + #ns-sense-chips) 与 总览四格 tile (#ns-scene-tile-value) */
+		var st = this._senseState || { scene: 'normal', since: Math.floor(Date.now() / 1000) };
+		var pending = res && res.scene !== st.scene;   /* 防抖中 */
+		var shown = pending ? res : st;                 /* 防抖期: tile 先显示新场景 + 确认中 */
+		var meta = SENSE_SCENE_META[shown.scene] || SENSE_SCENE_META.normal;
+
+		/* --- 总览四格 tile --- */
+		var tileVal = document.getElementById('ns-scene-tile-value');
+		if (tileVal) {
+			tileVal.textContent = pending ? (meta.icon + ' ' + meta.name) : (meta.icon + ' ' + meta.name);
+			tileVal.className = 'vt-dcard-value vt-tn' + (meta.cls ? ' ' + meta.cls : '');
+		}
+		var tileSub = document.getElementById('ns-scene-tile-sub');
+		if (tileSub) tileSub.textContent = pending ? _('识别中…') : _('AI 智能识别');
+
+		/* --- 智能页场景卡主体: 一句白话依据 --- */
 		var el = document.getElementById('ns-sense-body');
 		if (!el) return;
-		var st = this._senseState || { scene: 'normal', since: Math.floor(Date.now() / 1000) };
-		var meta = SENSE_SCENE_META[st.scene] || SENSE_SCENE_META.normal;
-		var head = E('div', { 'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, [
-			E('span', { 'class': 'netsteer-badge' + (meta.cls ? ' ' + meta.cls : ''), 'style': 'font-size:15px' }, meta.icon + ' ' + meta.name),
-			res && res.scene !== st.scene
-				? E('span', { 'class': 'netsteer-note' }, _('检测到%s流量，确认中…').format((SENSE_SCENE_META[res.scene] || SENSE_SCENE_META.normal).name))
-				: E('span', { 'class': 'netsteer-note' }, res ? _('置信度 %d%%').format(res.confidence) : '')
+		var kids = [];
+		var headline = E('div', { 'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, [
+			E('span', { 'class': 'netsteer-badge' + (meta.cls ? ' ' + meta.cls : ''), 'style': 'font-size:16px;font-weight:600' }, meta.icon + ' ' + meta.name)
 		]);
-		var kids = [head];
-		if (res) {
-			var lines = [];
+		if (pending)
+			headline.appendChild(E('span', { 'class': 'netsteer-note' }, _('检测到%s流量，确认中…').format(meta.name)));
+		kids.push(headline);
+
+		/* 平台标签 chips (每场景一枚, 只显示平台名不带完整域名 — 域名是内部细节) */
+		var chipsEl = document.getElementById('ns-sense-chips');
+		var chips = [];
+		if (res && res.evidence) {
 			['gaming', 'work', 'streaming', 'download'].forEach(function(s) {
-				var e = (res.evidence[s] || []).slice(0, 2);
-				e.forEach(function(x) {
-					var tag = { chain: _('游戏链'), domain: _('域名'), stun: _('STUN'), bulk: _('大流量'), port: _('端口'), 'game-heavy': _('平台大下载') }[x.via] || x.via;
-					lines.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.1em 0;font-size:12px' },
-						'%s %s · %s%s'.format((SENSE_SCENE_META[s] || {}).icon || '', (SENSE_SCENE_META[s] || {}).name || s, x.host || '', x.cat ? (' [' + x.cat + ']') : '') + ' · ' + tag));
-				});
+				var e = res.evidence[s] || [];
+				if (e.length) {
+					var m2 = SENSE_SCENE_META[s] || {};
+					var label = e[0].cat || (m2.name || s);
+					chips.push(E('span', { 'class': 'netsteer-badge', 'style': 'margin:2px' },
+						(m2.icon || '') + ' ' + (m2.name || s) + ' · ' + label));
+				}
 			});
-			if (lines.length) kids.push(E('div', { 'style': 'margin-top:4px' }, lines.slice(0, 6)));
-			else kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0' }, _('当前没有明显的游戏 / 视频会议 / 视频 / 下载流量。')));
 		}
+		if (chipsEl) chipsEl.replaceChildren.apply(chipsEl, chips.length ? chips : [E('span', { 'class': 'netsteer-note' }, '')]);
+
+		/* 依据句: 仅在需要时补一句 (chips 已表意时不重复) */
+		var whyTxt = '';
+		if (shown.scene === 'normal')
+			whyTxt = _('当前没有明显的游戏 / 视频 / 下载流量');
+		else if (!chips.length && res && res.evidence && res.evidence[shown.scene] && res.evidence[shown.scene][0])
+			whyTxt = _('检测到%s流量').format(res.evidence[shown.scene][0].cat || (SENSE_SCENE_META[shown.scene] || {}).name || '');
+		if (whyTxt) kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.25em 0 0' }, whyTxt));
 		el.replaceChildren(E('div', {}, kids));
 	},
 
@@ -2658,6 +2680,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-minibtn{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a);border-radius:var(--r-sm,4px);padding:.2em .7em;font-size:var(--fs-sm,12px);cursor:pointer}',
 			'.netsteer-minibtn:hover{border-color:var(--accent,#c8f031);color:var(--text-2,#4a515a)}',
 			'.netsteer-conc{display:flex;align-items:baseline;gap:.7em;margin:.2em 0 .8em 0}',
+			'.netsteer-root .vt-health{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))!important}',
 			'.netsteer-big{font-size:26px;font-weight:700;font-family:var(--mono,ui-monospace,monospace);color:var(--text,#14171a);line-height:1}',
 			'.netsteer-big.is-ok{color:var(--ok,#0b7f6c)}',
 			'.netsteer-big.is-bad{color:var(--warn,#9a5b00)}',
@@ -2807,8 +2830,6 @@ renderSoftirqCard: function(text) {
 /* 主题 token + 总览面板 (wires/health/traffic) */
 		this.loadVtCss();
 		var panelOverview = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-overview' }, [
-			this.renderSenseBanner(),
-			this.renderMaster(),
 			this.renderWires(),
 			E('div', { 'id': 'ns-health-slot' }, [ this.renderHealth(null) ]),
 			this.renderTraffic()
@@ -2822,6 +2843,8 @@ renderSoftirqCard: function(text) {
 			if (slot) slot.replaceChildren(selfOv.renderHealth(a));
 		});
 		var panelSmart = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-smart' }, [
+			this.renderMaster(),
+			this.renderSceneCard(),
 			this.renderDeviceCard(values[4 + IFACES.length * 2]),
 			this.renderP2PCard(values[3 + IFACES.length * 2])
 		]);

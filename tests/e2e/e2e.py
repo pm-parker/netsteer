@@ -108,6 +108,17 @@ with sync_playwright() as p:
     assert "置信度" not in sense_txt, "置信度百分比不应再展示"
     ok(f"智能模式: 总开关+场景识别+设备加速+P2P 在位 → {sense_txt.splitlines()[0][:20]}")
 
+    # v1.18 判定下沉: 场景卡显示后端 daemon 判定 (与 /tmp/netsteer/sense.json 一致)
+    import subprocess as _sp, json as _json
+    _ssh = _sp.run(["ssh", "-i", "/home/abc/.ssh/openwrt_lazycat", "-o", "BatchMode=yes",
+                    "root@192.168.11.1", "cat /tmp/netsteer/sense.json 2>/dev/null"],
+                   capture_output=True, text=True, timeout=15)
+    _j = _json.loads(_ssh.stdout)
+    _SCENE_CN = {"gaming": "游戏", "work": "会议", "streaming": "视频", "download": "下载", "normal": "浏览"}
+    _want = _SCENE_CN.get(_j.get("scene") or _j.get("verdict", {}).get("scene"), "")
+    assert _want and _want in sense_txt, f"场景卡 ({sense_txt.splitlines()[0]}) 与后端判定 ({_j.get('scene')}) 不一致"
+    ok(f"判定下沉: 场景卡消费后端 sense.json (daemon 判定={_want}, ts={_j.get('ts')})")
+
     b0 = pg.inner_text("#netsteer-game-badge").strip()
     if "优先中" in b0:  # 若初始为开, 先关掉保证起点确定
         pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)

@@ -849,6 +849,21 @@ function buildIfaces(uciRes) {
 	return out;
 }
 
+/* v1.18 判定下沉: 后端 verdict.ev 计数 → 渲染层 evidence 数组形态 (chips 按 length 显示处数) */
+function verdictToRes(v) {
+	var n = function(x) { x = parseInt(x, 10) || 0; var a = []; for (var i = 0; i < x; i++) a.push({}); return a; };
+	return {
+		scene: (v && v.scene) || 'normal',
+		score: (v && v.score) || {},
+		evidence: {
+			gaming: n(v && v.ev && v.ev.gaming),
+			work: n((v && v.ev && v.ev.work_dom || 0) + (v && v.ev && v.ev.work_stun || 0)),
+			streaming: n((v && v.ev && v.ev.stream_dom || 0) + (v && v.ev && v.ev.stream_bulk || 0)),
+			download: n(v && v.ev && v.ev.download)
+		}
+	};
+}
+
 return view.extend({
 	/* 本页所有改动即时生效, 无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
 	addFooter: function() {
@@ -2324,7 +2339,25 @@ renderSoftirqCard: function(text) {
 	},
 
 	pollSense: function(recs) {
-		/* 场景感知: 采样 → 判定 → 防抖 → 渲染 (D12) */
+		/* 场景感知 v1.18: 优先读后端 daemon 判定 (/tmp/netsteer/sense.json, 页面关闭时判定不中断);
+		   缺失/过期回退本地判定 (dnslog 采样 + senseClassify + 本地防抖) */
+		var self = this;
+		fs.read('/tmp/netsteer/sense.json').then(function(txt) {
+			var j = null;
+			try { j = JSON.parse(txt); } catch (e) {}
+			var age = j && j.ts ? Math.floor(Date.now() / 1000) - j.ts : Infinity;
+			if (j && j.verdict && age <= ((j.interval || 30) * 3 + 10)) {
+				/* 后端已防抖: 直接信任 scene 稳定档, 不做本地二次防抖 (避免双重 4 窗拖慢切档) */
+				self._senseState = { scene: j.scene || 'normal', since: j.ts };
+				self.paintSense(verdictToRes(j.verdict));
+				return;
+			}
+			self.localSense(recs);
+		}).catch(function() { self.localSense(recs); });
+	},
+
+	localSense: function(recs) {
+		/* 回退路径: 本地采样判定 (后端 daemon 不可用时) */
 		var self = this;
 		self.loadGameDomains().then(function() {
 			var res = senseClassify(recs, {

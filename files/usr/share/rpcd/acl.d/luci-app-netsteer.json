@@ -32,6 +32,9 @@
         "/tmp/netsteer/state.json": [
           "read"
         ],
+        "/tmp/netsteer/sense.json": [
+          "read"
+        ],
         "/etc/config/netsteer": [
           "read"
         ],

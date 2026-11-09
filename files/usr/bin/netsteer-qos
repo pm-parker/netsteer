@@ -403,7 +403,8 @@ qos_sense() {
 	local j scene prev cand candn ts iv
 	[ -f "$awk_bin" ] || { log "sense: engine missing"; return 1; }
 	mkdir -p "$SENSE_DIR" 2>/dev/null
-	j=$(qos_dnslog "$top" | qos_json2tab | awk -f "$awk_bin") || { log "sense: engine error"; return 1; }
+	local ex; ex=$(qos_get sense_exclude "")
+	j=$(qos_dnslog "$top" | qos_json2tab | awk -v ex="$ex" -f /usr/share/netsteer/exclude.awk | awk -f "$awk_bin") || { log "sense: engine error"; return 1; }
 	scene=$(echo "$j" | sed 's/.*"scene":"\([a-z]*\)".*/\1/')
 	[ -n "$scene" ] || { log "sense: no scene"; return 1; }
 	# 防抖: state 三行 scene/cand/candn, 连续 2 窗同判定才切 (JS senseDebounce 同语义)
@@ -419,7 +420,7 @@ qos_sense() {
 	if [ "$candn" -ge 2 ]; then prev="$scene"; fi
 	printf "%s\n%s\n%s\n" "$prev" "$cand" "$candn" > "$SENSE_STATE"
 	ts=$(date +%s)
-	iv=$(qos_get sense.interval); iv="${iv:-30}"
+	iv=$(qos_get sense_interval); iv="${iv:-30}"
 	printf '{"scene":"%s","cand":"%s","confirmed":%d,"ts":%d,"interval":%d,"verdict":%s}\n' \
 		"$prev" "$cand" "$candn" "$ts" "$iv" "$j" > "$SENSE_JSON.tmp"
 	mv "$SENSE_JSON.tmp" "$SENSE_JSON"
@@ -429,15 +430,50 @@ qos_sense() {
 qos_sense_daemon() {
 	# 常驻: 固定低频轮询 (默认 30s), uci netsteer.sense.interval/top 可覆盖
 	local iv top
-	iv=$(qos_get sense.interval); iv="${iv:-30}"
-	top=$(qos_get sense.top); top="${top:-200}"
+	iv=$(qos_get sense_interval); iv="${iv:-30}"
+	top=$(qos_get sense_top); top="${top:-200}"
 	echo $$ > "$SENSE_PID"
 	trap 'rm -f "$SENSE_PID"; exit 0' TERM INT
-	log "sense-daemon: start interval=${iv}s top=$top"
+	log "sense-daemon: start interval=${iv}s top=$top linked=$(qos_get sense_linked 0)"
 	while :; do
 		qos_sense "$top" >/dev/null 2>&1
+		qos_sense_link
 		sleep "$iv"
 	done
+}
+
+scene_mode() {
+	# 场景→模式映射 (联动只接管 standard↔latency 区间, 不覆盖用户手选的 p2p/throughput/steering)
+	case "$1" in
+		gaming|work)   echo latency;;
+		*)             echo standard;;
+	esac
+}
+
+qos_sense_link() {
+	# D14 联动: 稳定档切换瞬间 (prev 变化) 且 linked=1 → 自动切档
+	# 只在 scenario.mode ∈ {standard, latency, off, 空} 时接管 (用户手选其他档 = 尊重意图)
+	local linked cur target
+	linked=$(qos_get sense_linked 0)
+	[ "$linked" = "1" ] || return 0
+	[ -f "$SENSE_STATE" ] || return 0
+	local scene cand candn prev old_prev
+	prev=$(sed -n 1p "$SENSE_STATE"); cand=$(sed -n 2p "$SENSE_STATE"); candn=$(sed -n 3p "$SENSE_STATE")
+	old_prev=$(sed -n 4p "$SENSE_STATE" 2>/dev/null)
+	[ "$candn" -ge 2 ] || return 0
+	[ -n "$prev" ] && [ "$prev" != "$old_prev" ] || return 0
+	echo "$prev" >> "$SENSE_STATE"
+	target=$(scene_mode "$prev")
+	cur=$(uci -q get netsteer.scenario.mode 2>/dev/null)
+	case "$cur" in
+		standard|latency|off|"")
+			if [ -n "$target" ] && [ "$target" != "$cur" ]; then
+				log "link: scene=$prev → mode=$target (was $cur)"
+				/usr/bin/netsteer-mode "$target" >/dev/null 2>&1
+			fi
+			;;
+	esac
+	return 0
 }
 
 qos_sense_status() {
@@ -457,6 +493,7 @@ dnslog-raw) shift; qos_dnslog "${1:-200}" | qos_json2tab;;
 sense)   shift; qos_sense "${1:-200}" && qos_sense_status;;
 sense-daemon) qos_sense_daemon;;
 sense-status) qos_sense_status;;
+sense-link) qos_sense_link;;
 detect)  qos_detect;;
 env)     qos_env;;
 dns-en)  shift; qos_dns_en "${1:-status}";;

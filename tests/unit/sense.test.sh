@@ -74,5 +74,18 @@ eq "$N" "2" "j2t: 多对象多行"
 CHAIN=$(j2t '[{"q":"v.qq.com","c":"192.168.11.70","d":"210.14.70.10","p":"443","t":"tcp","u":"0","v":"614400"}]' | GAMEDOMAINS=$DATA/gamedomains.txt STREAMDOMAINS=$DATA/streamdomains.txt GAMEIPS=$DATA/gameips.txt GAMEPORTS=$DATA/gameports.txt DLPORTS=$DATA/downloadports.txt $AWK | sed 's/.*"scene":"\([a-z]*\)".*/\1/')
 eq "$CHAIN" "streaming" "j2t→引擎 端到端链路"
 
+# ---- exclude.awk 排除设备过滤 (D14) ----
+# 18. 排除设备的行被滤掉
+N=$(printf '100\ttcp\t192.168.11.175\t1.2.3.4\t443\t1\ta.com\n200\ttcp\t192.168.11.123\t1.2.3.4\t443\t1\tb.com\n' | awk -v ex='192.168.11.175 192.168.11.176' -f $DATA/exclude.awk | grep -c .)
+eq "$N" "1" "exclude: 排除 IP 行被滤掉"
+
+# 19. 非排除设备保留
+N=$(printf '100\ttcp\t192.168.11.123\t1.2.3.4\t443\t1\ta.com\n' | awk -v ex='192.168.11.175 192.168.11.176' -f $DATA/exclude.awk | grep -c .)
+eq "$N" "1" "exclude: 非排除设备保留"
+
+# 20. 空 ex = 全保留
+N=$(printf '100\ttcp\t192.168.11.123\t1.2.3.4\t443\t1\ta.com\n' | awk -v ex="" -f $DATA/exclude.awk | grep -c .)
+eq "$N" "1" "exclude: 空列表全保留"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = "0" ]

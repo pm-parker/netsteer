@@ -52,13 +52,20 @@
    （~1s/8k flows）+ dnsmasq reply 反查域名 + 仅 LAN 出站 flow；零代理依赖
 3. dnsmasq 日志（降级兜底；被代理劫持 53 的环境拿不到域名，走 IP 段+端口）
 
-**判定**（前端纯函数 senseClassify，可单测）：
+**判定**（v1.18 已下沉后端：`/usr/share/netsteer/sense.awk` 独立引擎 + `netsteer-qos sense-daemon`
+常驻 30s 轮询 + 防抖原子落盘 `/tmp/netsteer/sense.json`；**页面关闭判定不中断**，前端场景卡
+优先读后端结果，缺失/过期回退本地判定——本地 senseClassify 保留为回退路径）：
 - 四场景：视频/游戏/视频会议/下载 + 默认普通浏览
 - 量门槛三档（D16，宁漏勿误）：域名连接 <32KB=保活不算证据；
   会议/STUN ≥64KB 双向；流媒体 ≥512KB 真实下行
 - bulk "大下行=视频"证据限 80/443/1935 + 下行主导（v>u×10）
-- 网盘 CDN 域名直判下载；2 采样窗防抖
-- 已知边界：对外服务设备（网心云类）flow 层与看视频同构 → D14 设备排除根治
+- 网盘 CDN 域名直判下载；2 采样窗防抖（后端防抖，前端不二次防抖）
+- 设备排除（D14）：`netsteer.qos.sense_exclude` IP 列表，采样管道滤除
+  （对外服务设备如网心云不再污染判定——已真机验证）
+- 联动（D14）：`netsteer.qos.sense_linked=1` 时稳定档切换自动切档
+  （gaming/work→latency，其余→standard；只接管 standard↔latency 区间，
+  用户手选 p2p/throughput/steering/off 不覆盖——已真机双向验证）
+- 已知边界：对外服务设备（网心云类）flow 层与看视频同构 → 设备排除根治（已落地）
 
 ## 4. 数据生态
 

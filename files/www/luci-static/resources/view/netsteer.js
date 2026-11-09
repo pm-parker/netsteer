@@ -880,6 +880,8 @@ return view.extend({
 			var cpuTxt = (meta[0] && meta[0].data) ? meta[0].data : meta[0];
 			NCPU = parseCpuRange(typeof cpuTxt === 'string' ? cpuTxt : '0-3');
 			IFACES = buildIfaces(meta[1]);
+			/* D14 设备排除列表 (qos 节 sense_exclude): 本地判定回退路径的采样过滤用 */
+			view._senseExclude = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_exclude) || '';
 			var autotuneDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.autotune_done);
 			var tasks = [ Promise.resolve({ ncpu: NCPU, ifaces: IFACES, autotuneDone: autotuneDone }) ];
 			IFACES.forEach(function(it) {
@@ -2357,8 +2359,11 @@ renderSoftirqCard: function(text) {
 	},
 
 	localSense: function(recs) {
-		/* 回退路径: 本地采样判定 (后端 daemon 不可用时) */
+		/* 回退路径: 本地采样判定 (后端 daemon 不可用时) — 同样应用设备排除 (D14) */
 		var self = this;
+		var skip = {};
+		String(self._senseExclude || '').split(/[\s,]+/).forEach(function(ip) { if (ip) skip[ip] = 1; });
+		recs = recs.filter(function(r) { return !(r.c in skip); });
 		self.loadGameDomains().then(function() {
 			var res = senseClassify(recs, {
 				game: self._domainMap, gameips: self._ipmap, gameports: self._pmap,

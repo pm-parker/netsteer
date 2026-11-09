@@ -84,6 +84,9 @@
         ],
         "/usr/bin/netsteer-feed": [
           "exec"
+        ],
+        "/usr/bin/netsteer-wizard": [
+          "exec"
         ]
       }
     }

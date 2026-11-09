@@ -1,0 +1,143 @@
+#!/bin/sh
+# netsteer-wizard: 首次使用向导后端 (v1.18, D13 校准 + D20 分级)
+# 用法:
+#   netsteer-wizard probe              探测硬件+测速校准, 输出 JSON {ncpu,mem_mb,x86,dl_mbps,tier,rec_mode,rec_dl,rec_ul}
+#   netsteer-wizard apply <mode> [dl_mbps] [ul_mbps]   应用推荐档 + 校准值写 SQM + 标记完成
+#   netsteer-wizard skip               标记完成(不应用)
+# 设计:
+#   - 测速: 公共 CDN 大文件 6s 窗取最大吞吐 (curl -w speed_download 优先, uclient-fetch 计时降级)
+#   - 上传不实测 (无可靠公共端点), 用保守默认 40M, 专家模式可改
+#   - tier 判定与 JS tierFrom() 同构: T0 弱设备(≤2核或≤256MB)→只推 steering; T1/T2→standard
+#   - rec_dl = 实测×0.85 (整形保守值, 防线路突发丢包); rec_ul 默认 40M
+
+log() { logger -t netsteer-wizard "$*"; }
+
+# 测速候选 (国内大文件 CDN, ≥50MB; 并发 8s 窗取最大吞吐, 单端点慢不影响整体)
+WIZ_URLS="\
+https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe \
+https://dldir1.qq.com/qqfile/cl/QQPC/QQ9.7.17/29230/QQ9.7.17.29230.exe \
+https://dl.360safe.com/setup.exe"
+
+http_dl_mbps() {
+	# $@=候选 URL 列表 → 并发最快 Mbps (整数); 全失败输出 0
+	# 并发实现: 每候选后台 curl 写独立结果文件, wait 后取最大
+	local best=0 i=0 url sp sp_i mbps resdir
+	resdir=$(mktemp -d /tmp/netsteer-wiz.XXXXXX) || resdir=/tmp
+	for url in "$@"; do
+		i=$((i + 1))
+		( curl -sL --max-time 8 --speed-time 5 --speed-limit 20000 -o /dev/null -w '%{speed_download}' "$url" >"$resdir/$i" 2>/dev/null ) &
+	done
+	wait
+	while [ "$i" -ge 1 ]; do
+		sp=$(cat "$resdir/$i" 2>/dev/null)
+		sp_i=${sp%%.*}
+		case "$sp_i" in ''|*[!0-9]*) i=$((i - 1)); continue ;; esac
+		[ "$sp_i" -lt 100000 ] && { i=$((i - 1)); continue; }   # <100KB/s 端点失效
+		mbps=$((sp_i * 8 / 1000000))
+		[ "$mbps" -gt "$best" ] && best=$mbps
+		i=$((i - 1))
+	done
+	rm -rf "$resdir"
+	echo "$best"
+}
+
+link_mbps() {
+	# WAN 口协商速率: uci network.wan.device (最准) → 默认路由口 → 物理口兜底
+	local wan sp best=0 d s
+	wan=$(uci -q get network.wan.device 2>/dev/null)
+	[ -z "$wan" ] && wan=$(ip -4 route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+	if [ -n "$wan" ]; then
+		sp=$(cat "/sys/class/net/$wan/speed" 2>/dev/null)
+		case "$sp" in ''|-1|*[!0-9]*) sp="" ;; esac
+		[ -n "$sp" ] && { echo "$sp"; return; }
+	fi
+	for d in /sys/class/net/*/device; do
+		s=$(cat "${d%/*}/speed" 2>/dev/null) || continue
+		case "$s" in ''|-1|*[!0-9]*) continue ;; esac
+		[ "$s" -gt "$best" ] && best=$s
+	done
+	echo "$best"
+}
+
+tier_of() {
+	# 与 JS tierFrom() 同构 (D20): T0 弱 / T1 标准 / T2 强
+	local ncpu="$1" mem="$2" x86="$3"
+	if [ "$ncpu" -le 2 ] || [ "$mem" -le 256 ]; then echo T0
+	elif { [ "$x86" = "1" ] && [ "$ncpu" -ge 4 ]; } || [ "$ncpu" -ge 8 ]; then echo T2
+	else echo T1
+	fi
+}
+
+rec_mode_of() {
+	[ "$1" = "T0" ] && echo steering || echo standard
+}
+
+clamp() { # 数值夹取 1..1000000 (kbit/s, 千兆上限)
+	case "$1" in ''|*[!0-9]*) echo "$2"; return ;; esac
+	[ "$1" -lt 1 ] && { echo "$2"; return; }
+	[ "$1" -gt 1000000 ] && { echo 1000000; return; }
+	echo "$1"
+}
+
+probe() {
+	local ncpu mem_mb x86 dl tier rec rec_dl rec_ul
+	ncpu=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
+	[ "$ncpu" -ge 1 ] 2>/dev/null || ncpu=1
+	mem_mb=$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)
+	case "$mem_mb" in ''|*[!0-9]*) mem_mb=0 ;; esac
+	grep -qs 'vendor_id' /proc/cpuinfo 2>/dev/null && x86=1 || x86=0
+
+	dl=$(http_dl_mbps $WIZ_URLS)
+	[ "$dl" -eq 0 ] && dl=$(link_mbps)    # 测速失败 → 协商速率兜底
+
+	tier=$(tier_of "$ncpu" "$mem_mb" "$x86")
+	rec=$(rec_mode_of "$tier")
+	link=$(link_mbps)
+	rec_dl=0; rec_ul=0
+	if [ "$rec" = "standard" ] && [ "$dl" -gt 0 ]; then
+		rec_dl=$((dl * 850))                  # 实测 Mbps×0.85 → kbit/s (SQM 单位, 900000=900M)
+		rec_dl=$(clamp "$rec_dl" 900000)
+		rec_ul=$(clamp 40000 40000)           # 上传保守默认 40M
+	fi
+
+	printf '{"ncpu":%d,"mem_mb":%d,"x86":%d,"dl_mbps":%d,"link_mbps":%d,"tier":"%s","rec_mode":"%s","rec_dl":%d,"rec_ul":%d}\n' \
+		"$ncpu" "$mem_mb" "$x86" "$dl" "$link" "$tier" "$rec" "$rec_dl" "$rec_ul"
+}
+
+wizard_done() {
+	uci -q set netsteer.global='global' 2>/dev/null
+	uci -q set netsteer.global.wizard_done='1'
+	uci -q commit netsteer
+}
+
+case "$1" in
+probe)
+	probe
+	;;
+apply)
+	# $2=mode  $3=dl_mbps  $4=ul_mbps (可选, 校准值)
+	wmode="$2"
+	case "$wmode" in steering|standard|latency) ;; *) echo '{"error":"bad mode"}' >&2; exit 1 ;; esac
+	if [ -n "$3" ] && [ -n "$4" ]; then
+		WIZ_DL=$(clamp "$(printf '%d' "$3" 2>/dev/null)" 0)
+		WIZ_UL=$(clamp "$(printf '%d' "$4" 2>/dev/null)" 0)
+		export WIZ_DL WIZ_UL
+	fi
+	out=$(/usr/bin/netsteer-mode "$wmode" 2>&1) || { echo "{\"error\":\"mode apply failed: $out\"}" >&2; exit 1; }
+	_wtier=$(tier_of "$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 1)" "$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)" "$(grep -qs vendor_id /proc/cpuinfo && echo 1 || echo 0)")
+	uci -q set netsteer.global='global' 2>/dev/null
+	uci -q set netsteer.global.wizard_tier="$_wtier"
+	uci -q commit netsteer
+	wizard_done
+	log "wizard apply: mode=$wmode dl=${WIZ_DL:-keep} ul=${WIZ_UL:-keep}"
+	echo "{\"applied\":\"$wmode\",\"dl\":\"${WIZ_DL:-keep}\",\"ul\":\"${WIZ_UL:-keep}\"}"
+	;;
+skip)
+	wizard_done
+	echo '{"skipped":1}'
+	;;
+*)
+	echo "Usage: netsteer-wizard {probe|apply <mode> [dl_mbps] [ul_mbps]|skip}" >&2
+	exit 1
+	;;
+esac

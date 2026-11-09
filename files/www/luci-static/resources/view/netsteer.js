@@ -864,6 +864,15 @@ function verdictToRes(v) {
 	};
 }
 
+/* v1.18 D20 设备分级 (与 netsteer-wizard tier_of 同构): T0 弱设备只推零依赖档 */
+function tierFrom(ncpu, memMb, x86) {
+	ncpu = parseInt(ncpu, 10) || 1;
+	memMb = parseInt(memMb, 10) || 0;
+	if (ncpu <= 2 || memMb <= 256) return 'T0';
+	if ((x86 && ncpu >= 4) || ncpu >= 8) return 'T2';
+	return 'T1';
+}
+
 return view.extend({
 	/* 本页所有改动即时生效, 无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
 	addFooter: function() {
@@ -883,7 +892,8 @@ return view.extend({
 			/* D14 设备排除列表 (qos 节 sense_exclude): 本地判定回退路径的采样过滤用 */
 			view._senseExclude = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_exclude) || '';
 			var autotuneDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.autotune_done);
-			var tasks = [ Promise.resolve({ ncpu: NCPU, ifaces: IFACES, autotuneDone: autotuneDone }) ];
+			var wizardDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.wizard_done);
+			var tasks = [ Promise.resolve({ ncpu: NCPU, ifaces: IFACES, autotuneDone: autotuneDone, wizardDone: wizardDone }) ];
 			IFACES.forEach(function(it) {
 				tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/rx-0/rps_cpus'), null));
 				tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/tx-0/xps_cpus'), null));
@@ -1918,6 +1928,122 @@ renderSoftirqCard: function(text) {
 		}).catch(function(e) {
 			ui.showModal(_('出错'), E('p', {}, String(e)));
 		});
+	},
+
+	wizardInit: function() {
+		/* v1.18 首次使用向导: 3 步 (检测→推荐→一键开启), D13 校准+D20 分级在后端 probe 内完成 */
+		var self = this;
+		var MODE = {};
+		modeDefs().forEach(function(m) { MODE[m.id] = m; });
+		var body = E('div', {}, E('p', { 'class': 'netsteer-note' },
+			_('先检查您的路由器性能，再测一次宽带速度（约 10 秒），然后为本机推荐最合适的运行方式。')));
+		var foot = E('div', { 'class': 'right' }, [
+			E('button', {
+				'class': 'btn cbi-button-neutral',
+				'click': function() { ui.hideModal(); fs.exec('/usr/bin/netsteer-wizard', ['skip']).catch(function() {}); }
+			}, _('暂不设置')),
+			' ',
+			E('button', {
+				'class': 'btn cbi-button-positive important',
+				'click': function() { self.wizardProbe(body, foot, MODE); }
+			}, _('开始检测'))
+		]);
+		ui.showModal(_('3 步开始'), [ body, foot ]);
+	},
+
+	wizardProbe: function(body, foot, MODE) {
+		var self = this;
+		body.replaceChildren(E('p', { 'class': 'netsteer-note' }, _('正在检查设备与测速，约 10 秒，请不要关闭页面…')));
+		foot.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+		fs.exec('/usr/bin/netsteer-wizard', ['probe']).then(function(r) {
+			var j = null;
+			try { j = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			if (!j || !j.tier) {
+				body.replaceChildren(E('p', { 'class': 'netsteer-note', 'style': 'color:#c0392b' },
+					_('检测失败。可稍后重试，或在专家模式手动选择运行方式。')));
+				foot.querySelectorAll('button')[0].disabled = false;
+				foot.querySelectorAll('button')[1].disabled = false;
+				foot.querySelectorAll('button')[1].textContent = _('重新检测');
+				foot.querySelectorAll('button')[1].onclick = function() { self.wizardProbe(body, foot, MODE); };
+				return;
+			}
+			/* 合理性闸: 测得值远低于线路规格 (≥4× 且协商≥100M) → CDN 单连接限速嫌疑, 让用户点选套餐档 */
+			if (j.rec_mode === 'standard' && j.link_mbps >= 100 && j.dl_mbps > 0 && j.dl_mbps * 4 < j.link_mbps)
+				self.wizardConfirmBw(body, foot, MODE, j);
+			else
+				self.wizardResult(body, foot, MODE, j);
+		}).catch(function(e) {
+			body.replaceChildren(E('p', { 'class': 'netsteer-note', 'style': 'color:#c0392b' }, _('检测异常: %s').format(String(e))));
+		});
+	},
+
+	wizardConfirmBw: function(body, foot, MODE, j) {
+		/* 测速节点限速嫌疑: 国内套餐档位标准化, 点选比自由输入可靠 */
+		var self = this;
+		var tiers = [100, 200, 300, 500, 1000];
+		var nearest = tiers.reduce(function(a, b) { return Math.abs(b - j.link_mbps) < Math.abs(a - j.link_mbps) ? b : a; }, tiers[0]);
+		var sel = E('select', { 'class': 'cbi-input-select', 'style': 'margin:.3em 0' },
+			tiers.map(function(t) {
+				var o = E('option', { 'value': String(t) }, _('%d Mbps 套餐').format(t));
+				if (t === nearest) o.selected = true;
+				return o;
+			}));
+		body.replaceChildren(
+			E('p', { 'class': 'netsteer-note' }, _('%d 核处理器 · 内存 %d MB').format(j.ncpu, j.mem_mb)),
+			E('p', { 'class': 'netsteer-note', 'style': 'color:#b8860b' },
+				_('自动测速仅测得 %d Mbps，明显低于线路规格 %d Mbps（测速节点限速所致）。请选择您的宽带套餐：').format(j.dl_mbps, j.link_mbps)),
+			sel);
+		foot.querySelectorAll('button')[0].disabled = false;
+		var go = foot.querySelectorAll('button')[1];
+		go.disabled = false;
+		go.textContent = _('继续');
+		go.onclick = function() {
+			var dlMbps = parseInt(sel.value, 10) || nearest;
+			j.rec_dl = dlMbps * 850;   /* Mbps × 0.85 → kbit/s */
+			j.rec_ul = 40000;          /* 上传保守默认 40M */
+			self.wizardResult(body, foot, MODE, j);
+		};
+	},
+
+	wizardResult: function(body, foot, MODE, j) {
+		var m = MODE[j.rec_mode] || { icon: '⚖', name: j.rec_mode };
+		var hw = _('%d 核处理器 · 内存 %d MB').format(j.ncpu, j.mem_mb);
+		var net = j.dl_mbps > 0 ? _('测得下载 %d Mbps').format(j.dl_mbps) : _('带宽未测得，使用线路规格兜底');
+		var basis;
+		if (j.tier === 'T0')
+			basis = _('您的路由器性能较弱，流量整形可能成为负担；推荐只开「%s」（零依赖，不启用整形）。').format(m.name);
+		else if (j.tier === 'T2')
+			basis = _('设备性能充裕，推荐「%s」，整形值按实测带宽自动设置。').format(m.name);
+		else
+			basis = _('设备性能足够，推荐「%s」：多设备公平用网，视频会议更稳。').format(m.name);
+		var kids = [
+			E('p', { 'class': 'netsteer-note' }, hw + ' · ' + net),
+			E('p', { 'style': 'font-size:15px;font-weight:600;margin:.6em 0' }, (m.icon || '') + ' ' + _('推荐使用「%s」').format(m.name)),
+			E('p', { 'class': 'netsteer-note' }, basis)
+		];
+		if (j.rec_dl > 0)
+			kids.push(E('p', { 'class': 'netsteer-note' },
+				_('整形带宽将设为 下载 %d / 上传 %d Mbps（之后可在专家模式修改）')
+					.format(Math.round(j.rec_dl / 1000), Math.round(j.rec_ul / 1000))));
+		body.replaceChildren.apply(body, kids);
+		foot.querySelectorAll('button')[0].disabled = false;
+		var go = foot.querySelectorAll('button')[1];
+		go.disabled = false;
+		go.textContent = _('一键开启');
+		go.onclick = function() {
+			go.disabled = true;
+			go.textContent = _('应用中…');
+			var args = ['apply', j.rec_mode];
+			if (j.rec_dl > 0) args.push(String(j.rec_dl), String(j.rec_ul));
+			fs.exec('/usr/bin/netsteer-wizard', args).then(function() {
+				ui.hideModal();
+				ui.addNotification(null, E('p', {}, _('%s 已开启').format(m.name)), 'info');
+				window.setTimeout(function() { window.location.reload(); }, 900);
+			}).catch(function(e) {
+				ui.hideModal();
+				ui.addNotification(null, E('p', {}, _('应用失败: %s').format(String(e))), 'error');
+			});
+		};
 	},
 
 	autotuneAsk: function() {
@@ -2962,8 +3088,10 @@ renderSoftirqCard: function(text) {
 			var tid = b.getAttribute('data-tab');
 		});
 
-		/* 首次使用: 自动询问智能测速 */
-		if (!meta.autotuneDone)
+		/* 首次使用: v1.18 向导优先 (分级+校准+推荐模式); 老升级用户走原测速询问 */
+		if (!meta.wizardDone && !meta.autotuneDone)
+			window.setTimeout(function() { self.wizardInit(); }, 600);
+		else if (!meta.autotuneDone)
 			window.setTimeout(function() { self.autotuneAsk(); }, 800);
 
 		return root;

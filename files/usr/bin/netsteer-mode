@@ -23,9 +23,12 @@ sqm_migrate() {
 		uci set sqm.$sec.script='simple.qos'
 		uci set sqm.$sec.qdisc='cake'
 	else
-		cur_type=$(uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d= -f2)
+		cur_type=$(uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d. -f2 | cut -d= -f2 | tr -d "'")
 		[ "$cur_type" = "sqm" ] && uci set sqm.$sec='queue'
 	fi
+	# v1.18 D13: 向导校准值覆盖 (环境变量 WIZ_DL/WIZ_UL, kbit 单位; 未设时不动现值)
+	[ -n "$WIZ_DL" ] && uci -q set sqm.$sec.download="$WIZ_DL"
+	[ -n "$WIZ_UL" ] && uci -q set sqm.$sec.upload="$WIZ_UL"
 	echo "$sec"
 }
 

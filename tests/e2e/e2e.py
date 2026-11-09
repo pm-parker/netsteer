@@ -28,14 +28,19 @@ with sync_playwright() as p:
     pg.locator("button:has-text('Log in')").first.click(); pg.wait_for_timeout(2200)
     pg.goto(BASE + "/admin/services/netsteer", wait_until="domcontentloaded"); pg.wait_for_timeout(4500)
 
-    # first-run ask modal (only when autotune_done unset)
+    # first-run modal (v1.18 向导优先, 老弹窗回退; 仅当标志未置)
     body = pg.inner_text("body")
-    if "首次使用建议" in body:
+    wiz = pg.evaluate("() => { var m = document.querySelector('.modal'); return m ? m.innerText : ''; }")
+    if "3 步开始" in wiz:
+        ok("向导弹层出现 (检测→推荐→一键开启)")
+        pg.get_by_text("暂不设置").click(); pg.wait_for_timeout(600)
+        ok("暂不设置 → 关闭 (skip 标记)")
+    elif "首次使用建议" in body:
         ok("首装询问弹窗出现")
         pg.get_by_text("稍后再说").click(); pg.wait_for_timeout(600)
         ok("稍后再说 → 关闭")
     else:
-        print("SKIP: 首装弹窗 (autotune_done 已标记)")
+        print("SKIP: 首装弹窗 (标志已置)")
 
     if "NetSteer" not in body and "网络分核" not in body:
         sys.exit("page did not render — is the app installed?")

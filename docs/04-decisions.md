@@ -86,3 +86,41 @@
 - 实现要点：dnslog 采样加 d/p/t 字段（destinationIP/destinationPort/network，mihomo metadata 实测 destinationPort 是字符串）；q 为空但 d 有值的裸 IP 连接不再被丢弃；前端 buildIpMap 最长前缀匹配（mask 整数化）
 - 真机验证：TCP 到 relay 的裸 IP 连接进采样（d=155.133.248.36 无 q），UDP destinationIP 字段有值实锤（124.239.232.102）；沙箱构造的 UDP 测试包 relay 拒收进不了表——游戏 UDP 场景以字段实锤+单测覆盖，不虚报端到端
 - 单测基线 215 → 242
+
+
+## D15：场景感知自研观测面 = conntrack netlink 流表（2026-11-09，v1.17.4，用户问"依赖 mihomo 吗"触发）
+
+旧架构唯一数据源是 mihomo /connections——代理核心一停场景识别全瞎；dnsmasq 兜底无字节量，
+且代理劫持 53 的环境连 query 日志都空（实测 0 条）。自研通道：
+- 流量维度：conntrack netlink（`conntrack -L`，~1s/8k flows；`/proc/net/nf_conntrack` 读取 18s 不可用于轮询；
+  CLI 输出**无 ipv4 前缀**（$1=proto），与 /proc 格式不同）
+- 域名维度：dnsmasq query 日志 reply 行反查 dst_ip（尽力；被劫持环境拿不到 → q 空，走 IP 段匹配）
+- 仅 LAN 发起的出站 flow 参与判定（入站 NAT 流=对外服务，避免网心云类 P2P 污染场景）
+- 通道 auto 选择：mihomo 在→增强（SNI 最准）；否则 conntrack；最后 dnsmasq。
+  uci `netsteer.qos.dns_observer=<auto|mihomo|conntrack|dnsmasq>`（key 在 qos 节）
+- 依赖 `apk add conntrack`（缺失自动降级不硬依赖）；`nf_conntrack_acct=1` 自动开；
+  flow offload 开启的机器计数会冻结（部署文档需检测提示）
+- 边界如实：fake-ip（198.18/16）反查不到域名；对外服务设备 flow 级无法与看视频区分（80 端口+下行主导），
+  设备级排除列表 → D14 范围
+
+## D16：场景判定纪律 = 量门槛三档 + 宁漏勿误（2026-11-09，v1.17.3/4，用户实测抓"无人在看却判视频"）
+
+误报根因两层：①平台域名命中无流量门槛（待机电视拉推荐图几 KB / 微信 ICE 心跳几百字节 → 判视频/会议）
+②bulk 大下行不区分下载与视频（网盘 83MB 判流媒体）。修复纪律：
+- 域名连接 <32KB = 保活心跳，不算任何场景证据
+- 会议域名/STUN 需双向累计 ≥64KB；流媒体域名需真实下行 ≥512KB
+- 网盘下载 CDN 域名（baidupcs/bcsp2p，实测确认）直接归 download 场景
+- bulk "大下行=流媒体"证据仅限 80/443/1935 端口且下行主导（v > u×10）
+- 取舍原则：漏报只是显示普通浏览（无害），误报毁信任——**宁漏勿误**
+- 文案语义同理：变差不得叫"实测增益"（buildGainText：改善绿/退化灰如实）；bench 8s 窗口
+  撞上背景大流量时数据受污染，rx>50Mbps 自动标注"测量受干扰"
+
+## D17：UI/IA 纪律（2026-11-09，用户两轮产品批评沉淀，v1.17.0–.5）
+
+- 内部词不上 UI：置信度百分比→"AI 智能识别"；netdisk/sniffHost/完整域名→中文场景名+处数
+- 总览=纯展示零操作（状态并格成四方块：当前场景/集中度/队列/转发链路），开关全部归"智能模式"操作页
+- 命名对称：智能模式/专家模式（"智能优先"这种含糊名被点名）
+- 能力卡同构：设备加速与 P2P 直通同骨架（标题/徽标/一句话/IP/按钮/脚注）
+- 无 enforcement 的假按钮不做（场景锁定卡等 D14 后端就绪才做）
+- 卡片固定间距 14px；主判定与证据托盘分层（结论→证据从属关系用浅底托盘表达）
+- 用户截图点名必有真 bug：chips 重复（拼接回落自身）两例皆源码定位根因，不归咎渲染

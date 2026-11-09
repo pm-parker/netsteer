@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isDlDomain', 'isWorkDomain', 'senseClassify', 'senseDebounce', 'buildGainText'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isDlDomain', 'isWorkDomain', 'senseClassify', 'senseDebounce', 'buildGainText'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -45,7 +45,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isDlDomain, isWorkDomain, senseClassify, senseDebounce, buildGainText,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isDlDomain, isWorkDomain, senseClassify, senseDebounce, buildGainText,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -477,28 +477,6 @@ eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
   // v1.16.2: 页脚版本常量 (build 注入; 源内默认 'dev' — 注入失败时页脚显示 dev 而非 undefined)
   eq(!!SRC.match(/var NS_VERSION = '[^']+';/), true, 'NS_VERSION 常量已定义');
   eq(SRC.match(/var NS_VERSION = '([^']+)';/)[1].length > 0, true, 'NS_VERSION 非空');
-}
-
-{
-  // dnsObserverMeta: 环境自适应四态 (通用化核心 — 不同家庭自动选观测面)
-  const m1 = api.dnsObserverMeta({ dns_observer: 'mihomo' });
-  eq(m1.state, 'mihomo', 'obs: mihomo 态');
-  eq(m1.btn, null, 'obs: mihomo 无动作按钮');
-  eq(m1.badge.length > 0, true, 'obs: mihomo 徽标非空');
-  const m2 = api.dnsObserverMeta({ dns_observer: 'dnsmasq' });
-  eq(m2.state, 'dnsmasq', 'obs: dnsmasq 态 (日志已开)');
-  eq(m2.btn, 'off', 'obs: dnsmasq 给关闭按钮');
-  const m3 = api.dnsObserverMeta({ dns_observer: 'dnsmasq_off' });
-  eq(m3.state, 'dnsmasq_off', 'obs: dnsmasq_off 态 (裸路由器未开日志)');
-  eq(m3.btn, 'on', 'obs: dnsmasq_off 给开启按钮');
-  const m4 = api.dnsObserverMeta({ dns_observer: 'none' });
-  eq(m4.state, 'none', 'obs: none 态');
-  eq(m4.btn, null, 'obs: none 无动作');
-  const m5 = api.dnsObserverMeta({});
-  eq(m5.state, 'mihomo', 'obs: 缺省回退 mihomo (向后兼容旧 status)');
-  const m6 = api.dnsObserverMeta(null);
-  eq(m6.state, 'mihomo', 'obs: null 安全');
-  eq(m3.desc.length > 10 && m4.desc.length > 10, true, 'obs: 各态说明文案齐全');
 }
 
 {

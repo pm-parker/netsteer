@@ -545,18 +545,6 @@ function gameStatusMeta(st) {
 	return { cls: '', label: _('优先中 · %s').format(st.device || '?'), state: 'on' };
 }
 
-function dnsObserverMeta(st) {
-	/* DNS 观测面环境自适应 (纯函数): st.dns_observer 四态 → 徽标/说明/可选动作
-	 * mihomo     = 代理内核连接表嗅探 ( nikki/openclash/clash 任一存在 )
-	 * dnsmasq    = 裸路由器 + dnsmasq 查询日志已开
-	 * dnsmasq_off= 裸路由器 + 日志未开 (给一键开启动作)
-	 * none       = 既无代理内核也无 dnsmasq (罕见) → 观测不可用, 不影响加速通道 */
-	var o = st && st.dns_observer;
-	if (o === 'dnsmasq') return { state: 'dnsmasq', badge: _('查询日志'), desc: _('观察这台设备的 DNS 查询记录（dnsmasq 查询日志），标注它正在访问的游戏平台（Steam/Epic/PSN/Xbox…，识别数据来自 cache-domains 开源项目）。主机名来自查询日志，明文 DNS 才可见；样本受系统日志容量限制，短连接可能不出现——这是观测边界，不影响加速通道本身。分类在前端完成，路由器零负担。'), btn: 'off' };
-	if (o === 'dnsmasq_off') return { state: 'dnsmasq_off', badge: _('未开启'), desc: _('本机未检测到代理内核，DNS 识别将走 dnsmasq 查询日志通道。需要开启查询日志（会重启 dnsmasq 约 1 秒，日志体积略增）。开启后即自动观测。'), btn: 'on' };
-	if (o === 'none') return { state: 'none', badge: _('不可用'), desc: _('未检测到代理内核，也没有可用的 dnsmasq——DNS 识别不可用。这只影响平台标注，不影响加速通道本身。'), btn: null };
-	return { state: 'mihomo', badge: _('实时嗅探'), desc: _('观察这台设备的实时连接，三级标注它正在访问的游戏平台（Steam/Epic/PSN/Xbox…，识别数据来自 cache-domains 与 Valve 官方 SDR 公开数据）：①连接主机名（SNI 嗅探）②裸 IP 直连（官方 IP 段匹配，覆盖无域名的游戏relay）③知名端口（3074 主机 NAT 等）。样本是活跃连接的快照，短连接可能不出现——这是观测边界，不影响加速通道本身。分类在前端完成，路由器零负担。'), btn: null };
-}
 
 /* ---- 网络体检: 依赖矩阵 + 冲突检测 + 两档方案构建 (纯函数层) ---- */
 function parseIrqList(txt) {

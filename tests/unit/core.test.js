@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isDlDomain', 'isWorkDomain', 'senseClassify', 'senseDebounce'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'dnsObserverMeta', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isDlDomain', 'isWorkDomain', 'senseClassify', 'senseDebounce', 'buildGainText'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -45,7 +45,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isDlDomain, isWorkDomain, senseClassify, senseDebounce,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, dnsObserverMeta, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isDlDomain, isWorkDomain, senseClassify, senseDebounce, buildGainText,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -602,6 +602,22 @@ eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
   eq(r.scene, 'download', 'scene: 网盘 P2P 加速域名 → download');
   r = api.senseClassify([conn({ q: 'cdn.unknown-cdn.example', u: '1024', v: '53000000', p: '443', t: 'tcp' })], maps);
   eq(r.scene, 'streaming', 'scene: 未知 CDN heavy 53MB 443 → streaming (bulk 证据保留)');
+
+  // v1.17.5 buildGainText: 退化不叫增益
+  let g = api.buildGainText({ latency_ms: 5.7, rx_bps: 1e6 }, { latency_ms: 7.9, rx_bps: 1e6 });
+  eq(g.good, false, 'gain: 5.7→7.9 退化 good=false');
+  eq(g.text.indexOf('实测增益'), -1, 'gain: 退化文案不含实测增益');
+  eq(g.text.indexOf('↑39%') >= 0, true, 'gain: 退化如实显示 ↑39%');
+  eq(g.text.indexOf('延迟更高') >= 0, true, 'gain: 退化提示开启后延迟更高');
+  g = api.buildGainText({ latency_ms: 7.9, rx_bps: 1e6 }, { latency_ms: 5.7, rx_bps: 1e6 });
+  eq(g.good, true, 'gain: 7.9→5.7 改善 good=true');
+  eq(g.text.indexOf('实测增益') === 0, true, 'gain: 改善文案以实测增益开头');
+  g = api.buildGainText({ latency_ms: 6.0, rx_bps: 1e6 }, { latency_ms: 6.02, rx_bps: 1e6 });
+  eq(g.good, false, 'gain: 持平 good=false');
+  eq(g.text.indexOf('延迟持平') >= 0, true, 'gain: 持平文案');
+  g = api.buildGainText({ latency_ms: 5.0, rx_bps: 1e6 }, { latency_ms: 4.0, rx_bps: 8e7 });
+  eq(g.text.indexOf('网络有较大流量') >= 0, true, 'gain: rx>50Mbps 时标注测量受干扰');
+  eq(api.buildGainText(null, null), null, 'gain: null 安全');
   r = api.senseClassify([conn({ q: '', d: '114.112.26.11', u: '1171158', v: '1295741325', p: '80', t: 'tcp' })], maps);
   eq(r.scene, 'streaming', 'scene: 裸 IP 80 单向下行主导 1.2GB → streaming (flow 层无法与视频区分; 对外服务设备靠设备级排除, 见 D14)');
   r = api.senseClassify([conn({ q: '', d: '43.226.56.35', u: '110978807', v: '4811712028', p: '7201', t: 'tcp' })], maps);

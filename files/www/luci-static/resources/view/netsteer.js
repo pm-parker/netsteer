@@ -423,6 +423,31 @@ function isConnHeavy(r) {
 
 /* 网盘下载 CDN 域名后缀 (实测确认; TODO: 后续迁 feed 数据文件 dl_domains.txt) */
 var SENSE_DL_DOMAINS = ['.baidupcs.com', '.bcsp2p.baidu.com'];
+
+/* 增益文案 (纯函数, 可单测): 改善→"实测增益", 退化/持平→如实对比不叫增益; busy=测量窗口撞上大流量 */
+function buildGainText(off, cur) {
+	if (!off || !cur || cur.latency_ms == null || off.latency_ms == null) return null;
+	if (!(off.latency_ms > 0) || !(cur.latency_ms > 0)) return null;
+	var dLat = off.latency_ms - cur.latency_ms;
+	var latPct = Math.round(dLat / off.latency_ms * 100);
+	var busy = (cur.rx_bps || 0) > 5e7;
+	var g = { good: false, parts: [] };
+	if (latPct === 0) {
+		g.parts.push(_('延迟持平（%s ms）').format(cur.latency_ms.toFixed(1)));
+	} else if (dLat > 0) {
+		g.good = true;
+		g.parts.push(_('延迟 ↓%d%%（%s → %s ms）').format(latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1)));
+	} else {
+		g.parts.push(_('延迟 ↑%d%%（%s → %s ms），开启后延迟更高').format(-latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1)));
+	}
+	if (off.rx_bps > 1e5 && cur.rx_bps > 1e5) {
+		var tPct = Math.round((cur.rx_bps - off.rx_bps) / off.rx_bps * 100);
+		g.parts.push(tPct >= 0 ? _('吞吐 +%d%%').format(tPct) : _('吞吐 %d%%').format(tPct));
+	}
+	if (busy) g.parts.push(_('测量时段网络有较大流量，数据受干扰'));
+	g.text = (g.good ? _('实测增益（vs 关闭基线）：') : _('对比关闭基线：')) + g.parts.join(' · ');
+	return g;
+}
 function isDlDomain(host) {
 	if (!host) return false;
 	for (var i = 0; i < SENSE_DL_DOMAINS.length; i++) {
@@ -938,25 +963,11 @@ return view.extend({
 		var gainEl = el.querySelector('#ns-master-gain');
 		if (gainEl) {
 			var off = bench && bench.off, cur = bench && bench.on;
-			if (off && cur && cur.latency_ms != null && off.latency_ms != null) {
-				var dLat = off.latency_ms - cur.latency_ms;
-				var latPct = off.latency_ms > 0 ? Math.round(dLat / off.latency_ms * 100) : 0;
-				var g = [];
-				if (off.latency_ms > 0 && cur.latency_ms > 0) {
-					if (latPct === 0) {
-						g.push(_('延迟持平（%s ms）').format(cur.latency_ms.toFixed(1)));
-					} else {
-						g.push(dLat >= 0
-							? _('延迟 ↓%d%%（%s → %s ms）').format(latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1))
-							: _('延迟 ↑%d%%（%s → %s ms）').format(-latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1)));
-					}
-				}
-				if (off.rx_bps > 1e5 && cur.rx_bps > 1e5) { /* 双侧都有实流量才比吞吐 */
-					var tPct = Math.round((cur.rx_bps - off.rx_bps) / off.rx_bps * 100);
-					g.push(tPct >= 0 ? _('吞吐 +%d%%').format(tPct) : _('吞吐 %d%%').format(tPct));
-				}
-				gainEl.textContent = g.length ? _('实测增益（vs 关闭基线）：') + g.join(' · ') : _('基线已存，增益待流量上来后重测');
-				gainEl.classList.add('ns-has-gain');
+			var g = off && cur ? buildGainText(off, cur) : null;
+			if (g) {
+				gainEl.textContent = g.text;
+				/* 绿=有增益; 退化/持平=中性色 (不得把变差叫增益) */
+				gainEl.classList.toggle('ns-has-gain', g.good);
 			} else if (on) {
 				gainEl.textContent = _('增益基线未建立：关闭一次总开关自动测量基线，再开启后显示真实差值');
 			} else {
@@ -2376,9 +2387,9 @@ renderSoftirqCard: function(text) {
 				var e = res.evidence[s] || [];
 				if (e.length) {
 					var m2 = SENSE_SCENE_META[s] || {};
-					var label = e[0].cat || (m2.name || s);
+					/* 只显示中文场景名 + 命中处数; 平台/协议是内部细节不上 UI */
 					chips.push(E('span', { 'class': 'netsteer-badge', 'style': 'margin:2px' },
-						(m2.icon || '') + ' ' + (m2.name || s) + ' · ' + label));
+						(m2.icon || '') + ' ' + (m2.name || s) + (e.length > 1 ? ' · ' + e.length + _(' 处') : '')));
 				}
 			});
 		}

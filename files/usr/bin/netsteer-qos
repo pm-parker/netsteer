@@ -385,6 +385,65 @@ qos_detect() { # DHCP 租约主机名 → 疑似游戏设备候选 [{"ip":..,"na
 	END { printf "]\n" }' /tmp/dhcp.leases
 }
 
+# ---- 场景判定下沉 (v1.18): json2tab + sense 单次判定 + sense-daemon 常驻 ----
+SENSE_DIR="/tmp/netsteer"
+SENSE_JSON="$SENSE_DIR/sense.json"
+SENSE_STATE="$SENSE_DIR/sense.state"
+SENSE_PID="$SENSE_DIR/sense.pid"
+
+qos_json2tab() {
+	# dnslog JSON 数组行 → tab 七字段流 (v/proto/src/dst/port/up/q) 供 sense.awk
+	awk -f /usr/share/netsteer/json2tab.awk
+}
+
+qos_sense() {
+	# 单次: 采样 → 判定 → 防抖 → 落 sense.json (原子写)
+	local top="${1:-200}"
+	local awk_bin="/usr/share/netsteer/sense.awk"
+	local j scene prev cand candn ts iv
+	[ -f "$awk_bin" ] || { log "sense: engine missing"; return 1; }
+	mkdir -p "$SENSE_DIR" 2>/dev/null
+	j=$(qos_dnslog "$top" | qos_json2tab | awk -f "$awk_bin") || { log "sense: engine error"; return 1; }
+	scene=$(echo "$j" | sed 's/.*"scene":"\([a-z]*\)".*/\1/')
+	[ -n "$scene" ] || { log "sense: no scene"; return 1; }
+	# 防抖: state 三行 scene/cand/candn, 连续 2 窗同判定才切 (JS senseDebounce 同语义)
+	prev=""; cand=""; candn=0
+	if [ -f "$SENSE_STATE" ]; then
+		prev=$(sed -n 1p "$SENSE_STATE"); cand=$(sed -n 2p "$SENSE_STATE"); candn=$(sed -n 3p "$SENSE_STATE")
+	fi
+	if [ "$scene" = "$cand" ]; then
+		candn=$((candn + 1))
+	else
+		cand="$scene"; candn=1
+	fi
+	if [ "$candn" -ge 2 ]; then prev="$scene"; fi
+	printf "%s\n%s\n%s\n" "$prev" "$cand" "$candn" > "$SENSE_STATE"
+	ts=$(date +%s)
+	iv=$(qos_get sense.interval); iv="${iv:-30}"
+	printf '{"scene":"%s","cand":"%s","confirmed":%d,"ts":%d,"interval":%d,"verdict":%s}\n' \
+		"$prev" "$cand" "$candn" "$ts" "$iv" "$j" > "$SENSE_JSON.tmp"
+	mv "$SENSE_JSON.tmp" "$SENSE_JSON"
+	return 0
+}
+
+qos_sense_daemon() {
+	# 常驻: 固定低频轮询 (默认 30s), uci netsteer.sense.interval/top 可覆盖
+	local iv top
+	iv=$(qos_get sense.interval); iv="${iv:-30}"
+	top=$(qos_get sense.top); top="${top:-200}"
+	echo $$ > "$SENSE_PID"
+	trap 'rm -f "$SENSE_PID"; exit 0' TERM INT
+	log "sense-daemon: start interval=${iv}s top=$top"
+	while :; do
+		qos_sense "$top" >/dev/null 2>&1
+		sleep "$iv"
+	done
+}
+
+qos_sense_status() {
+	if [ -f "$SENSE_JSON" ]; then cat "$SENSE_JSON"; else echo "{}"; fi
+}
+
 case "$1" in
 on)      shift; qos_on "$@";;
 off)     qos_off;;
@@ -394,8 +453,12 @@ status)  qos_status;;
 probe)   qos_probe;;
 tins)    qos_tins;;
 dnslog)  shift; qos_dnslog "${1:-200}";;
+dnslog-raw) shift; qos_dnslog "${1:-200}" | qos_json2tab;;
+sense)   shift; qos_sense "${1:-200}" && qos_sense_status;;
+sense-daemon) qos_sense_daemon;;
+sense-status) qos_sense_status;;
 detect)  qos_detect;;
 env)     qos_env;;
 dns-en)  shift; qos_dns_en "${1:-status}";;
-*)       echo "usage: $0 on <ip> | off | device <ip> | reapply | status | probe | tins | dnslog [n] | detect | env | dns-en on|off"; exit 1;;
+*)       echo "usage: $0 on <ip> | off | device <ip> | reapply | status | probe | tins | dnslog [n] | dnslog-raw [n] | sense [n] | sense-daemon | sense-status | detect | env | dns-en on|off"; exit 1;;
 esac

@@ -10,6 +10,12 @@ start() {
 	/usr/bin/netsteer-qos reapply >/dev/null 2>&1
 	# 环境探测 (代理内核/DNS 观测面/出口探测目标) 后台预热, 结果缓存供 dnslog/probe 用
 	(/usr/bin/netsteer-qos env >/dev/null 2>&1 &)
+	# 场景判定守护 (幂等: pid 活着就不重复拉起; v1.18 判定下沉)
+	if [ -f /tmp/netsteer/sense.pid ] && [ -d "/proc/$(cat /tmp/netsteer/sense.pid 2>/dev/null)" ]; then
+		:
+	else
+		(/usr/bin/netsteer-qos sense-daemon >/dev/null 2>&1 &)
+	fi
 }
 
 boot() {

@@ -6,6 +6,12 @@ set -euo pipefail
 
 VERSION="${1:-1.6.0}"
 ARCH="${2:-aarch64_generic}"
+# 防御: 版本串只允许安全字符 (会被插入 sed 表达式与包名; 斜杠等会导致 sed 分隔符提前终止)
+case "$VERSION" in
+  *[!0-9a-zA-Z._-]*)
+    echo "ERROR: invalid version '$VERSION' — allowed chars: [0-9a-zA-Z._-]" >&2
+    exit 1 ;;
+esac
 NAME="luci-app-netsteer"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"

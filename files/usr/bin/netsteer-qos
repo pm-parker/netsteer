@@ -1,0 +1,553 @@
+#!/bin/sh
+# netsteer-qos: 游戏设备优先通道 (设备级 DSCP CS4 → cake diffserv4 video tin)
+#
+# 原理 (对位厂商 L3 设备级优先 + L4 AQM):
+#   上行: nft forward 钩子  ip saddr <dev> dscp set cs4 → pppoe-wan cake video tin
+#   下行: nft netdev ingress 钩子 (tc ingress 之前, 早于 ifb 重定向)
+#         ip daddr <dev> dscp set cs4 → ifb4<wan> cake video tin
+#   整形: sqm.script 切到 netsteer-gaming.qos (双向 diffserv4 + 上行 ack-filter);
+#         关闭时恢复原脚本 (prev_script 记在 netsteer.qos.prev_script)
+#
+# 边界 (诚实声明):
+#   仅 IPv4 标记 (游戏主机/PC 场景绝大多数走 v4); IPv6 流量不标记不分桶。
+#   throughput 模式 / mode off 会停 SQM → 通道降级为无整形直通 (status 如实上报)。
+#
+# 用法: netsteer-qos on <ip> | off | device <ip> | reapply | status | probe | tins | dnslog [n] | detect
+
+. /lib/functions.sh
+
+LOG_TAG=netsteer
+TABLE=netsteer_qos
+RULES=/tmp/netsteer/qos-rules.nft
+GAMING_QOS="netsteer-gaming.qos"
+BASE_QOS="simple.qos"
+PROBE_TARGET="223.5.5.5"
+
+log() { logger -t $LOG_TAG "qos: $@"; }
+
+# ---- 校验 (与 netsteer-p2p 同规) ----
+valid_ip() {
+	echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+	local o
+	for o in $(echo "$1" | tr '.' ' '); do
+		[ "$o" -le 255 ] 2>/dev/null || return 1
+	done
+	case "$1" in
+		192.168.*.*|10.*.*.*|172.1[6-9].*.*|172.2[0-9].*.*|172.3[01].*.*) return 0;;
+		*) return 1;;
+	esac
+}
+
+# ---- SQM 状态 ----
+sqm_section() {
+	uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d. -f2 | cut -d= -f1
+}
+sqm_enabled() {
+	local sec=$(sqm_section)
+	[ -n "$sec" ] && [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" = "1" ]
+}
+wan_dev() {
+	local sec=$(sqm_section)
+	uci -q get sqm.$sec.interface 2>/dev/null || echo pppoe-wan
+}
+cake_have() { grep -q '^sch_cake' /proc/modules 2>/dev/null; }
+
+# ---- nft 标记规则 (绝对幂等: 整表删除重建) ----
+write_rules() { # $1=device ip  $2=wan dev
+	mkdir -p /tmp/netsteer
+	nft list table inet $TABLE >/dev/null 2>&1 && nft delete table inet $TABLE >/dev/null 2>&1
+	cat > "$RULES" <<EOF
+table inet $TABLE {
+
+	chain mark_fwd {
+		type filter hook forward priority -150; policy accept;
+		ip saddr $1 ip dscp set cs4 comment "netsteer game up"
+	}
+
+	chain mark_ing {
+		type filter hook ingress priority -450; policy accept;
+		iifname "$2" ip daddr $1 ip dscp set cs4 comment "netsteer game down"
+	}
+}
+EOF
+	nft -f "$RULES" 2>/dev/null
+}
+remove_rules() {
+	nft delete table inet $TABLE >/dev/null 2>&1
+	rm -f "$RULES"
+}
+rules_active() {
+	nft list table inet $TABLE >/dev/null 2>&1 && echo 1 || echo 0
+}
+
+# ---- 整形脚本切换 ----
+qos_get() { # $1=option $2=default
+	config_load netsteer 2>/dev/null
+	config_get v "qos" "$1" "$2"
+	echo "$v"
+}
+ensure_section() {
+	uci -q get netsteer.qos >/dev/null 2>&1 || { uci set netsteer.qos='qos'; uci commit netsteer; }
+}
+script_switch_on() {
+	local sec=$(sqm_section)
+	[ -n "$sec" ] || { echo "ERR: sqm config missing"; return 1; }
+	local cur="$(uci -q get sqm.$sec.script 2>/dev/null)"
+	if [ "$cur" != "$GAMING_QOS" ]; then
+		uci set netsteer.qos.prev_script="${cur:-$BASE_QOS}"
+		uci set sqm.$sec.script="$GAMING_QOS"
+		uci commit sqm
+		/etc/init.d/sqm restart >/dev/null 2>&1
+	fi
+	return 0
+}
+script_switch_off() {
+	local sec=$(sqm_section)
+	local prev="$(qos_get prev_script "$BASE_QOS")"
+	if [ -n "$sec" ] && [ "$(uci -q get sqm.$sec.script 2>/dev/null)" = "$GAMING_QOS" ]; then
+		uci set sqm.$sec.script="$prev"
+		uci commit sqm
+		/etc/init.d/sqm restart >/dev/null 2>&1
+	fi
+	uci -q delete netsteer.qos.prev_script 2>/dev/null
+	uci commit netsteer 2>/dev/null
+	return 0
+}
+
+# ---- 动作 ----
+qos_on() { # $1=device ip
+	ensure_section
+	local ip="$1"
+	valid_ip "$ip" || { log "ERR: 非法内网 IP '$ip'"; echo "ERR: invalid ip"; exit 1; }
+	sqm_enabled || { log "ERR: SQM 未启用 (先应用均衡/低延迟模式)"; echo "ERR: sqm disabled"; exit 1; }
+	cake_have || { log "ERR: kmod-sch-cake 未加载"; echo "ERR: no cake"; exit 1; }
+
+	local wan="$(wan_dev)"
+	script_switch_on || exit 1
+	write_rules "$ip" "$wan"
+	uci set netsteer.qos.enabled='1'
+	uci set netsteer.qos.device="$ip"
+	uci commit netsteer
+	log "ON: 设备 $ip → cs4 (up:forward + down:ingress@pppoe), 整形=$GAMING_QOS"
+	echo "OK: on $ip"
+}
+
+qos_off() {
+	ensure_section
+	remove_rules
+	script_switch_off
+	uci set netsteer.qos.enabled='0'
+	uci commit netsteer
+	log "OFF: 游戏通道已关闭, 整形恢复 $(qos_get prev_script "$BASE_QOS")"
+	echo "OK: off"
+}
+
+qos_device() { # $1=device ip (enabled 时热切换)
+	ensure_section
+	local ip="$1"
+	valid_ip "$ip" || { log "ERR: 非法内网 IP '$ip'"; echo "ERR: invalid ip"; exit 1; }
+	uci set netsteer.qos.device="$ip"
+	uci commit netsteer
+	if [ "$(qos_get enabled 0)" = "1" ] && [ "$(rules_active)" = "1" ]; then
+		write_rules "$ip" "$(wan_dev)"
+		log "DEVICE: 标记规则热切换 → $ip"
+	fi
+	echo "OK: device $ip"
+}
+
+qos_reapply() { # boot/hotplug 兜底: enabled 才动作, 静默
+	[ "$(qos_get enabled 0)" = "1" ] || exit 0
+	local ip="$(qos_get device "")"
+	[ -n "$ip" ] || exit 0
+	# SQM 在跑但脚本被外部改走 → 拉回 gaming 脚本 (boot 时序竞态兜底)
+	if sqm_enabled; then
+		local sec=$(sqm_section)
+		[ "$(uci -q get sqm.$sec.script 2>/dev/null)" = "$GAMING_QOS" ] || script_switch_on
+	fi
+	write_rules "$ip" "$(wan_dev)"
+	log "REAPPLY: $ip"
+}
+
+qos_status() {
+	ensure_section
+	# 首次调用自举: 环境探测从未跑过 (probe_target 不在 uci) → 现场探测一次并缓存
+	[ -n "$(uci -q get netsteer.qos.probe_target 2>/dev/null)" ] || qos_env >/dev/null 2>&1
+	local wan="$(wan_dev)"
+	local up_mode="$(tc qdisc show dev "$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
+	local dn_mode="$(tc qdisc show dev "ifb4$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
+	echo "{\"enabled\":$(qos_get enabled 0),\"device\":\"$(qos_get device -)\",\"active\":$(rules_active),\"script\":\"$(uci -q get sqm.$(sqm_section).script 2>/dev/null || echo '-')\",\"prev_script\":\"$(qos_get prev_script '-')\",\"sqm_enabled\":$(sqm_enabled && echo 1 || echo 0),\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"mode\":\"$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)\",\"dns_observer\":\"$(qos_get dns_observer mihomo)\",\"probe_target\":\"$(qos_get probe_target "$PROBE_TARGET")\"}"
+}
+
+qos_probe() { # 轻量延迟采样: 3 ping 取平均 (供游戏通道页 8s 轮询画曲线); busybox ping 只支持整数 -i
+	# 目标自适应: env 探测写入 uci (默认 WAN 网关, 不可 ping 回退 PROBE_TARGET); 输出带 target 供前端展示
+	local target="$(qos_get probe_target "$PROBE_TARGET")"
+	local rtts sum=0 n=0 r
+	rtts="$(ping -c 3 -i 1 -w 4 "$target" 2>/dev/null | grep -oE 'time=[0-9.]+' | cut -d= -f2)"
+	for r in $rtts; do
+		sum=$(awk -v a="$sum" -v b="$r" 'BEGIN{printf "%.3f", a+b}')
+		n=$((n + 1))
+	done
+	[ "$n" -gt 0 ] || { echo "{\"latency_ms\":null,\"n\":0,\"ts\":$(date +%s),\"target\":\"$target\"}"; return; }
+	awk -v s="$sum" -v n="$n" -v t="$(date +%s)" -v tg="$target" 'BEGIN{printf "{\"latency_ms\":%.1f,\"n\":%d,\"ts\":%d,\"target\":\"%s\"}\n", s/n, n, t, tg}'
+}
+
+qos_tins() { # 原始 tc -s 双向输出 (前端 parseTinStats 解析, 指标行保持原文可测)
+	local wan="$(wan_dev)"
+	echo "#UP dev $wan"
+	tc -s qdisc show dev "$wan" 2>/dev/null
+	echo "#DOWN dev ifb4$wan"
+	tc -s qdisc show dev "ifb4$wan" 2>/dev/null
+}
+
+# ---- L1 平台识别观测面 (环境自适应, v1.14) ----
+# 探测顺序: nikki 生成配置 → openclash uci → 裸 clash 9090; 都没有 → dnsmasq 查询日志 (需开启)
+qos_api_ok() { # $1=port $2=secret → /version 可达?
+	local auth=""
+	[ -n "$2" ] && auth="-H 'Authorization: Bearer $2'"
+	eval "curl -sf --max-time 2 $auth http://127.0.0.1:$1/version" >/dev/null 2>&1
+}
+qos_detect_proxy() { # 输出 "core|port|secret" 或 "|"
+	local cfg=/etc/nikki/run/config.yaml
+	if [ -f "$cfg" ]; then
+		local p=$(sed -n 's/^external-controller:[^:]*:\([0-9]*\)$/\1/p' "$cfg" 2>/dev/null | head -1)
+		local s=$(sed -n "s/^secret:[ \	]*[\"']\\?\\([^\"' \	]*\\)[\"']\\?$/\\1/p" "$cfg" 2>/dev/null | head -1)
+		qos_api_ok "${p:-9090}" "$s" && { echo "nikki|${p:-9090}|$s"; return; }
+	fi
+	if [ -d /etc/openclash ]; then
+		local p=$(uci -q get openclash.config.cn_port 2>/dev/null); p=${p:-9090}
+		local s=$(uci -q get openclash.config.dashboard_password 2>/dev/null)
+		qos_api_ok "$p" "$s" && { echo "openclash|$p|$s"; return; }
+	fi
+	qos_api_ok 9090 "" && { echo "clash|9090|"; return; }
+	echo "|"
+}
+qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":目的地IP,"p":目的端口,"t":协议,"u":上行字节,"v":下行字节}]
+	# q=sniffHost 优先回退 host, 可为空 (裸 IP 直连 — L2 IP 段/端口匹配的输入); dnsmasq 通道无 d/p/t/u/v
+	# u/v = mihomo 连接表 upload/download 字节计数 (场景感知 light/heavy 判据, D12)
+	local n="${1:-200}"
+	local api=$(qos_detect_proxy)
+	local port="${api#*|}"; port="${port%%|*}"
+	local secret="${api##*|}"
+	[ -n "$port" ] || return 1
+	local auth=""
+	[ -n "$secret" ] && auth="-H 'Authorization: Bearer $secret'"
+	eval "curl -sf --max-time 3 $auth http://127.0.0.1:$port/connections" 2>/dev/null | sed 's/{"id":/\n{"id":/g' | \
+	awk '
+	BEGIN { printf "[" }
+	{
+		ip = ""
+		if (match($0, /"sourceIP":"[^"]*"/)) { ip = substr($0, RSTART + 12, RLENGTH - 13) }
+		if (ip !~ /^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[01])\./) next
+		h = ""
+		if (match($0, /"sniffHost":"[^"]+"/)) { h = substr($0, RSTART + 13, RLENGTH - 14) }
+		if (h == "" && match($0, /"host":"[^"]+"/)) { h = substr($0, RSTART + 8, RLENGTH - 9) }
+		if (h == "*" || h ~ /\.(lan|local|arpa|internal)$/) h = ""
+		dst = ""
+		if (match($0, /"destinationIP":"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"/)) { dst = substr($0, RSTART + 17, RLENGTH - 18) }
+		dport = ""
+		if (match($0, /"destinationPort":"[0-9]+"/)) { dport = substr($0, RSTART + 19, RLENGTH - 20) }
+		proto = ""
+		if (match($0, /"network":"(tcp|udp)"/)) { proto = substr($0, RSTART + 11, RLENGTH - 12) }
+		up = ""
+		if (match($0, /"upload":[0-9]+/)) { up = substr($0, RSTART + 9, RLENGTH - 9) }
+		dn = ""
+		if (match($0, /"download":[0-9]+/)) { dn = substr($0, RSTART + 11, RLENGTH - 11) }
+		if (h == "" && dst == "") next
+		gsub(/[\\"]/, "", h)
+		if (n++ > 0) printf ","
+		printf "{\"q\":\"%s\",\"c\":\"%s\",\"d\":\"%s\",\"p\":\"%s\",\"t\":\"%s\",\"u\":\"%s\",\"v\":\"%s\"}", h, ip, dst, dport, proto, up, dn
+	}
+	END { printf "]\n" }'
+}
+qos_dnslog_dnsmasq() { # dnsmasq 查询日志采样 (需 logqueries 已开; 未开返回 [])
+	local n="${1:-200}"
+	logread 2>/dev/null | tail -n "$n" | grep 'dnsmasq\[' | grep -F 'query[' | awk '
+	function esc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return s }
+	BEGIN { printf "[" }
+	{
+		if (match($0, /query\[[^]]*\] [^ ]+ from [0-9.]+/)) {
+			seg = substr($0, RSTART, RLENGTH)
+			sub(/^query\[[^]]*\] /, "", seg)
+			split(seg, a, / from /)
+			if (n++ > 0) printf ","
+			printf "{\"q\":\"%s\",\"c\":\"%s\"}", esc(a[1]), esc(a[2])
+		}
+	}
+	END { printf "]\n" }'
+}
+qos_dnslog_conntrack() { # 自研观测面: conntrack 流表 + dnsmasq 域名反查 (零代理依赖)
+	# 参考 mihomo /connections 的数据形态, 用 OpenWrt 原生栈自研:
+	#   流量维度 = conntrack netlink 流表 (每 flow 双向字节, 需 nf_conntrack_acct=1)
+	#   域名维度 = dnsmasq query 日志 reply 行反查 dst_ip (尽力; 代理劫持 53 的环境拿不到 → q 空, 走 IP 段匹配)
+	# 出站 flow 才参与 (LAN 发起); 入站 NAT 流不参与场景判定 (避免对外服务 P2P 污染场景)
+	# 依赖: apk add conntrack (netlink 接口; /proc/net/nf_conntrack 读取需 ~18s/8k flows, 不可用于轮询)
+	local n="${1:-200}"
+	command -v conntrack >/dev/null 2>&1 || return 1
+	# acct 计数未开则开 (幂等; 已有 flow 从开启时刻起计数)
+	[ "$(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null)" = "1" ] || \
+		sysctl -qw net.netfilter.nf_conntrack_acct=1 >/dev/null 2>&1 || return 1
+	# dnsmasq reply 缓存 (ip\ttab domain): DNS 走 dnsmasq 的环境可反查域名
+	local dc=/tmp/netsteer-dnscache.tsv
+	if [ "$(uci -q get dhcp.@dnsmasq[0].logqueries)" = "1" ]; then
+		logread 2>/dev/null | awk '/reply\[/ {
+			for (i=1; i<NF; i++) if ($(i+1) ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $(i-1) != "") {
+				printf "%s\t%s\n", $(i+1), $(i-1); break
+			}
+		}' | sort -u > "$dc" 2>/dev/null || :
+	else
+		: > "$dc" 2>/dev/null || true
+	fi
+	conntrack -L 2>/dev/null | awk -v dnsc="$dc" -v top="$n" '
+	BEGIN { while ((getline line < dnsc) > 0) { split(line, a, "\t"); dom[a[1]]=a[2] } close(dnsc) }
+	/^(tcp|udp) +[0-9]+ +[0-9]+( +[A-Z_]+)? / {
+		proto=$1; dir=0; s1=""; d1=""; dp1=""; b1=""; b2=""
+		for (i=1; i<=NF; i++) {
+			t=$i
+			if (substr(t,1,4)=="src=") { dir++; if (dir==1) s1=substr(t,5) }
+			else if (substr(t,1,4)=="dst=") { if (dir==1) d1=substr(t,5) }
+			else if (substr(t,1,6)=="dport=") { if (dir==1) dp1=substr(t,7) }
+			else if (substr(t,1,6)=="bytes=") { if (dir==1) b1=substr(t,7); else if (dir==2) b2=substr(t,7) }
+		}
+		# 出站 flow: 原始方向 src=LAN (RFC1918)
+		if (dir>=2 && (s1 ~ /^192\.168\./ || s1 ~ /^10\./ || s1 ~ /^172\.(1[6-9]|2[0-9]|3[01])\./)) {
+			key = s1 "|" d1 "|" dp1 "|" proto
+			if (key in seen) next
+			seen[key]=1
+			q = (d1 in dom) ? dom[d1] : ""
+			printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", b2+0, proto, s1, d1, dp1, b1+0, q
+		}
+	}
+	' | sort -rn | head -"$n" | awk -F'\t' '
+	BEGIN { printf "["; i=0 }
+	{
+		if (i++ > 0) printf ","
+		printf "{\"q\":\"%s\",\"c\":\"%s\",\"d\":\"%s\",\"p\":\"%s\",\"t\":\"%s\",\"u\":\"%s\",\"v\":\"%s\"}", $7, $3, $4, $5, $2, $6, $1
+	}
+	END { printf "]\n" }'
+}
+qos_dnslog() { # 通道选择: auto=自研 conntrack 优先, mihomo 在场则增强 (SNI 域名全); 手动可钉死
+	local observer="$(qos_get dns_observer auto)"
+	case "$observer" in
+	conntrack) qos_dnslog_conntrack "$@" ;;
+	mihomo) qos_dnslog_mihomo "$@" || qos_dnslog_conntrack "$@" || qos_dnslog_dnsmasq "$@" ;;
+	dnsmasq|dnsmasq_off) qos_dnslog_dnsmasq "$@" ;;
+	*) # auto: mihomo 探测到 → 用它 (域名最准); 否则自研 conntrack; 最后 dnsmasq
+		qos_dnslog_mihomo "$@" 2>/dev/null || qos_dnslog_conntrack "$@" || qos_dnslog_dnsmasq "$@" ;;
+	esac
+}
+qos_dns_en() { # $1=on|off — dnsmasq 查询日志开关 (仅 dnsmasq 观测面需要; 重启 dnsmasq ~1s)
+	local want="$1"
+	uci -q show dhcp.@dnsmasq[0] >/dev/null 2>&1 || { log "ERR: dhcp.@dnsmasq[0] 不存在"; echo "ERR: no dnsmasq section"; exit 1; }
+	if [ "$want" = "on" ]; then
+		uci set dhcp.@dnsmasq[0].logqueries='1'
+	else
+		uci -q delete dhcp.@dnsmasq[0].logqueries
+	fi
+	uci commit dhcp
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	qos_env >/dev/null
+	log "DNS-EN $want (dnsmasq log-queries 切换)"
+	echo "OK: dns-en $want"
+}
+qos_env() { # 环境探测: 代理内核 + DNS 观测面 + 出口探测目标 (结果缓存进 uci 供 dnslog/probe 用)
+	local proxy=$(qos_detect_proxy)
+	local core="${proxy%%|*}"
+	local observer=dnsmasq_off
+	if [ -n "$core" ]; then
+		observer=mihomo
+	else
+		uci -q show dhcp.@dnsmasq 2>/dev/null >/dev/null || observer=none
+		[ "$(uci -q get dhcp.@dnsmasq[0].logqueries 2>/dev/null)" = "1" ] && observer=dnsmasq
+	fi
+	local gw=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
+	local target="$gw"
+	[ -n "$target" ] || target="$PROBE_TARGET"
+	ping -c 1 -W 1 "$target" >/dev/null 2>&1 || target="$PROBE_TARGET"
+	ensure_section
+	uci set netsteer.qos.dns_observer="$observer"
+	uci set netsteer.qos.probe_target="$target"
+	uci commit netsteer 2>/dev/null
+	echo "{\"proxy_core\":\"$core\",\"dns_observer\":\"$observer\",\"probe_target\":\"$target\",\"lan_gw\":\"${gw:-}\"}"
+}
+
+qos_detect() { # DHCP 租约主机名 → 疑似游戏设备候选 [{"ip":..,"name":..}] (零依赖启发式)
+	[ -r /tmp/dhcp.leases ] || { echo "[]"; return; }
+	awk '
+	BEGIN { printf "[" }
+	!/^#/ && NF >= 4 && $4 != "*" {
+		h = tolower($4)
+		if (h ~ /ps[45]|playstation|xbox|switch|nintendo|steam|deck|geforce|rog|ally|legion|console|victory/) {
+			n = $4; gsub(/"/, "", n)
+			if (c++ > 0) printf ","
+			printf "{\"ip\":\"%s\",\"name\":\"%s\"}", $3, n
+		}
+	}
+	END { printf "]\n" }' /tmp/dhcp.leases
+}
+
+qos_suggest() { # v1.19 D22: 疑似后台负载设备 — per-src 上行聚合, 排除已管理设备, 供"不抢网"建议卡
+	# $1=上行阈值 MB (默认 16); dnslog 采样窗口内 u 字段聚合 (mihomo 连接累计/conntrack 双向字节)
+	# 输出 [{"ip":..,"up_mb":..,"conns":..}] (按上行降序); 已在 bulk/game/exclude 的设备剔除
+	local th_mb="${1:-16}"
+	local ex="$(qos_get sense_exclude "")"
+	local game_on="$(qos_get enabled 0)"
+	local game_ip="$(qos_get device "")"
+	local bulk="$(uci -q get netsteer.qos.bulk_devices 2>/dev/null || echo "")"
+	qos_dnslog 200 | qos_json2tab | awk -v th_mb="$th_mb" -v ex="$ex" -v game_on="$game_on" -v game_ip="$game_ip" -v bulk="$bulk" '
+	BEGIN { th = th_mb * 1024 * 1024 }
+	{
+		# tab: v/t/c/d/p/u/q — c=源IP(RFC1918 已过滤), u=上行字节
+		if ($3 == "" || $6 == "" || $6 + 0 <= 0) next
+		ip = $3
+		managed = 0
+		# 排除表 (空格分隔)
+		n = split(ex, a, /[ 	]+/)
+		for (k = 1; k <= n; k++) if (a[k] == ip) managed = 1
+		# 游戏通道
+		if (game_on == "1" && game_ip == ip) managed = 1
+		# bulk 列表
+		n = split(bulk, b, /[ 	]+/)
+		for (k = 1; k <= n; k++) if (b[k] == ip) managed = 1
+		if (managed) next
+		up[ip] += $6 + 0
+		conns[ip]++
+	}
+	END {
+		n = 0
+		for (ip in up) {
+			if (up[ip] < th && conns[ip] < 8) continue
+			ips[n] = ip; ups[n] = up[ip] + 0; n++
+		}
+		# 按上行降序 (插入排序, n<20)
+		for (i = 1; i < n; i++) {
+			v = ups[i]; p = ips[i]; j = i - 1
+			while (j >= 0 && ups[j] < v) { ups[j+1] = ups[j]; ips[j+1] = ips[j]; j-- }
+			ups[j+1] = v; ips[j+1] = p
+		}
+		printf "["
+		for (i = 0; i < n; i++) {
+			if (i > 0) printf ","
+			printf "{\"ip\":\"%s\",\"up_mb\":%.1f,\"conns\":%d}", ips[i], ups[i] / 1048576, conns[ips[i]]
+		}
+		printf "]\n"
+	}'
+}
+
+# ---- 场景判定下沉 (v1.18): json2tab + sense 单次判定 + sense-daemon 常驻 ----
+SENSE_DIR="/tmp/netsteer"
+SENSE_JSON="$SENSE_DIR/sense.json"
+SENSE_STATE="$SENSE_DIR/sense.state"
+SENSE_PID="$SENSE_DIR/sense.pid"
+
+qos_json2tab() {
+	# dnslog JSON 数组行 → tab 七字段流 (v/proto/src/dst/port/up/q) 供 sense.awk
+	awk -f /usr/share/netsteer/json2tab.awk
+}
+
+qos_sense() {
+	# 单次: 采样 → 判定 → 防抖 → 落 sense.json (原子写)
+	local top="${1:-200}"
+	local awk_bin="/usr/share/netsteer/sense.awk"
+	local j scene prev cand candn ts iv
+	[ -f "$awk_bin" ] || { log "sense: engine missing"; return 1; }
+	mkdir -p "$SENSE_DIR" 2>/dev/null
+	local ex; ex=$(qos_get sense_exclude "")
+	j=$(qos_dnslog "$top" | qos_json2tab | awk -v ex="$ex" -f /usr/share/netsteer/exclude.awk | awk -f "$awk_bin") || { log "sense: engine error"; return 1; }
+	scene=$(echo "$j" | sed 's/.*"scene":"\([a-z]*\)".*/\1/')
+	[ -n "$scene" ] || { log "sense: no scene"; return 1; }
+	# 防抖: state 三行 scene/cand/candn, 连续 2 窗同判定才切 (JS senseDebounce 同语义)
+	prev=""; cand=""; candn=0
+	if [ -f "$SENSE_STATE" ]; then
+		prev=$(sed -n 1p "$SENSE_STATE"); cand=$(sed -n 2p "$SENSE_STATE"); candn=$(sed -n 3p "$SENSE_STATE")
+	fi
+	if [ "$scene" = "$cand" ]; then
+		candn=$((candn + 1))
+	else
+		cand="$scene"; candn=1
+	fi
+	if [ "$candn" -ge 2 ]; then prev="$scene"; fi
+	printf "%s\n%s\n%s\n" "$prev" "$cand" "$candn" > "$SENSE_STATE.tmp" && mv "$SENSE_STATE.tmp" "$SENSE_STATE"	# 原子写: 前端轮询不会读到半截文件
+	ts=$(date +%s)
+	iv=$(qos_get sense_interval); iv="${iv:-30}"
+	printf '{"scene":"%s","cand":"%s","confirmed":%d,"ts":%d,"interval":%d,"verdict":%s}\n' \
+		"$prev" "$cand" "$candn" "$ts" "$iv" "$j" > "$SENSE_JSON.tmp"
+	mv "$SENSE_JSON.tmp" "$SENSE_JSON"
+	return 0
+}
+
+qos_sense_daemon() {
+	# 常驻: 固定低频轮询 (默认 30s), uci netsteer.sense.interval/top 可覆盖
+	local iv top
+	iv=$(qos_get sense_interval); iv="${iv:-30}"
+	top=$(qos_get sense_top); top="${top:-200}"
+	echo $$ > "$SENSE_PID"
+	trap 'rm -f "$SENSE_PID"; exit 0' TERM INT
+	log "sense-daemon: start interval=${iv}s top=$top linked=$(qos_get sense_linked 1)"
+	while :; do
+		qos_sense "$top" >/dev/null 2>&1
+		qos_sense_link
+		sleep "$iv"
+	done
+}
+
+scene_mode() {
+	# 场景→模式映射 (联动只接管 standard↔latency 区间, 不覆盖用户手选的 p2p/throughput/steering)
+	case "$1" in
+		gaming|work)   echo latency;;
+		*)             echo standard;;
+	esac
+}
+
+qos_sense_link() {
+	# D14→v1.19.1 联动: 智能模式的一部分, 默认开启 (sense_linked 缺省 1)
+	# 稳定档切换瞬间 (prev 变化) → 自动切档; 只接管 standard↔latency 区间
+	# (用户手选其他档 = 尊重意图); 总开关 off 时不动作 (用户已明确关闭优化)
+	local linked cur target
+	linked=$(qos_get sense_linked 1)
+	[ "$linked" = "1" ] || return 0
+	[ -f "$SENSE_STATE" ] || return 0
+	# 总开关关闭 = 用户明确不要优化, 联动不得拉起 (v1.19.1: 随默认开启必须防住)
+	cur=$(uci -q get netsteer.scenario.mode 2>/dev/null)
+	[ "$cur" = "off" ] && return 0
+	local scene cand candn prev old_prev
+	prev=$(sed -n 1p "$SENSE_STATE"); cand=$(sed -n 2p "$SENSE_STATE"); candn=$(sed -n 3p "$SENSE_STATE")
+	old_prev=$(sed -n 4p "$SENSE_STATE" 2>/dev/null)
+	[ "$candn" -ge 2 ] || return 0
+	[ -n "$prev" ] && [ "$prev" != "$old_prev" ] || return 0
+	echo "$prev" >> "$SENSE_STATE"
+	target=$(scene_mode "$prev")
+	case "$cur" in
+		standard|latency|"")
+			if [ -n "$target" ] && [ "$target" != "$cur" ]; then
+				log "link: scene=$prev → mode=$target (was $cur)"
+				/usr/bin/netsteer-mode "$target" >/dev/null 2>&1
+			fi
+			;;
+	esac
+	return 0
+}
+
+qos_sense_status() {
+	if [ -f "$SENSE_JSON" ]; then cat "$SENSE_JSON"; else echo "{}"; fi
+}
+
+case "$1" in
+on)      shift; qos_on "$@";;
+off)     qos_off;;
+device)  shift; qos_device "$@";;
+reapply) qos_reapply;;
+status)  qos_status;;
+probe)   qos_probe;;
+tins)    qos_tins;;
+dnslog)  shift; qos_dnslog "${1:-200}";;
+dnslog-raw) shift; qos_dnslog "${1:-200}" | qos_json2tab;;
+sense)   shift; qos_sense "${1:-200}" && qos_sense_status;;
+sense-daemon) qos_sense_daemon;;
+sense-status) qos_sense_status;;
+sense-link) qos_sense_link;;
+detect)  qos_detect;;
+suggest) shift; qos_suggest "${1:-16}";;
+env)     qos_env;;
+dns-en)  shift; qos_dns_en "${1:-status}";;
+*)       echo "usage: $0 on <ip> | off | device <ip> | reapply | status | probe | tins | dnslog [n] | dnslog-raw [n] | sense [n] | sense-daemon | sense-status | detect | env | dns-en on|off"; exit 1;;
+esac

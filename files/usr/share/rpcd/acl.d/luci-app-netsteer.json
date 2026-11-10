@@ -23,10 +23,16 @@
         "/sys/devices/platform/*/net/*/queues/*/*": [
           "read"
         ],
-        "/sys/devices/virtual/net/*/queues/*/*": [
+        "/sys/devices/virtual/net/*/*": [
+          "read"
+        ],
+        "/usr/share/netsteer/*": [
           "read"
         ],
         "/tmp/netsteer/state.json": [
+          "read"
+        ],
+        "/tmp/netsteer/sense.json": [
           "read"
         ],
         "/etc/config/netsteer": [
@@ -71,6 +77,21 @@
           "exec"
         ],
         "/usr/bin/netsteer-bench": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-qos": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-bulk": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-cfg": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-feed": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-wizard": [
           "exec"
         ]
       }

@@ -4,6 +4,8 @@
 case "$INTERFACE" in
 	wan|pppoe-wan|lan)
 		/usr/bin/netsteer-apply >/dev/null 2>&1 &
+		/usr/bin/netsteer-qos reapply >/dev/null 2>&1 &
+		/usr/bin/netsteer-bulk reapply >/dev/null 2>&1 &
 		;;
 esac
 exit 0

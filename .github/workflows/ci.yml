@@ -16,6 +16,8 @@ jobs:
           node-version: 20
       - name: Unit tests (multi-core logic)
         run: node tests/unit/core.test.js
+      - name: feed e2e tests (remote data update)
+        run: sh tests/unit/feed.test.sh
       - name: JS syntax check
         run: node --check files/www/luci-static/resources/view/netsteer.js
       - name: Shell syntax check
@@ -35,7 +37,9 @@ jobs:
       - name: Build .apk (${{ matrix.arch }})
         run: |
           V="${GITHUB_REF_NAME#v}"
-          case "$V" in [0-9]*) ;; *) V="0.0.0_alpha";; esac
+          # 仅接受纯版本号 (v1.2.3 → 1.2.3); PR 事件的 "N/merge" 等 ref 一律回退 alpha
+          # (旧守卫 [0-9]* 会放行 "1/merge", 斜杠混入 sed 表达式导致构建崩溃)
+          case "$V" in [0-9]*.[0-9]*.[0-9]*) ;; *) V="0.0.0_alpha";; esac
           rm -rf dist          # never ship stale packages from the working tree
           ./scripts/build-apk.sh "$V" ${{ matrix.arch }}
       - name: Verify package integrity (apk verify)
@@ -58,6 +62,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4   # release-notes/<tag>.md 需要 (无 checkout 时模板/说明文件不存在)
       - name: Collect artifacts (one dir per arch, no name collisions)
         uses: actions/download-artifact@v4
         with:
@@ -86,10 +91,18 @@ jobs:
       - name: Resolve release notes body
         run: |
           set -e
-          # 发版说明: release-notes/<tag>.md 存在则用之(拼接安装模板), 否则回退纯模板
+          # 发版说明双语: release-notes/<tag>.md (中文) + <tag>.en.md (英文, 可选)
+          # 拼接顺序: 中文 → 英文 → 安装模板; 缺中文说明只回退模板
           if [ -f "release-notes/${GITHUB_REF_NAME}.md" ]; then
             echo "Using release-notes/${GITHUB_REF_NAME}.md"
-            { cat "release-notes/${GITHUB_REF_NAME}.md"; echo; echo "---"; echo; cat release-notes/_template.md; } > /tmp/release-body.md
+            { cat "release-notes/${GITHUB_REF_NAME}.md"; echo; echo "---"; echo; } > /tmp/release-body.md
+            if [ -f "release-notes/${GITHUB_REF_NAME}.en.md" ]; then
+              echo "Using release-notes/${GITHUB_REF_NAME}.en.md"
+              { cat "release-notes/${GITHUB_REF_NAME}.en.md"; echo; echo "---"; echo; } >> /tmp/release-body.md
+            else
+              echo "WARN: no release-notes/${GITHUB_REF_NAME}.en.md — bilingual body incomplete"
+            fi
+            cat release-notes/_template.md >> /tmp/release-body.md
           else
             echo "WARN: no release-notes/${GITHUB_REF_NAME}.md — using install template only"
             cp release-notes/_template.md /tmp/release-body.md

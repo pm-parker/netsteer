@@ -1,0 +1,37 @@
+#!/bin/sh
+################################################################################
+# netsteer-gaming.qos — NetSteer 游戏通道整形脚本
+#
+# 基于 sqm-scripts 的 simple.qos (Cero3 Shaper) 做薄包装:
+#   Copyright (C) 2012-2016 Michael D. Taht, Toke Høiland-Jørgensen, Sebastian Moeller
+#   GPL-2.0 — 与上游一致
+#
+# 与 simple.qos 的差异 (仅重定义 cake 分支, htb 分支继承不动):
+#   1. 上行 cake: diffserv4 + ack-filter (游戏设备 cs4 → video tin; ACK 抢占
+#      上行带宽时自动提权 ACK, 上行饱和下 TCP 吞吐让位于游戏会话)
+#   2. 下行 cake: diffserv4 (simple.qos 默认 besteffort, 即下游无分桶 —
+#      这是游戏设备下行优先的关键差异; 依赖 netsteer-qos 的 netdev ingress
+#      标记在 tc ingress/ifb 重定向之前写入 cs4)
+#   3. 显式 nowash: 确保 DSCP 不被 cake 清洗 (上游默认即 nowash, 写死防漂)
+#
+# 由 netsteer-qos 启停时切换 sqm.script; 关闭恢复 simple.qos。
+################################################################################
+
+. ${SQM_LIB_DIR}/simple.qos
+
+cake_egress() {
+    $TC qdisc add dev $IFACE root `get_stab_string` $QDISC bandwidth ${CEIL}kbit \
+        `get_cake_lla_string` diffserv4 ack-filter nowash ${EQDISC_OPTS}
+}
+
+cake_ingress() {
+    $TC qdisc add dev $DEV root `get_stab_string` $QDISC bandwidth ${DOWNLINK}kbit \
+        `get_cake_lla_string` diffserv4 nowash ${IQDISC_OPTS}
+
+    $IP link set dev $DEV up
+
+    # redirect all IP packets arriving in $IFACE to $DEV (与上游一致)
+
+    $TC filter add dev $IFACE parent ffff: protocol all prio 10 u32 \
+        match u32 0 0 flowid 1:1 action mirred egress redirect dev $DEV
+}

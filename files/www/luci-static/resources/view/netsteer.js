@@ -8,6 +8,10 @@
 'require uci';
 'require ui';
 
+/* 插件版本 (页脚显示; build-apk.sh 打包时按发布版本覆盖注入, 源内默认值为开发版标识)
+ * 注意: 必须放在全部 'require' 声明之后 — LuCI 模块加载器把首个非字符串语句当模块体起点 */
+var NS_VERSION = 'dev';
+
 /* 直调 ubus 的轻量应用链 (rpc.declare 在本环境调用挂起，改用裸 fetch /ubus/) */
 function ubusCall(obj, method, params) {
 	var sid = (window.L && L.env && L.env.sessionid) || '00000000000000000000000000000000';
@@ -39,20 +43,34 @@ function benchFromUci(cfg) {
 
 /* 一条龙: 逐项 uci set → apply → confirm → 跑 apply 脚本 (全程 ~0.2s) */
 function applyNow(pairs) {
+	/* v1.19.1: ubus uci.apply 通道在部分 OpenWrt 构建上恒返 "Invalid argument"
+	 * (空参数也失败, rpcd 重启无效), 而 uci commit 通道正常 → 改走 netsteer-cfg 脚本写配置。
+	 * apply 的作用只是"提交并触发 reload", 本插件的守护进程每轮重读配置, 无需 reload。 */
 	var chain = Promise.resolve();
 	pairs.forEach(function(p) {
-		chain = chain.then(function() {
-			return ubusCall('uci', 'set', { config: 'netsteer', section: p.sec, values: p.values });
-		});
+		chain = chain.then(function() { return cfgSet(p.sec, p.values); });
 	});
 	return chain
-		.then(function() {
-			/* uci apply 在无实际变更时返回 NO_DATA ([5]) — 容忍 (配置已 staged, 直接落盘即可) */
-			return ubusCall('uci', 'apply', { timeout: 90, rollback: true })
-				.then(function() { return ubusCall('uci', 'confirm', {}); })
-				.catch(function() { /* 无变更或 apply 不适用: 跳过确认窗口 */ });
-		})
 		.then(function() { return fs.exec('/usr/bin/netsteer-apply'); });
+}
+
+/* 写 netsteer 配置 (v1.19.1): 走 netsteer-cfg 脚本 (uci set + commit), 立即落盘
+ * 不用 ubus uci.set — 它只 staged 不落盘, 且 uci.apply 通道在这台 25.12 上恒失败。
+ * 多键 = 逐键写 (各键独立 commit, 无跨键原子需求; 值可含空格由脚本处理) */
+function cfgSet(section, values) {
+	var keys = Object.keys(values || {});
+	var chain = Promise.resolve();
+	keys.forEach(function(k) {
+		chain = chain.then(function() {
+			return fs.exec('/usr/bin/netsteer-cfg', ['set', section, k, String(values[k])]).then(function(r) {
+				var out = {};
+				try { out = JSON.parse((r && r.stdout || '').trim()); } catch (e) { out = { ok: false }; }
+				if (!out.ok) throw new Error(out.err || 'netsteer-cfg failed');
+				return out;
+			});
+		});
+	});
+	return chain;
 }
 
 /* ---- 运行时环境 (load 阶段填充; 渲染/事件全部引用这两个全局) ---- */
@@ -81,7 +99,7 @@ function maskLabel(mask) {
 	if (!on.length) return _('关闭');
 	if (on.length === 1) return 'C%d'.format(on[0]);
 	if (on.length <= 3) return on.map(function(i) { return 'C%d'.format(i); }).join('+');
-	return _('%d 核 (%s)'.format(on.length, mask));
+	return _('%d 核 (%s)').format(on.length, mask);
 }
 
 function fmtCount(n) {
@@ -106,7 +124,7 @@ function getPresets() {
 		all: {
 			label: _('全核分摊'),
 			short: _('所有核一起干活，负载摊得最平。'),
-			desc: _('软中断分摊到全部 %d 核，硬中断错开响应。通用推荐：负载最均匀。'.format(NCPU)),
+			desc: _('软中断分摊到全部 %d 核，硬中断错开响应。通用推荐：负载最均匀。').format(NCPU),
 			rec: true,
 			map: map,
 			irq: irqMap
@@ -219,10 +237,379 @@ function p2pValidPort(p) {
 	return n >= 1 && n <= 65535;
 }
 function p2pStatusMeta(st) {
-	/* st = netsteer-p2p status 的 JSON → 徽标文案与样式类 */
-	if (st && st.active) return { label: '已开启 · %s'.format(st.dest_ip || '?'), cls: '' };
-	return { label: '已关闭', cls: ' is-custom' };
+	/* st = netsteer-p2p status 的 JSON → 徽标文案与样式类
+	 * 徽章纪律 (v1.19.2): 徽章只承载状态+规模, 不携带 IP — 对象设备在卡体输入行展示 */
+	if (st && st.active) {
+		return { label: _('已开启'), cls: '' };
+	}
+	return { label: _('未开启'), cls: ' is-custom' };
 }
+
+/* v1.19.2 统一控件语言: 设备 chip 只有一种胶囊形态 — 建议(＋)/已选(×)靠弱化尾段符号区分,
+ * 建议区统一 ns-suggest-band 容器, 主操作统一 ns-btn-act (消灭 minibtn/裸文本 +× 混用) */
+function chipGlyph(sym) {
+	return E('span', { 'class': 'ns-chip-glyph' }, sym);
+}
+function suggestChip(label, onPick) {
+	return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击加入'),
+		'click': onPick }, [label, chipGlyph('＋')]);
+}
+function selectedChip(ip, onRemove) {
+	return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击移除'),
+		'click': onRemove }, [ip, chipGlyph('×')]);
+}
+
+/* ---- 游戏通道: tc -s 解析 + 状态机 (纯函数层, 单测覆盖) ---- */
+function parseTinStats(text) {
+	/* tc -s qdisc show (cake) → {mode, bandwidth, tins} 或 null
+	 * cake 分桶是列式布局: 表头行 "Bulk  Best Effort [Video]  Voice" 定义列偏移,
+	 * 指标行 (pkts/bytes/drops/marks…) 按列偏移切片。besteffort (无分桶) 返回 tins:null。 */
+	if (!text) return null;
+	var qm = /bandwidth (\S+) (diffserv\d|besteffort)/.exec(text);
+	if (!qm) return null;
+	var hi = text.search(/Bulk\s+Best Effort/);
+	if (hi < 0) return { mode: qm[2], bandwidth: qm[1], tins: null };
+	var names = [], re = /(Bulk|Best Effort|Video|Voice)/g, m;
+	re.lastIndex = hi;
+	while ((m = re.exec(text)) && m.index < hi + 60) {
+		names.push(m[1]);
+		if (names.length >= 4) break;
+	}
+	var key = function(n) { return n.toLowerCase().replace(/ /g, '_'); };
+	var tins = {};
+	names.forEach(function(n) { tins[key(n)] = {}; });
+	var KEYS = ['thresh', 'target', 'interval', 'pk_delay', 'av_delay', 'sp_delay', 'backlog', 'pkts', 'bytes', 'way_inds', 'way_miss', 'way_cols', 'drops', 'marks'];
+	/* 指标行按 token 位置映射到表头列 (tc 数值右对齐, 按列宽切片会被右对齐截断; token 法不依赖对齐) */
+	var lines = text.split('\n');
+	for (var i = 0; i < lines.length; i++) {
+		var lm = /^\s+([a-z_]+)\s{2,}/.exec(lines[i]);
+		if (!lm || KEYS.indexOf(lm[1]) < 0) continue;
+		var toks = lines[i].trim().split(/\s+/);
+		var vals = toks.slice(1);
+		if (vals.length !== names.length) continue;   /* 列数不符 → 跳过该行 (防御) */
+		for (var c = 0; c < names.length; c++)
+			tins[key(names[c])][lm[1]] = vals[c];
+	}
+	return { mode: qm[2], bandwidth: qm[1], tins: tins };
+}
+
+function buildDomainMap(text) {
+	/* gamedomains.txt 文本 → {suffix: category} (纯函数; 格式 "category<TAB>suffix", # 注释) */
+	var m = {};
+	if (!text) return m;
+	String(text).split(/\r?\n/).forEach(function(line) {
+		var s = line.replace(/^\s+|\s+$/g, '');
+		if (!s || s.charAt(0) === '#') return;
+		var sep = (s.indexOf('	') >= 1) ? '	' : (s.indexOf(' ') >= 1 ? ' ' : '');
+		if (!sep) return;
+		var i = s.indexOf(sep);
+		var cat = s.slice(0, i);
+		var suf = s.slice(i + 1).replace(/^\*?\.?/, '').replace(/^\s+/, '').replace(/\s+$/, '').toLowerCase();
+		if (!cat || !suf || /\s/.test(suf)) return;
+		if (m[suf]) return;
+		m[suf] = cat;
+	});
+	return m;
+}
+
+function classifyDomain(q, map) {
+	/* 查询名 → 平台类别 (最长后缀匹配); 未命中 null (纯函数) */
+	if (!q || !map) return null;
+	var s = String(q).replace(/\.$/, '').toLowerCase();
+	for (;;) {
+		if (map[s]) return map[s];
+		var i = s.indexOf('.');
+		if (i < 0) return null;
+		s = s.slice(i + 1);
+	}
+}
+
+function leaseSuggestions(leasesText) {
+	/* /tmp/dhcp.leases 文本 → 疑似游戏设备 [{ip,name}] (纯函数; 主机名启发式) */
+	var res = [ /ps[45]\b/, /playstation/, /xbox/, /switch/, /nintendo/, /steam/, /\bdeck\b/, /geforce/, /\brog\b/, /\bally\b/, /legion/, /console/, /victory/ ];
+	var out = [];
+	if (!leasesText) return out;
+	String(leasesText).split(/\r?\n/).forEach(function(line) {
+		var f = line.replace(/^\s+/, '').split(/\s+/);
+		if (f.length < 4) return;
+		var h = f[3], ip = f[2];
+		if (!ip || !h || h === '*') return;
+		var low = h.toLowerCase();
+		for (var i = 0; i < res.length; i++)
+			if (res[i].test(low)) { out.push({ ip: ip, name: h }); break; }
+	});
+	return out;
+}
+
+function buildIpMap(text) {
+	/* gameips.txt → [{base:int, bits, cat}] (纯函数; 容错: 注释/空行/坏 CIDR/IPv6 跳过) */
+	var out = [];
+	(text || '').split('\n').forEach(function(line) {
+		var h = line.indexOf('#');
+		if (h >= 0) line = line.slice(0, h);
+		line = line.trim();
+		if (!line) return;
+		var tab = line.indexOf('	');
+		var cat = tab >= 0 ? line.slice(0, tab).trim() : '';
+		var cidr = tab >= 0 ? line.slice(tab + 1).trim() : line;
+		var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr);
+		if (!cat || !m) return;
+		var bits = +m[5];
+		if (bits < 8 || bits > 32) return;
+		var o = [+m[1], +m[2], +m[3], +m[4]], base = 0, i;
+		for (i = 0; i < 4; i++) { if (o[i] > 255) return; base = base * 256 + o[i]; }
+		out.push({ base: base, bits: bits, cat: cat });
+	});
+	return out;
+}
+function classifyIp(ip, ipmap) {
+	/* IPv4 → 平台类别 (最长前缀匹配); 非法输入 → null */
+	var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip || '').trim());
+	if (!ipmap || !ipmap.length || !m) return null;
+	var o = [+m[1], +m[2], +m[3], +m[4]], n = 0, i;
+	for (i = 0; i < 4; i++) { if (o[i] > 255) return null; n = n * 256 + o[i]; }
+	var best = null, bestBits = -1;
+	for (i = 0; i < ipmap.length; i++) {
+		var e = ipmap[i];
+		var mask = (e.bits === 0) ? 0 : (((0xffffffff << (32 - e.bits)) & 0xffffffff));
+		if ((n & mask) === (e.base & mask) && e.bits > bestBits) { best = e.cat; bestBits = e.bits; }
+	}
+	return best;
+}
+function buildPortMap(text) {
+	/* gameports.txt → [{lo, hi, proto, cat}] (纯函数; 格式 cat TAB lo-hi/proto; 坏行跳过) */
+	var out = [];
+	(text || '').split('\n').forEach(function(line) {
+		var h = line.indexOf('#');
+		if (h >= 0) line = line.slice(0, h);
+		line = line.trim();
+		if (!line) return;
+		var tab = line.indexOf('	');
+		if (tab < 0) return;
+		var cat = line.slice(0, tab).trim();
+		var spec = line.slice(tab + 1).trim();
+		var m = /^(\d+)-(\d+)\/(tcp|udp)$/.exec(spec);
+		if (!cat || !m) return;
+		var lo = +m[1], hi = +m[2];
+		if (lo < 1 || hi > 65535 || lo > hi) return;
+		out.push({ lo: lo, hi: hi, proto: m[3], cat: cat });
+	});
+	return out;
+}
+function classifyPort(port, proto, pmap) {
+	/* 端口+协议 → 平台类别; 非法输入 → null */
+	var p = parseInt(port, 10);
+	if (!pmap || !pmap.length || !p || p < 1 || p > 65535) return null;
+	proto = String(proto || '').toLowerCase();
+	for (var i = 0; i < pmap.length; i++) {
+		var e = pmap[i];
+		if (p >= e.lo && p <= e.hi && (proto === e.proto || proto === '')) return e.cat;
+	}
+	return null;
+}
+function dnsSummary(records, map, device, ipmap, pmap) {
+	/* 采样记录 → {total, hit, platforms:{cat:n}, last:[{q,cat,src}]} (纯函数)
+	 * 三级识别: q 域名(src=name) → d 裸 IP(src=ip) → p+t 端口(src=port); 全未命中 cat=''
+	 * device '-' 或 '' = 不过滤; q 与 d 都空的记录不计入 */
+	var res = { total: 0, hit: 0, platforms: {}, last: [] };
+	(records || []).forEach(function(r) {
+		if (!r || (!r.q && !r.d)) return;
+		if (device && device !== '-' && r.c !== device) return;
+		res.total++;
+		var cat = '', src = '';
+		if (r.q) { cat = classifyDomain(r.q, map); if (cat) src = 'name'; }
+		if (!cat && r.d) { cat = classifyIp(r.d, ipmap); if (cat) src = 'ip'; }
+		if (!cat && r.p) { cat = classifyPort(r.p, r.t, pmap); if (cat) src = 'port'; }
+		if (cat) {
+			res.hit++;
+			res.platforms[cat] = (res.platforms[cat] || 0) + 1;
+		}
+		res.last.push({ q: r.q || ('→' + (r.d || '') + (r.p ? ':' + r.p : '')), cat: cat || '', src: src });
+	});
+	if (res.last.length > 8) res.last = res.last.slice(-8);
+	return res;
+}
+
+/* ---- 场景感知引擎 (D12, 对标 cFosSpeed 场景模式/bulk_detect): 纯函数层 ---- */
+/* 工作会议域名 (内置常量, 数据源=各平台官方文档公开域名) */
+var SENSE_WORK_DOMAINS = [
+	'zoom.us', 'zoom.com', 'meet.google.com', 'hangouts.google.com',
+	'teams.microsoft.com', 'teams.live.com', 'dingtalk.com', 'feishu.cn',
+	'larksuite.com', 'webex.com', 'meeting.qq.com', 'voovmeeting.com',
+	'tencentmeeting.com'
+];
+var SENSE_STUN_PORTS = { 3478: 1, 3479: 1, 19302: 1 }; /* STUN/TURN + Google Meet UDP (WebRTC 通道, 与 gameports 刻意排除的端口互补) */
+var SENSE_HEAVY_BYTES = 5242880;    /* 5MB: 单连接下行累计超过此值且 down>>up → bulk */
+var SENSE_HEAVY_RATIO = 20;         /* down > up*20 */
+var SENSE_BULK_DOWN = 52428800;     /* 50MB: 无域名命中时的"大下行"流媒体/下载证据 */
+var SENSE_MIN_KEEPALIVE = 32768;    /* 32KB: 平台域名连接低于此量 = App 后台保活/预加载, 不算场景证据 */
+var SENSE_WORK_MIN_BYTES = 65536;   /* 64KB: 会议域名/STUN 需双向累计超过此值 (心跳级 ICE 探测不算会议) */
+var SENSE_STREAM_MIN_BYTES = 524288; /* 512KB: 流媒体域名需真实下行超过此值 (推荐图/预加载不算在看视频) */
+
+function isConnHeavy(r) {
+	/* cFosSpeed bulk_detect 对应物: 同一域名/连接区分交互流(light)与批量流(heavy) (纯函数) */
+	var v = +r.v || 0, u = +r.u || 0;
+	return v > SENSE_HEAVY_BYTES && (u === 0 || v > u * SENSE_HEAVY_RATIO);
+}
+
+/* 网盘下载 CDN 域名后缀 (实测确认; TODO: 后续迁 feed 数据文件 dl_domains.txt) */
+var SENSE_DL_DOMAINS = ['.baidupcs.com', '.bcsp2p.baidu.com'];
+
+/* 增益文案 (纯函数, 可单测): 改善→"实测增益", 退化/持平→如实对比不叫增益; busy=测量窗口撞上大流量 */
+function buildGainText(off, cur) {
+	if (!off || !cur || cur.latency_ms == null || off.latency_ms == null) return null;
+	if (!(off.latency_ms > 0) || !(cur.latency_ms > 0)) return null;
+	var dLat = off.latency_ms - cur.latency_ms;
+	var latPct = Math.round(dLat / off.latency_ms * 100);
+	var busy = (cur.rx_bps || 0) > 5e7;
+	var g = { good: false, parts: [] };
+	if (latPct === 0) {
+		g.parts.push(_('延迟持平（%s ms）').format(cur.latency_ms.toFixed(1)));
+	} else if (dLat > 0) {
+		g.good = true;
+		g.parts.push(_('延迟 ↓%d%%（%s → %s ms）').format(latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1)));
+	} else {
+		g.parts.push(_('延迟 ↑%d%%（%s → %s ms），开启后延迟更高').format(-latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1)));
+	}
+	if (off.rx_bps > 1e5 && cur.rx_bps > 1e5) {
+		var tPct = Math.round((cur.rx_bps - off.rx_bps) / off.rx_bps * 100);
+		g.parts.push(tPct >= 0 ? _('吞吐 +%d%%').format(tPct) : _('吞吐 %d%%').format(tPct));
+	}
+	if (busy) g.parts.push(_('测量时段网络有较大流量，数据受干扰'));
+	g.text = (g.good ? _('实测增益（vs 关闭基线）：') : _('对比关闭基线：')) + g.parts.join(' · ');
+	return g;
+}
+function isDlDomain(host) {
+	if (!host) return false;
+	for (var i = 0; i < SENSE_DL_DOMAINS.length; i++) {
+		if (host.indexOf(SENSE_DL_DOMAINS[i], host.length - SENSE_DL_DOMAINS[i].length) !== -1) return true;
+	}
+	return false;
+}
+function isWorkDomain(host) {
+	if (!host) return false;
+	var h = String(host).toLowerCase().replace(/\.$/, '');
+	for (var i = 0; i < SENSE_WORK_DOMAINS.length; i++) {
+		var d = SENSE_WORK_DOMAINS[i];
+		if (h === d || h.slice(-(d.length + 1)) === '.' + d) return true;
+	}
+	return false;
+}
+
+function senseClassify(records, maps) {
+	/* 连接采样 → 场景判定 (每场景独立证据链 + 打分, 纯函数)
+	 * maps = { game: {}, gameips: [], gameports: [], stream: {}, dlports: [] }
+	 * 返回 { scene, confidence, score, evidence } — scene: gaming|work|streaming|download|normal */
+	maps = maps || {};
+	var ev = { gaming: [], work: [], streaming: [], download: [] };
+	(records || []).forEach(function(r) {
+		if (!r || (!r.q && !r.d)) return;
+		var host = r.q || '', heavy = isConnHeavy(r);
+		var p = +r.p || 0;
+		/* 三级识别链 (域名→IP段→端口) — 与 dnsSummary 同源 */
+		var gameCat = host ? classifyDomain(host, maps.game) : null;
+		if (!gameCat && r.d) gameCat = classifyIp(r.d, maps.gameips);
+		if (!gameCat && r.p) gameCat = classifyPort(r.p, r.t, maps.gameports);
+		var streamCat = host ? classifyDomain(host, maps.stream) : null;
+		var stun = (r.t === 'udp') && SENSE_STUN_PORTS[p];
+
+		var traffic = (+r.u || 0) + (+r.v || 0);
+		/* gaming: 三级链命中且 light 且流量超过保活线 (对局连接持续双向; 心跳连接只几 KB) */
+		if (gameCat && !heavy && traffic >= SENSE_MIN_KEEPALIVE) ev.gaming.push({ via: 'chain', host: host || r.d, cat: gameCat });
+		/* work: 会议域名 / STUN-UDP — 均需双向累计超 64KB (App 后台 ICE 探测/信令心跳不算会议) */
+		if (isWorkDomain(host) && traffic >= SENSE_WORK_MIN_BYTES) ev.work.push({ via: 'domain', host: host });
+		else if (stun && traffic >= SENSE_WORK_MIN_BYTES) ev.work.push({ via: 'stun', host: host || ((r.d || '') + ':' + r.p) });
+		/* streaming: 流媒体域名需真实下行 ≥512KB (待机电视拉推荐图/App 预加载不算在看视频) */
+		if (streamCat && (+r.v || 0) >= SENSE_STREAM_MIN_BYTES) ev.streaming.push({ via: 'domain', host: host, cat: streamCat, heavy: heavy });
+		/* bulk: 无域名时的"大下行=流媒体"证据只认标准 web 端口 (80/443/1935) —
+		   随机高端口的大流量是 P2P/网盘分发 (对外服务设备/网心云), 不算家里人在看视频 */
+		else if (!gameCat && heavy && (+r.v || 0) > SENSE_BULK_DOWN && (+r.v > (+r.u || 0) * 10) && (r.p === '80' || r.p === '443' || r.p === '1935')) ev.streaming.push({ via: 'bulk', host: host || r.d, cat: '' });
+		/* download: 知名 P2P 端口 / 游戏平台域名下的 heavy 流 (平台商店下载≠对局, cFosSpeed light-heavy 分析的对症移植) */
+		if (classifyPort(r.p, r.t, maps.dlports)) ev.download.push({ via: 'port', host: host || r.d, cat: 'p2p' });
+		if (gameCat && heavy) ev.download.push({ via: 'game-heavy', host: host, cat: gameCat });
+		/* 网盘下载域名 → download (baidupcs/bcsp2p 本身就是下载 CDN, 不看量级; 但过保活线防心跳) */
+		if (isDlDomain(host) && traffic >= SENSE_MIN_KEEPALIVE) ev.download.push({ via: 'domain', host: host, cat: 'netdisk' });
+	});
+	var nDom = function(a, v) { return a.filter(function(e) { return e.via === v; }).length; };
+	var score = {
+		gaming: ev.gaming.length * 2,
+		work: nDom(ev.work, 'domain') * 3 + nDom(ev.work, 'stun') * 2,
+		streaming: nDom(ev.streaming, 'domain') * 2 + nDom(ev.streaming, 'bulk'),
+		download: ev.download.length * 3
+	};
+	var order = ['gaming', 'work', 'streaming', 'download']; /* 平分 tie-break: 用户收益优先序 */
+	var best = 'normal', bestScore = 0, total = 0;
+	order.forEach(function(s) { total += score[s]; if (score[s] > bestScore) { best = s; bestScore = score[s]; } });
+	return { scene: best, confidence: total > 0 ? Math.round(bestScore * 100 / total) : 0, score: score, evidence: ev };
+}
+
+function senseDebounce(state, scene, nowSec) {
+	/* 防抖状态机 (纯函数): 连续 2 个采样窗口同判定才切换, 防瞬时抖动 */
+	var st = state || { scene: 'normal', cand: null, candCount: 0, since: nowSec };
+	if (!scene) scene = 'normal';
+	if (scene === st.scene) { st.cand = null; st.candCount = 0; return st; }
+	if (scene === st.cand) {
+		st.candCount++;
+		if (st.candCount >= 2) return { scene: scene, cand: null, candCount: 0, since: nowSec };
+	} else {
+		st.cand = scene; st.candCount = 1;
+	}
+	return st;
+}
+
+var SENSE_SCENE_META = {
+	gaming:    { icon: 'game', name: _('游戏'), cls: 'ns-scene-game' },
+	work:      { icon: 'work', name: _('视频会议'), cls: 'ns-scene-work' },
+	streaming: { icon: 'stream', name: _('视频'), cls: 'ns-scene-stream' },
+	download:  { icon: 'download', name: _('下载'), cls: 'ns-scene-dl' },
+	normal:    { icon: 'web', name: _('普通浏览'), cls: '' }
+};
+
+/* 场景图标: 手绘 24x24 线性 SVG (描边 2, currentColor 跟随文字色/深浅主题), 零外部依赖可商用 */
+var NS_ICONS = {
+	game: [['rect', { x: 2.5, y: 7.5, width: 19, height: 11, rx: 5 }],
+		['line', { x1: 6.5, y1: 11.5, x2: 10.5, y2: 11.5 }],
+		['line', { x1: 8.5, y1: 9.5, x2: 8.5, y2: 13.5 }],
+		['circle', { cx: 15.6, cy: 10.6, r: 1 }],
+		['circle', { cx: 18, cy: 13.4, r: 1 }]],
+	work: [['rect', { x: 2.5, y: 6.5, width: 13, height: 11, rx: 2.5 }],
+		['path', { d: 'M15.5 10.5 21.5 7v10l-6-3.5z' }]],
+	stream: [['circle', { cx: 12, cy: 12, r: 9.25 }],
+		['path', { d: 'M10 8.4 16 12l-6 3.6z', fill: 'currentColor', stroke: 'none' }]],
+	download: [['path', { d: 'M12 4.5v10.5' }],
+		['path', { d: 'm7.5 10.5 4.5 4.5 4.5-4.5' }],
+		['path', { d: 'M5 19.5h14' }]],
+	web: [['circle', { cx: 12, cy: 12, r: 9.25 }],
+		['path', { d: 'M2.75 12h18.5' }],
+		['path', { d: 'M12 2.75c3.8 3.6 3.8 14.9 0 18.5-3.8-3.6-3.8-14.9 0-18.5z' }]]
+};
+/* SVG 命名空间构造器 — LuCI 的 E() 创建的是 HTMLUnknownElement 不渲染, 全部 SVG 走这里 */
+function svgEl(tag, attrs) {
+	var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+	for (var k in (attrs || {})) el.setAttribute(k, attrs[k]);
+	return el;
+}
+function nsIcon(name, size) {
+	var parts = NS_ICONS[name] || NS_ICONS.web;
+	var kids = parts.map(function(p) { return svgEl(p[0], p[1]); });
+	var svg = svgEl('svg', { viewBox: '0 0 24 24', width: size || 16, height: size || 16, fill: 'none',
+		stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+	svg.setAttribute('style', 'vertical-align:-3px;flex:none');
+	kids.forEach(function(k) { svg.appendChild(k); });
+	return svg;
+}
+
+function gameStatusMeta(st) {
+	/* st = netsteer-qos status 的 JSON → 徽标五态 (诚实降级: 标记在但整形不在 = 降级) */
+	if (!st) return { cls: ' is-custom', label: _('状态未知'), state: 'unknown' };
+	if (!st.enabled && !st.active) return { cls: ' is-custom', label: _('未开启'), state: 'off' };
+	if (!st.enabled && st.active) return { cls: ' is-warn', label: _('有残留规则'), state: 'stale' };
+	if (st.enabled && !st.active) return { cls: ' is-warn', label: _('标记缺失'), state: 'missing' };
+	if (st.enabled && st.active && !st.sqm_enabled) return { cls: ' is-warn', label: _('SQM 未运行 · 直通'), state: 'no_sqm' };
+	if (st.enabled && st.active && st.cake_up !== 'diffserv4') return { cls: ' is-warn', label: _('整形未切换'), state: 'degraded' };
+	return { cls: '', label: _('已开启'), state: 'on' };
+}
+
 
 /* ---- 网络体检: 依赖矩阵 + 冲突检测 + 两档方案构建 (纯函数层) ---- */
 function parseIrqList(txt) {
@@ -271,6 +658,20 @@ function netdevParse(txt) {
 	});
 	return out;
 }
+function netdevPick(nd, preferL3) {
+	/* 从 netsteer-netdev rows 选 WAN 口: preferL3 时优先 role=wan (L3 承载口), 否则 wan/uplink */
+	if (!nd || !nd.rows) return null;
+	var i, r;
+	if (preferL3) {
+		for (i = 0; i < nd.rows.length; i++) if (nd.rows[i].role === 'wan') return nd.rows[i];
+	}
+	for (i = 0; i < nd.rows.length; i++) {
+		r = nd.rows[i];
+		if (r.role === 'wan' || r.role === 'uplink') return r;
+	}
+	return null;
+}
+
 function netdevDelta(prev, cur, dtMs) {
 	/* 两次累计值 → bps (回绕/重启保护: 负值或超大跳变视为无效返回 null) */
 	var out = {};
@@ -353,14 +754,16 @@ function fmtBps(bps) {
 }
 
 function tabStructure() {
-	/* 横向 Tab 分组: 卡片归类唯一 (单测校验)。总览=仪表盘 (小白), 专家调教=手工层 */
+	/* 横向 Tab 分组: 卡片归类唯一 (单测校验)。
+	 * 信息架构 v1.17.1 (用户反馈二轮): 总览=纯展示仪表盘 (无操作)
+	 * 智能模式=总开关+场景识别+能力开关 (操作页), 专家模式=内核/整形细节 (极客) */
 	return [
 		{ id: 'overview', name: _('总览'), cards: ['wires', 'health', 'traffic'],
-			hint: _('实时网络路径、负载健康与吞吐曲线 — 出问题一眼看到在哪一段。') },
-		{ id: 'smart', name: _('智能优化'), cards: ['audit', 'p2p'],
-			hint: _('一键体检、场景模式与 P2P 直通——自动检测环境、推荐方案、规避冲突配置。') },
-		{ id: 'pro', name: _('专家调教'), cards: ['presets', 'ifaces', 'softirq', 'irq'],
-			hint: _('分核方案、逐口 RPS/XPS、软中断分布与 IRQ 亲和 — 精确到每一颗核心。') }
+			hint: _('网络当前在做什么、快不快、谁在占用 — 一眼看懂。') },
+		{ id: 'smart', name: _('智能模式'), cards: ['master', 'scene', 'device', 'p2p'],
+			hint: _('一个总开关自动优化；想让某台设备（游戏主机/电脑）低延迟时，单独开启设备加速。') },
+		{ id: 'pro', name: _('专家模式'), cards: ['presets', 'ifaces', 'softirq', 'irq', 'audit', 'tins'],
+			hint: _('分核方案、逐口 RPS/XPS、软中断分布、IRQ 亲和、体检报告与整形分桶细节 — 精确到每一颗核心。') }
 	];
 }
 
@@ -499,8 +902,8 @@ function parseCpuRange(txt) {
 	return single.length || 4;
 }
 
-/* uci get 结果 → IFACES; 读不到时退回经典三口 */
-function buildIfaces(uciRes) {
+/* uci get 结果 → IFACES; 失败时依次用 netdev role 表还原 (DSA 命名兼容)、再退回经典三口 */
+function buildIfaces(uciRes, nd) {
 	var out = [];
 	var vals = (uciRes && uciRes.values) || null;
 	if (vals) {
@@ -515,14 +918,47 @@ function buildIfaces(uciRes) {
 			});
 		});
 	}
+	if (!out.length && nd && nd.rows && nd.rows.length) {
+		/* uci 通道失败: 从 netsteer-netdev 的 role 字段还原 (兼容 DSA 命名 wan/lan1/...) */
+		nd.rows.forEach(function(row) {
+			if (row.role === 'wan' || row.role === 'uplink')
+				out.push({ dev: row.dev, sec: row.dev.replace(/-/g, '_'), note: 'WAN 物理口', virtual: false });
+			else if (row.role === 'lan')
+				out.push({ dev: row.dev, sec: row.dev.replace(/-/g, '_'), note: 'LAN 物理口', virtual: false });
+		});
+	}
 	if (!out.length) {
 		out = [
-			{ dev: 'eth0',      sec: 'eth0',      note: 'WAN 物理口', virtual: false },
-			{ dev: 'eth1',      sec: 'eth1',      note: 'LAN 物理口', virtual: false },
+			{ dev: 'wan',       sec: 'wan',       note: 'WAN 物理口', virtual: false },
+			{ dev: 'lan1',      sec: 'lan1',      note: 'LAN 物理口', virtual: false },
 			{ dev: 'pppoe-wan', sec: 'pppoe_wan', note: 'PPPoE 拨号口 · 重拨自动保持', virtual: true }
 		];
 	}
 	return out;
+}
+
+/* v1.18 判定下沉: 后端 verdict.ev 计数 → 渲染层 evidence 数组形态 (chips 按 length 显示处数) */
+function verdictToRes(v) {
+	var n = function(x) { x = parseInt(x, 10) || 0; var a = []; for (var i = 0; i < x; i++) a.push({}); return a; };
+	return {
+		scene: (v && v.scene) || 'normal',
+		score: (v && v.score) || {},
+		evidence: {
+			gaming: n(v && v.ev && v.ev.gaming),
+			work: n((v && v.ev && v.ev.work_dom || 0) + (v && v.ev && v.ev.work_stun || 0)),
+			streaming: n((v && v.ev && v.ev.stream_dom || 0) + (v && v.ev && v.ev.stream_bulk || 0)),
+			download: n(v && v.ev && v.ev.download)
+		}
+	};
+}
+
+/* v1.18 D20 设备分级 (与 netsteer-wizard tier_of 同构): T0 弱设备只推零依赖档 */
+function tierFrom(ncpu, memMb, x86) {
+	ncpu = parseInt(ncpu, 10) || 1;
+	memMb = parseInt(memMb, 10) || 0;
+	if (ncpu <= 2 || memMb <= 256) return 'T0';
+	if ((x86 && ncpu >= 4) || ncpu >= 8) return 'T2';
+	return 'T1';
 }
 
 return view.extend({
@@ -536,13 +972,21 @@ return view.extend({
 		 * values 布局: [0]=meta, [1+2i]=rps, [2+2i]=xps, [1+2N]=softirqs, [2+2N]=state.json */
 		return Promise.all([
 			L.resolveDefault(fs.read('/sys/devices/system/cpu/online'), '0-3'),
-			ubusCall('uci', 'get', { config: 'netsteer' }).catch(function() { return null; })
+			ubusCall('uci', 'get', { config: 'netsteer' }).catch(function() { return null; }),
+			/* netdev role 表: uci 通道失败时兜底还原 IFACES (DSA 命名兼容) */
+			fs.exec('/usr/bin/netsteer-netdev', []).then(function(r) {
+				try { return JSON.parse((r && r.stdout) || '{}'); } catch (e) { return null; }
+			}).catch(function() { return null; })
 		]).then(function(meta) {
 			var cpuTxt = (meta[0] && meta[0].data) ? meta[0].data : meta[0];
 			NCPU = parseCpuRange(typeof cpuTxt === 'string' ? cpuTxt : '0-3');
-			IFACES = buildIfaces(meta[1]);
+			IFACES = buildIfaces(meta[1], meta[2]);
+			/* D14 设备排除列表 (qos 节 sense_exclude): 本地判定回退路径的采样过滤用 */
+			view._senseExclude = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_exclude) || '';
+			view._curMode = (meta[1] && meta[1].values && meta[1].values.scenario && meta[1].values.scenario.mode) || '';
 			var autotuneDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.autotune_done);
-			var tasks = [ Promise.resolve({ ncpu: NCPU, ifaces: IFACES, autotuneDone: autotuneDone }) ];
+			var wizardDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.wizard_done);
+			var tasks = [ Promise.resolve({ ncpu: NCPU, ifaces: IFACES, autotuneDone: autotuneDone, wizardDone: wizardDone }) ];
 			IFACES.forEach(function(it) {
 				tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/rx-0/rps_cpus'), null));
 				tasks.push(L.resolveDefault(fs.read('/sys/class/net/' + it.dev + '/queues/tx-0/xps_cpus'), null));
@@ -551,6 +995,14 @@ return view.extend({
 			tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
 			/* P2P 直通状态: 独立脚本输出 JSON (脚本不在时静默降级为关) */
 			tasks.push(fs.exec('/usr/bin/netsteer-p2p', ['status']).then(function(r) {
+				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
+			}).catch(function() { return null; }));
+			/* 游戏通道状态 (脚本不在 = 老版本包 → 静默) */
+			tasks.push(fs.exec('/usr/bin/netsteer-qos', ['status']).then(function(r) {
+				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
+			}).catch(function() { return null; }));
+			/* 不抢网设备状态 (v1.19 D22, 脚本不在 = 老版本包 → 静默) */
+			tasks.push(fs.exec('/usr/bin/netsteer-bulk', ['status']).then(function(r) {
 				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
 			}).catch(function() { return null; }));
 			return Promise.all(tasks);
@@ -582,15 +1034,15 @@ return view.extend({
 	renderMaster: function() {
 		var el = E('div', { 'class': 'vt-tile ns-master', 'id': 'ns-master' }, [
 			E('div', { 'class': 'vt-tile-head' }, [
-				E('span', { 'class': 'vt-tile-title' }, _('加速总开关')),
-				E('span', { 'class': 'vt-hint ns-master-state' }, _('读取中…'))
+				E('span', { 'class': 'vt-tile-title' }, _('智能模式')),
+				E('span', { 'class': 'ns-master-state netsteer-badge is-custom' }, _('读取中…'))
 			]),
 			E('div', { 'class': 'ns-master-body' }, [
 				E('button', { 'type': 'button', 'class': 'ns-toggle', 'id': 'ns-toggle' }, [
 					E('span', { 'class': 'ns-toggle-knob' })
 				]),
 				E('div', { 'class': 'ns-master-info' }, [
-					E('p', { 'class': 'ns-master-desc' }, _('开启后应用 cake 整形 + 全核分摊 + P2P 直通；关闭则恢复系统默认，用于建立对比基线。')),
+					E('p', { 'class': 'ns-master-desc' }, _('开启后自动识别游戏、视频会议、视频、下载流量并动态优化；关闭恢复系统默认（可对比效果）。')),
 					E('p', { 'class': 'ns-master-gain', 'id': 'ns-master-gain' }, '')
 				])
 			])
@@ -614,34 +1066,25 @@ return view.extend({
 	paintMaster: function(el, st, bench) {
 		if (!el || !document.getElementById('ns-master')) return;
 		var on = st && st.mode && st.mode !== 'off';
+		/* 总开关状态供子卡 (自动切换) 判层级用 */
+		view._masterOn = !!on;
 		var knob = el.querySelector('.ns-toggle');
 		if (knob) knob.classList.toggle('on', !!on);
 		var stateEl = el.querySelector('.ns-master-state');
-		if (stateEl) stateEl.textContent = on
-			? _('已开启 · %s').format(st.mode.toUpperCase())
-			: _('已关闭 · 基线模式');
+		if (stateEl) {
+			stateEl.textContent = on
+				? _('已开启 · %s').format(st.mode.toUpperCase())
+				: _('未开启 · 基线模式');
+			stateEl.classList.toggle('is-custom', !on);
+		}
 		var gainEl = el.querySelector('#ns-master-gain');
 		if (gainEl) {
 			var off = bench && bench.off, cur = bench && bench.on;
-			if (off && cur && cur.latency_ms != null && off.latency_ms != null) {
-				var dLat = off.latency_ms - cur.latency_ms;
-				var latPct = off.latency_ms > 0 ? Math.round(dLat / off.latency_ms * 100) : 0;
-				var g = [];
-				if (off.latency_ms > 0 && cur.latency_ms > 0) {
-					if (latPct === 0) {
-						g.push(_('延迟持平（%s ms）').format(cur.latency_ms.toFixed(1)));
-					} else {
-						g.push(dLat >= 0
-							? _('延迟 ↓%d%%（%s → %s ms）').format(latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1))
-							: _('延迟 ↑%d%%（%s → %s ms）').format(-latPct, off.latency_ms.toFixed(1), cur.latency_ms.toFixed(1)));
-					}
-				}
-				if (off.rx_bps > 1e5 && cur.rx_bps > 1e5) { /* 双侧都有实流量才比吞吐 */
-					var tPct = Math.round((cur.rx_bps - off.rx_bps) / off.rx_bps * 100);
-					g.push(tPct >= 0 ? _('吞吐 +%d%%').format(tPct) : _('吞吐 %d%%').format(tPct));
-				}
-				gainEl.textContent = g.length ? _('实测增益（vs 关闭基线）：') + g.join(' · ') : _('基线已存，增益待流量上来后重测');
-				gainEl.classList.add('ns-has-gain');
+			var g = off && cur ? buildGainText(off, cur) : null;
+			if (g) {
+				gainEl.textContent = g.text;
+				/* 绿=有增益; 退化/持平=中性色 (不得把变差叫增益) */
+				gainEl.classList.toggle('ns-has-gain', g.good);
 			} else if (on) {
 				gainEl.textContent = _('增益基线未建立：关闭一次总开关自动测量基线，再开启后显示真实差值');
 			} else {
@@ -864,6 +1307,9 @@ return view.extend({
 				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-accent,#c8f031) 0 2px,transparent 2px 6px)' }), E('span', { 'class': 'vt-hint' }, _('vs 基线')) ])
 			]),
 			svg,
+			E('div', { 'class': 'ns-axis-row' }, [
+				E('span', {}, '-7.5m'), E('span', {}, '-3.5m'), E('span', {}, 'now')
+			]),
 			E('div', { 'class': 'vt-hint ns-traffic-foot' }, _('基线建立中 — 约 10 秒后出现第一条曲线'))
 		]);
 	},
@@ -880,21 +1326,30 @@ return view.extend({
 				cur[d.rows[i].dev] = { rx: +d.rows[i].rx, tx: +d.rows[i].tx };
 			var now = d.ts || Date.now();
 			if (now < 1e12) now *= 1000; /* busybox date 只给秒 */
-			var st = self._series;
-			if (st.last && cur.eth0) {
+		var st = self._series;
+		if (st.last) {
+			/* wan 口 = role=wan (pppoe 场景即 pppoe-wan, 与 SQM 挂口一致); 老版本脚本无 role → 退回 eth0 */
+			var legacy = d.rows.length > 0 && !d.rows[0].role; /* 老版本脚本无 role 字段 */
+			var wanRow = netdevPick(d, true), lanRow = null, i;
+			for (i = 0; i < d.rows.length; i++) if (d.rows[i].role === 'lan') { lanRow = d.rows[i]; break; }
+			if (!wanRow && legacy) wanRow = d.rows.filter(function(r) { return r.dev === 'eth0'; })[0] || null;
+			if (!lanRow && legacy) lanRow = d.rows.filter(function(r) { return r.dev === 'eth1'; })[0] || null;
+			var lastWan = st.last.d[wanRow ? wanRow.dev : ''], lastLan = st.last.d[lanRow ? lanRow.dev : ''];
+			if ((wanRow && lastWan) || (lanRow && lastLan)) {
 				var dt = now - st.last.t;
 				if (dt >= 2500 && dt <= 30000) {
 					var dd = netdevDelta(st.last.d, cur, dt);
-					var rx = dd.eth0 ? dd.eth0.rx_bps : null;
-					var tx = dd.eth0 ? dd.eth0.tx_bps : null;
+					var rx = (wanRow && dd[wanRow.dev]) ? dd[wanRow.dev].rx_bps : null;
+					var tx = (wanRow && dd[wanRow.dev]) ? dd[wanRow.dev].tx_bps : null;
 					st.rx = seriesPush(st.rx, [now, rx], 7.5 * 60 * 1000, 90);
 					st.tx = seriesPush(st.tx, [now, tx], 7.5 * 60 * 1000, 90);
 					self.drawTraffic();
-					self.setWireRate('lan', rx);
-					self.setWireRate('wan', dd.eth1 ? dd.eth1.rx_bps : null);
+					self.setWireRate('wan', rx);
+					self.setWireRate('lan', (lanRow && dd[lanRow.dev]) ? dd[lanRow.dev].rx_bps : null);
 				}
 			}
-			st.last = { t: now, d: cur };
+		}
+		st.last = { t: now, d: cur };
 		}).catch(function() {});
 	},
 
@@ -940,19 +1395,6 @@ return view.extend({
 				ln.setAttribute('data-f', f);
 				grid.appendChild(ln);
 			});
-			var ycap = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-			ycap.setAttribute('x', 636); ycap.setAttribute('text-anchor', 'end');
-			ycap.setAttribute('class', 'ns-axis-y');
-			ycap.setAttribute('data-role', 'peak');
-			grid.appendChild(ycap);
-			[['-7.5m', 4], ['-3.5m', 320], ['now', 632]].forEach(function(pair) {
-				var tx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-				tx.setAttribute('x', pair[1]); tx.setAttribute('y', 128);
-				tx.setAttribute('text-anchor', pair[1] > 600 ? 'end' : (pair[1] < 20 ? 'start' : 'middle'));
-				tx.setAttribute('class', 'ns-axis-x');
-				tx.textContent = pair[0];
-				grid.appendChild(tx);
-			});
 			svg.insertBefore(grid, svg.firstChild);
 		}
 		grid.querySelectorAll('.ns-grid').forEach(function(ln) {
@@ -960,13 +1402,11 @@ return view.extend({
 			ln.setAttribute('y1', Math.round(H - f * (H - 8) - 2));
 			ln.setAttribute('y2', Math.round(H - f * (H - 8) - 2));
 		});
-		var ycapEl = grid.querySelector('[data-role="peak"]');
-		if (ycapEl) ycapEl.textContent = fmtBps(peak);
 		/* 增益层: vs 关闭基线的差值线 (真实测量, 正=超出基线的吞吐) */
 		var gl = svg.querySelector('.ns-gain-line'), gz = svg.querySelector('.ns-gain-zero');
 		var benchOff = this._benchOff;
-		if (benchOff) {
-			var y0 = H - Math.min(1, self._benchOff / peak) * (H - 8) - 2;
+		if (benchOff && peak > 0) {
+			var y0 = H - Math.min(1, benchOff / peak) * (H - 8) - 2;
 			if (!gz) {
 				gz = document.createElementNS('http://www.w3.org/2000/svg', 'line');
 				gz.setAttribute('class', 'ns-gain-zero');
@@ -1025,7 +1465,17 @@ return view.extend({
 		if (o.flow) fwd.push(_('分载开'));
 		if (pp.active) fwd.push(_('P2P 直通'));
 		var mode = 'steering';
+		/* 四格首格 = 当前场景 (AI 识别; paintSense 实时刷新 #ns-scene-tile-value) */
+		var sst = this._senseState || { scene: 'normal' };
+		var smeta = SENSE_SCENE_META[sst.scene] || SENSE_SCENE_META.normal;
+		var sceneValEl = E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-scene-tile-value' }, [nsIcon(smeta.icon, 20), ' ' + smeta.name]);
+		var sceneSubEl = E('span', { 'class': 'vt-dcard-sub', 'id': 'ns-scene-tile-sub' }, _('AI 智能识别'));
 		return E('div', { 'class': 'vt-health ns-health' }, [
+			E('div', { 'class': 'vt-dcard ns-hc ns-good' }, [
+				E('span', { 'class': 'vt-dcard-label' }, _('当前场景')),
+				sceneValEl,
+				sceneSubEl
+			]),
 			card(_('收包集中度'), softirqTxt,
 				a && a.softirq_conc != null && a.softirq_conc > (a.softirq_warn || 45) ? 'ns-bad' : 'ns-good',
 				a && a.softirq_conc != null ? (a.softirq_conc > (a.softirq_warn || 45) ? _('单核偏热 — 建议调 IRQ') : _('分布均衡')) : _('采样中')),
@@ -1162,7 +1612,7 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-note' },
 					conc === null
 						? _('开机以来暂无收包计数')
-						: _('收包负载集中在 CPU%d。%d 核分摊生效时应接近 %d%%；越集中越需要调整。'.format(concCpu, NCPU, Math.round(100 / NCPU))))
+						: _('收包负载集中在 CPU%d。%d 核分摊生效时应接近 %d%%；越集中越需要调整。').format(concCpu, NCPU, Math.round(100 / NCPU)))
 			]),
 			E('div', { 'class': 'netsteer-sq-row' }, [
 				E('span', { 'class': 'netsteer-sq-label' }, _('收包 NET_RX')),
@@ -1377,7 +1827,7 @@ renderSoftirqCard: function(text) {
 			try { irq = JSON.parse(stateTxt || ''); } catch (e) { irq = null; }
 			var cur = matchPreset(m, irq);
 			var PRESETS = getPresets();
-			el.textContent = _('当前：%s'.format(cur ? PRESETS[cur].label : '自定义组合'));
+			el.textContent = _('当前：%s').format(cur ? PRESETS[cur].label : '自定义组合');
 			el.classList.toggle('is-custom', !cur);
 			Object.keys(PRESETS).forEach(function(name) {
 				var btn = document.querySelector('.netsteer-preset[data-preset="%s"]'.format(name));
@@ -1434,7 +1884,7 @@ renderSoftirqCard: function(text) {
 				});
 			});
 			if (!silent) {
-				ui.showModal(_('已切换: %s'.format(preset.label)), E('p', { 'class': 'netsteer-note' }, preset.desc));
+				ui.showModal(_('已切换: %s').format(preset.label), E('p', { 'class': 'netsteer-note' }, preset.desc));
 				window.setTimeout(function() { ui.hideModal(); }, 2200);
 			}
 			self.refreshBadge();
@@ -1478,12 +1928,7 @@ renderSoftirqCard: function(text) {
 
 	markAutotuneDone: function() {
 		/* global section 可能已存在 (apply 用它存 rfs_sock_flow_entries, type=steering) — 不动 .type */
-		return ubusCall('uci', 'set', { config: 'netsteer', section: 'global', values: { autotune_done: '1' } })
-			.catch(function() {
-				return ubusCall('uci', 'add', { config: 'netsteer', type: 'netsteer', name: 'global', values: { autotune_done: '1' } });
-			})
-			.then(function() { return ubusCall('uci', 'commit', { config: 'netsteer' }); })
-			.catch(function() {});
+		return cfgSet('global', { autotune_done: '1' }).catch(function() {});
 	},
 
 	runAutotune: function() {
@@ -1521,7 +1966,7 @@ renderSoftirqCard: function(text) {
 			var chain = Promise.resolve();
 			seq.forEach(function(name) {
 				chain = chain.then(function() {
-					setStatus(_('正在测: %s … (约 15 秒)'.format(PRESETS[name].label)));
+					setStatus(_('正在测: %s … (约 15 秒)').format(PRESETS[name].label));
 					return self.applyPresetByName(name, true)
 						.then(function() { return new Promise(function(r) { setTimeout(r, 1200); }); })
 						.then(function() { return self.sampleSoftirq(12); })
@@ -1550,7 +1995,7 @@ renderSoftirqCard: function(text) {
 						]));
 					});
 					ui.showModal(_('测速结果'), [
-						E('p', { 'class': 'netsteer-note' }, _('数值 = 收包负载最大单核占比，越低越均匀（%d 核理论最优 %d%%）。测速配置已恢复为测速前的状态。'.format(NCPU, Math.round(100 / NCPU)))),
+						E('p', { 'class': 'netsteer-note' }, _('数值 = 收包负载最大单核占比，越低越均匀（%d 核理论最优 %d%%）。测速配置已恢复为测速前的状态。').format(NCPU, Math.round(100 / NCPU))),
 						table,
 						E('div', { 'class': 'right' }, [
 							E('button', {
@@ -1565,7 +2010,7 @@ renderSoftirqCard: function(text) {
 									self.markAutotuneDone();
 									self.applyPresetByName(best, false);
 								}
-							}, _('采纳推荐 (%s)'.format(PRESETS[best].label)))
+							}, _('采纳推荐 (%s)').format(PRESETS[best].label))
 						])
 					]);
 				});
@@ -1577,6 +2022,122 @@ renderSoftirqCard: function(text) {
 		}).catch(function(e) {
 			ui.showModal(_('出错'), E('p', {}, String(e)));
 		});
+	},
+
+	wizardInit: function() {
+		/* v1.18 首次使用向导: 3 步 (检测→推荐→一键开启), D13 校准+D20 分级在后端 probe 内完成 */
+		var self = this;
+		var MODE = {};
+		modeDefs().forEach(function(m) { MODE[m.id] = m; });
+		var body = E('div', {}, E('p', { 'class': 'netsteer-note' },
+			_('先检查您的路由器性能，再测一次宽带速度（约 10 秒），然后为本机推荐最合适的运行方式。')));
+		var foot = E('div', { 'class': 'right' }, [
+			E('button', {
+				'class': 'btn cbi-button-neutral',
+				'click': function() { ui.hideModal(); fs.exec('/usr/bin/netsteer-wizard', ['skip']).catch(function() {}); }
+			}, _('暂不设置')),
+			' ',
+			E('button', {
+				'class': 'btn cbi-button-positive important',
+				'click': function() { self.wizardProbe(body, foot, MODE); }
+			}, _('开始检测'))
+		]);
+		ui.showModal(_('3 步开始'), [ body, foot ]);
+	},
+
+	wizardProbe: function(body, foot, MODE) {
+		var self = this;
+		body.replaceChildren(E('p', { 'class': 'netsteer-note' }, _('正在检查设备与测速，约 10 秒，请不要关闭页面…')));
+		foot.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+		fs.exec('/usr/bin/netsteer-wizard', ['probe']).then(function(r) {
+			var j = null;
+			try { j = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			if (!j || !j.tier) {
+				body.replaceChildren(E('p', { 'class': 'netsteer-note', 'style': 'color:#c0392b' },
+					_('检测失败。可稍后重试，或在专家模式手动选择运行方式。')));
+				foot.querySelectorAll('button')[0].disabled = false;
+				foot.querySelectorAll('button')[1].disabled = false;
+				foot.querySelectorAll('button')[1].textContent = _('重新检测');
+				foot.querySelectorAll('button')[1].onclick = function() { self.wizardProbe(body, foot, MODE); };
+				return;
+			}
+			/* 合理性闸: 测得值远低于线路规格 (≥4× 且协商≥100M) → CDN 单连接限速嫌疑, 让用户点选套餐档 */
+			if (j.rec_mode === 'standard' && j.link_mbps >= 100 && j.dl_mbps > 0 && j.dl_mbps * 4 < j.link_mbps)
+				self.wizardConfirmBw(body, foot, MODE, j);
+			else
+				self.wizardResult(body, foot, MODE, j);
+		}).catch(function(e) {
+			body.replaceChildren(E('p', { 'class': 'netsteer-note', 'style': 'color:#c0392b' }, _('检测异常: %s').format(String(e))));
+		});
+	},
+
+	wizardConfirmBw: function(body, foot, MODE, j) {
+		/* 测速节点限速嫌疑: 国内套餐档位标准化, 点选比自由输入可靠 */
+		var self = this;
+		var tiers = [100, 200, 300, 500, 1000];
+		var nearest = tiers.reduce(function(a, b) { return Math.abs(b - j.link_mbps) < Math.abs(a - j.link_mbps) ? b : a; }, tiers[0]);
+		var sel = E('select', { 'class': 'cbi-input-select', 'style': 'margin:.3em 0' },
+			tiers.map(function(t) {
+				var o = E('option', { 'value': String(t) }, _('%d Mbps 套餐').format(t));
+				if (t === nearest) o.selected = true;
+				return o;
+			}));
+		body.replaceChildren(
+			E('p', { 'class': 'netsteer-note' }, _('%d 核处理器 · 内存 %d MB').format(j.ncpu, j.mem_mb)),
+			E('p', { 'class': 'netsteer-note', 'style': 'color:#b8860b' },
+				_('自动测速仅测得 %d Mbps，明显低于线路规格 %d Mbps（测速节点限速所致）。请选择您的宽带套餐：').format(j.dl_mbps, j.link_mbps)),
+			sel);
+		foot.querySelectorAll('button')[0].disabled = false;
+		var go = foot.querySelectorAll('button')[1];
+		go.disabled = false;
+		go.textContent = _('继续');
+		go.onclick = function() {
+			var dlMbps = parseInt(sel.value, 10) || nearest;
+			j.rec_dl = dlMbps * 850;   /* Mbps × 0.85 → kbit/s */
+			j.rec_ul = 40000;          /* 上传保守默认 40M */
+			self.wizardResult(body, foot, MODE, j);
+		};
+	},
+
+	wizardResult: function(body, foot, MODE, j) {
+		var m = MODE[j.rec_mode] || { icon: '⚖', name: j.rec_mode };
+		var hw = _('%d 核处理器 · 内存 %d MB').format(j.ncpu, j.mem_mb);
+		var net = j.dl_mbps > 0 ? _('测得下载 %d Mbps').format(j.dl_mbps) : _('带宽未测得，使用线路规格兜底');
+		var basis;
+		if (j.tier === 'T0')
+			basis = _('您的路由器性能较弱，流量整形可能成为负担；推荐只开「%s」（零依赖，不启用整形）。').format(m.name);
+		else if (j.tier === 'T2')
+			basis = _('设备性能充裕，推荐「%s」，整形值按实测带宽自动设置。').format(m.name);
+		else
+			basis = _('设备性能足够，推荐「%s」：多设备公平用网，视频会议更稳。').format(m.name);
+		var kids = [
+			E('p', { 'class': 'netsteer-note' }, hw + ' · ' + net),
+			E('p', { 'style': 'font-size:15px;font-weight:600;margin:.6em 0' }, (m.icon || '') + ' ' + _('推荐使用「%s」').format(m.name)),
+			E('p', { 'class': 'netsteer-note' }, basis)
+		];
+		if (j.rec_dl > 0)
+			kids.push(E('p', { 'class': 'netsteer-note' },
+				_('整形带宽将设为 下载 %d / 上传 %d Mbps（之后可在专家模式修改）')
+					.format(Math.round(j.rec_dl / 1000), Math.round(j.rec_ul / 1000))));
+		body.replaceChildren.apply(body, kids);
+		foot.querySelectorAll('button')[0].disabled = false;
+		var go = foot.querySelectorAll('button')[1];
+		go.disabled = false;
+		go.textContent = _('一键开启');
+		go.onclick = function() {
+			go.disabled = true;
+			go.textContent = _('应用中…');
+			var args = ['apply', j.rec_mode];
+			if (j.rec_dl > 0) args.push(String(j.rec_dl), String(j.rec_ul));
+			fs.exec('/usr/bin/netsteer-wizard', args).then(function() {
+				ui.hideModal();
+				ui.addNotification(null, E('p', {}, _('%s 已开启').format(m.name)), 'info');
+				window.setTimeout(function() { window.location.reload(); }, 900);
+			}).catch(function(e) {
+				ui.hideModal();
+				ui.addNotification(null, E('p', {}, _('应用失败: %s').format(String(e))), 'error');
+			});
+		};
 	},
 
 	autotuneAsk: function() {
@@ -1784,14 +2345,12 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-card-title' }, _('P2P 直通 (Fullcone 等效)')),
 				E('span', { 'class': 'netsteer-badge' + meta.cls, 'id': 'netsteer-p2p-badge' }, _(meta.label))
 			]),
-			E('p', { 'class': 'netsteer-note' }, _('给指定设备开放 UDP 全端口入站（防火墙原生 DNAT 规则）。配合系统 NAT 的端口保留特性，效果等同 Fullcone NAT——P2P 下载、网心云类设备的打洞成功率显著提升。仅放行 UDP，TCP 不受影响。')),
-			E('div', { 'class': 'netsteer-row', 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
-				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ip' }, _('设备 IP')),
-				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'min-height:32px' }),
-				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ports' }, _('端口')),
-				E('input', { 'id': 'netsteer-p2p-ports', 'type': 'text', 'value': defPorts, 'size': 12, 'style': 'min-height:32px' }),
+			E('p', { 'class': 'netsteer-note' }, _('让指定设备的下载类流量走独立通道：P2P 下载、网盘同步不拖累游戏和视频通话，连接成功率也更高。')),
+			E('div', { 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
+				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'class': 'cbi-input-text', 'style': 'flex:2;min-width:150px;min-height:32px', 'placeholder': _('设备的内网 IP，如 192.168.1.100') }),
+				E('input', { 'id': 'netsteer-p2p-ports', 'type': 'text', 'value': defPorts, 'size': 12, 'class': 'cbi-input-text', 'style': 'flex:1;min-width:110px;min-height:32px', 'placeholder': _('如 1024-65535') }),
 				E('button', {
-					'class': 'netsteer-minibtn', 'type': 'button',
+					'class': (st && st.active) ? 'ns-btn-quiet' : 'ns-btn-act', 'type': 'button',
 					'click': ui.createHandlerFn(self, 'p2pToggle', st)
 				}, (st && st.active) ? _('关闭') : _('开启'))
 			]),
@@ -1816,12 +2375,12 @@ renderSoftirqCard: function(text) {
 			/* 权威操作 = 脚本 exec (自带首装自愈); uci 记录尽力而为, 失败不阻断 */
 			chain = fs.exec('/usr/bin/netsteer-p2p', ['on', ip.trim(), m[1], m[2]])
 				.then(function() {
-					return ubusCall('uci', 'set', { config: 'netsteer', section: 'p2p', values: { enabled: '1', dest_ip: ip.trim(), port_start: m[1], port_end: m[2] } }).catch(function() {});
+					return cfgSet('p2p', { enabled: '1', dest_ip: ip.trim(), port_start: m[1], port_end: m[2] }).catch(function() {});
 				});
 		} else {
 			chain = fs.exec('/usr/bin/netsteer-p2p', ['off'])
 				.then(function() {
-					return ubusCall('uci', 'set', { config: 'netsteer', section: 'p2p', values: { enabled: '0' } }).catch(function() {});
+					return cfgSet('p2p', { enabled: '0' }).catch(function() {});
 				});
 		}
 		return chain.then(function() { return self.load(); })
@@ -1835,6 +2394,622 @@ renderSoftirqCard: function(text) {
 			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
 	},
 
+
+	/* v1.18 D14: 排除设备卡 — 运行下载/共享服务的设备退出场景识别 */
+	renderExcludeCard: function() {
+		var self = this;
+		var cur = (view._senseExclude || '').split(/[\s,]+/).filter(Boolean);
+		var listEl = E('div', { 'id': 'ns-excl-list', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0' },
+			cur.length ? cur.map(function(ip) {
+				return selectedChip(ip, function() { self.excludeSave(cur.filter(function(x) { return x !== ip; })); });
+			}) : [E('span', { 'class': 'netsteer-note' }, _('暂无'))]);
+		var inputEl = E('input', { 'type': 'text', 'placeholder': _('输入设备 IP，如 192.168.11.175'), 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px' });
+		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-exclude' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('排除设备')),
+				E('span', { 'class': 'netsteer-badge' + (cur.length ? '' : ' is-custom'), 'id': 'netsteer-exclude-badge' },
+					cur.length ? _('已排除 · %d 台').format(cur.length) : _('未排除'))
+			]),
+			E('p', { 'class': 'netsteer-note' }, _('已排除的设备不参与场景识别：下载机、共享盒子这类对外服务设备的流量不会干扰判定，识别更准。')),
+			listEl,
+			E('div', { 'style': 'display:flex;gap:8px' }, [
+				inputEl,
+				E('button', { 'class': 'ns-btn-act', 'click': function() {
+					var v = (inputEl.value || '').trim();
+					if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) {
+						ui.addNotification(null, E('p', {}, _('请输入有效的 IPv4 地址')), 'error');
+						return;
+					}
+					self.excludeSave(cur.concat([v]));
+				} }, _('添加'))
+			])
+		]);
+	},
+
+	excludeSave: function(ips) {
+		var uniq = [];
+		ips.forEach(function(ip) { if (uniq.indexOf(ip) < 0) uniq.push(ip); });
+		view._senseExclude = uniq.join(' ');
+		var self = this;
+		cfgSet('qos', { sense_exclude: view._senseExclude })
+			.then(function() {
+				/* daemon 每轮采样自动重读排除表, 无需 reload */
+				var card = document.getElementById('netsteer-exclude');
+				if (card) card.replaceWith(self.renderExcludeCard());
+				ui.addNotification(null, E('p', {}, _('已保存，下一轮识别生效')), 'info');
+			}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
+	/* ---- 不抢网设备卡 (v1.19 D22: 设备级 CS1 → cake bulk tin, 与游戏通道 D7 对称反向) ---- */
+	renderBulkCard: function(st) {
+		var self = this;
+		st = st || { devices: [], count: 0, active: 0 };
+		var n = st.count || (st.devices || []).length;
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-bulk' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('不抢网设备')),
+				E('span', { 'class': 'netsteer-badge' + (n > 0 ? '' : ' is-custom'), 'id': 'netsteer-bulk-badge' },
+					n > 0 ? _('已开启 · %d 台').format(n) : _('未开启'))
+			]),
+			E('p', { 'class': 'netsteer-note' }, _('加入后，这台设备的流量在网络繁忙时自动让路：家人看视频、远程访问文件优先，空闲时它仍可用满带宽。适合下载机、共享盒子等后台设备。')),
+			E('div', { 'id': 'ns-bulk-migrate', 'style': 'display:none;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:rgba(211,84,0,.08);border-radius:6px' }, []),
+			E('div', { 'id': 'ns-bulk-suggest', 'class': 'ns-suggest-band' }, []),
+			E('div', { 'id': 'ns-bulk-list', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0' },
+				n > 0 ? (st.devices || []).map(function(ip) {
+					return selectedChip(ip, function() { self.bulkOp(['remove', ip]); });
+				}) : [E('span', { 'class': 'netsteer-note' }, _('暂无设备'))]),
+			E('div', { 'style': 'display:flex;gap:8px' }, [
+				E('input', { 'id': 'netsteer-bulk-ip', 'type': 'text', 'placeholder': _('输入设备 IP，如 192.168.11.178'), 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px' }),
+				E('button', { 'class': 'ns-btn-act', 'click': function() {
+					var v = ((document.getElementById('netsteer-bulk-ip') || {}).value || '').trim();
+					if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v))
+						return ui.addNotification(null, E('p', {}, _('请输入有效的 IPv4 地址')), 'error');
+					self.bulkOp(['add', v]);
+				} }, _('添加'))
+			]),
+			E('p', { 'class': 'netsteer-foot' }, st.cake_up === 'besteffort'
+				? _('当前队列为不分优先级模式，标记已保存，切换到均衡/低延迟模式后生效。')
+				: _('与游戏通道互斥：同一台设备只能在其中一边。'))
+		]);
+		/* 迁移提示 + 判定建议 异步填充 (不阻塞首屏) */
+		window.setTimeout(function() { self.bulkPaintExtras(); }, 350);
+		return card;
+	},
+
+	bulkOp: function(args) {
+		var self = this;
+		return fs.exec('/usr/bin/netsteer-bulk', args).then(function(r) {
+			var out = (r && r.stdout || '').trim();
+			if (out.indexOf('ERR: game-conflict') >= 0)
+				return ui.addNotification(null, E('p', {}, _('该设备正在游戏通道中，请先在「设备加速」里关闭后再加入')), 'error');
+			if (out.indexOf('ERR') === 0)
+				return ui.addNotification(null, E('p', {}, out), 'error');
+			return self.load().then(function(values) {
+				var newSt = values[5 + IFACES.length * 2];
+				var old = document.getElementById('netsteer-bulk');
+				if (old) old.replaceWith(self.renderBulkCard(newSt));
+				ui.addNotification(null, E('p', {}, out.indexOf('OK') === 0 ? _('已保存，规则即时生效') : _('已保存')), 'info');
+			});
+		}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
+	bulkPaintExtras: function() {
+		var self = this;
+		/* ① 存量手工规则迁移提示 (nftables.d 里发现 CS1 标记 → 建议迁入统一管理) */
+		fs.exec('/usr/bin/netsteer-bulk', ['migrate']).then(function(r) {
+			var m = null;
+			try { m = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			var slot = document.getElementById('ns-bulk-migrate');
+			if (!slot || !m || !m.found || !m.found.length) return;
+			slot.style.display = 'flex';
+			slot.replaceChildren(
+				E('span', { 'class': 'netsteer-note', 'style': 'flex:1;min-width:0' },
+					_('检测到手工限速规则 (%s)，迁入统一管理后可随插件升级自动维护。').format(m.found.join('、'))),
+				E('button', { 'class': 'ns-btn-act', 'click': function() {
+					fs.exec('/usr/bin/netsteer-bulk', ['migrate', '--apply']).then(function() {
+						return self.load();
+					}).then(function(values) {
+						var old = document.getElementById('netsteer-bulk');
+						if (old) old.replaceWith(self.renderBulkCard(values[5 + IFACES.length * 2]));
+						ui.addNotification(null, E('p', {}, _('已迁入。原手工规则文件未删除，确认生效后可手动移除。')), 'info');
+					});
+				} }, _('一键迁入'))
+			);
+		}).catch(function() {});
+		/* ② 判定建议: 持续吃上行的设备 (qos suggest 采样聚合) */
+		fs.exec('/usr/bin/netsteer-qos', ['suggest']).then(function(r) {
+			var list = null;
+			try { list = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			var slot = document.getElementById('ns-bulk-suggest');
+			if (!slot || !list || !list.length) return;
+			slot.style.display = 'flex';
+			var chips = list.slice(0, 3).map(function(s) {
+				return suggestChip('%s（上行 %s MB / %d 连接）'.format(s.ip, (s.up_mb || 0).toFixed(0), s.conns || 0),
+					function() { self.bulkOp(['add', s.ip]); });
+			});
+			slot.replaceChildren(
+				E('span', { 'class': 'netsteer-note ns-band-label' }, _('发现疑似后台占用：')),
+				E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0' }, chips)
+			);
+		}).catch(function() {});
+	},
+
+	/* ---- 游戏设备优先通道卡 (设备级 DSCP cs4 → cake diffserv4 video tin) ---- */
+	renderSceneCard: function() {
+		/* 智能模式页: 智能场景识别 — 大字场景 + 一句依据 + 平台标签 (不堆明细, 不显示置信度) */
+		var self = this;
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-scene' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('智能场景识别')),
+				E('span', { 'class': 'netsteer-badge is-tag', 'style': 'font-weight:600' }, _('AI 智能识别'))
+			]),
+			E('div', { 'id': 'ns-sense-body', 'style': 'margin-bottom:10px' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))]),
+			E('p', { 'class': 'netsteer-foot', 'id': 'ns-sense-link-note', 'style': 'margin:.2em 0' },
+				_('检测到看视频 / 打游戏时，自动切换到更合适的模式，闲时恢复均衡；您手动选的档位始终优先。')),
+			E('div', { 'id': 'ns-sense-evwrap', 'class': 'ns-suggest-band' }, [
+				E('span', { 'class': 'netsteer-note ns-band-label' }, _('识别到：')),
+				E('div', { 'id': 'ns-sense-chips', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0' }, [])
+			]),
+			E('div', { 'style': 'display:flex;gap:8px;align-items:center;margin-top:10px' }, [
+				E('span', { 'id': 'ns-feed-status', 'class': 'netsteer-note', 'style': 'margin:0' }, '')
+			])
+		]);
+		window.setTimeout(function() { self.paintFeedStatus(); }, 300);
+		return card;
+	},
+
+	renderDeviceCard: function(st) {
+		/* 智能模式页: 设备加速 — 一句话说明 + 标准化操作行 + 延迟曲线 */
+		var self = this;
+		var meta = gameStatusMeta(st);
+		var defIp = (st && st.device && st.device !== '-') ? st.device : '';
+		self._gameDevice = (st && st.device) || '-';
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-game' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('设备加速')),
+				E('span', { 'class': 'netsteer-badge' + meta.cls, 'id': 'netsteer-game-badge' }, _(meta.label))
+			]),
+			E('p', { 'class': 'netsteer-note' }, _('让选定的设备（如游戏主机）在网络繁忙时仍然低延迟——家里有人下载、看视频也不卡。下方实时延迟曲线可验证效果。')),
+			E('div', { 'id': 'ns-game-suggest', 'class': 'ns-suggest-band' }, []),
+			E('div', { 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
+				E('input', { 'id': 'netsteer-game-ip', 'type': 'text', 'value': defIp, 'size': 14, 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px;min-height:32px', 'placeholder': _('设备的内网 IP，如 192.168.1.100') }),
+				E('button', {
+					'id': 'netsteer-game-toggle',
+					'class': (st && st.enabled) ? 'ns-btn-quiet' : 'ns-btn-act', 'type': 'button',
+					'click': ui.createHandlerFn(self, 'gameToggle', st)
+				}, (st && st.enabled) ? _('关闭加速') : _('开启加速'))
+			]),
+			E('div', { 'id': 'ns-game-live' }, [
+				E('p', { 'class': 'netsteer-note', 'style': 'margin:.5em 0 .2em' }, E('strong', {}, _('实时出口延迟（每 8 秒采样）'))),
+				E('div', { 'id': 'ns-game-spark' }, [E('p', { 'class': 'netsteer-note' }, _('等待采样…'))]),
+				E('p', { 'class': 'netsteer-note', 'id': 'ns-game-lat', 'style': 'margin:.2em 0' }, '')
+			]),
+			E('p', { 'class': 'netsteer-foot' }, _('需智能模式开启；仅对 IPv4 流量生效。'))
+		]);
+		window.setTimeout(function() { self.gameDetectSuggest(); }, 400);
+		return card;
+	},
+
+	renderTinsCard: function(st) {
+		/* 专家调教: 整形分桶细节 (真实 tc 计数, 术语只许出现在这一页) */
+		var st2 = st || {};
+		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-tins' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('整形分桶 (cake tc 实时计数)')),
+				E('span', { 'class': 'netsteer-note', 'id': 'ns-cakeinfo' },
+					st2.cake_up ? _('上行 %s · 下行 %s').format(st2.cake_up, st2.cake_down || '-') : _('等待采样…'))
+			]),
+			E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0 .4em' }, _('设备加速开启后，对应设备流量进入 Video 桶，可在此表看到 Video 行出现与包计数增长 — 加速效果可用数据自证。')),
+			E('div', { 'id': 'ns-tins' }, [E('p', { 'class': 'netsteer-note' }, _('分桶数据等待采样…'))])
+		]);
+	},
+
+	gameDnsEnToggle: function(btn, ev) {
+		/* dnsmasq 查询日志开关 (仅 dnsmasq_off/dnsmasq 观测面出现; 重启 dnsmasq ~1s) */
+		var self = this;
+		return fs.exec('/usr/bin/netsteer-qos', ['dns-en', btn])
+			.then(function() { return self.load(); })
+			.then(function(values) {
+				var newSt = values[4 + IFACES.length * 2];
+				var old = document.getElementById('netsteer-game');
+				if (old) old.replaceWith(self.renderGameCard(newSt));
+				ui.addNotification(null, E('p', {}, btn === 'on' ? _('DNS 查询日志已开启') : _('DNS 查询日志已关闭')), 'info');
+			})
+			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
+	gameToggle: function(st, ev) {
+		var self = this;
+		var turningOn = !(st && st.enabled);
+		var chain;
+		if (turningOn) {
+			var ip = ((document.getElementById('netsteer-game-ip') || {}).value || '').trim();
+			if (!p2pValidIp(ip))
+				return ui.showModal(_('IP 无效'), [E('p', { 'class': 'netsteer-note' }, _('请输入游戏主机的 RFC1918 内网地址，例如 192.168.1.100')), E('div', { 'class': 'right' }, [E('button', { 'class': 'btn cbi-button-neutral', 'click': ui.hideModal.bind(ui) }, _('知道了'))])]);
+			chain = fs.exec('/usr/bin/netsteer-qos', ['on', ip])
+				.then(function() {
+					return cfgSet('qos', { enabled: '1', device: ip }).catch(function() {});
+				});
+		} else {
+			chain = fs.exec('/usr/bin/netsteer-qos', ['off'])
+				.then(function() {
+					return cfgSet('qos', { enabled: '0' }).catch(function() {});
+				});
+		}
+		return chain.then(function() { return self.load(); })
+			.then(function(values) {
+				var newSt = values[4 + IFACES.length * 2];
+				var old = document.getElementById('netsteer-game');
+				if (old) old.replaceWith(this.renderDeviceCard(newSt));
+				self._gameTinPrev = null;   /* 分桶计数基线随开关重置 */
+				ui.addNotification(null, E('p', {}, turningOn ? _('设备加速已开启（切换时网络会瞬断 1-2 秒）') : _('设备加速已关闭，整形已恢复')), 'info');
+			}.bind(this))
+			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
+	gameDetectSuggest: function() {
+		/* DHCP 主机名启发式 → 疑似游戏设备 chips (点击回填 IP 输入框); 60s 节流 */
+		var self = this;
+		var el = document.getElementById('ns-game-suggest');
+		if (!el) return;
+		var now = Date.now();
+		if (self._gameSuggestTs && now - self._gameSuggestTs < 60000) return;
+		self._gameSuggestTs = now;
+		fs.exec('/usr/bin/netsteer-qos', ['detect']).then(function(r) {
+			var el2 = document.getElementById('ns-game-suggest');
+			if (!el2) return;
+			var list = [];
+			try { list = JSON.parse(((r && r.stdout) || '').trim()) || []; } catch (e) {}
+			if (!list.length) return;
+			var kids = list.slice(0, 4).map(function(d) {
+				return suggestChip('%s · %s'.format(d.name, d.ip), function() {
+					var ip = document.getElementById('netsteer-game-ip');
+					if (ip) ip.value = d.ip;
+				});
+			});
+			el2.className = 'ns-suggest-band';
+			el2.style.display = 'flex';
+			el2.replaceChildren(
+				E('span', { 'class': 'netsteer-note ns-band-label' }, _('疑似游戏设备：')),
+				E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0' }, kids)
+			);
+		}).catch(function() {});
+	},
+
+	loadGameDomains: function() {
+		/* 五个数据文件加载一次并缓存: 域名表 + L2 IP 段表 + 端口表 + 流媒体域名 + 下载端口 (场景感知 D11/D12) */
+		var self = this;
+		if (self._domainMapP) return self._domainMapP;
+		self._domainMapP = Promise.all([
+			fs.read('/usr/share/netsteer/gamedomains.txt').catch(function() { return ''; }),
+			fs.read('/usr/share/netsteer/gameips.txt').catch(function() { return ''; }),
+			fs.read('/usr/share/netsteer/gameports.txt').catch(function() { return ''; }),
+			fs.read('/usr/share/netsteer/streamdomains.txt').catch(function() { return ''; }),
+			fs.read('/usr/share/netsteer/downloadports.txt').catch(function() { return ''; })
+		]).then(function(txts) {
+			self._domainMap = buildDomainMap(txts[0] || '');
+			self._ipmap = buildIpMap(txts[1] || '');
+			self._pmap = buildPortMap(txts[2] || '');
+			self._streamMap = buildDomainMap(txts[3] || '');
+			self._dlportMap = buildPortMap(txts[4] || '');
+			/* 数据集版本 (feed 更新后刷新页面即生效, D11) */
+			self._dataVersion = null;
+			fs.read('/usr/share/netsteer/manifest.tsv').then(function(t) {
+				var m = / v=([^ ]+) /.exec(String(t).split('\n')[0] || '');
+				if (m) self._dataVersion = m[1];
+			}).catch(function() {});
+			return self._domainMap;
+		});
+		return self._domainMapP;
+	},
+
+	pollSense: function(recs) {
+		/* 场景感知 v1.18: 优先读后端 daemon 判定 (/tmp/netsteer/sense.json, 页面关闭时判定不中断);
+		   缺失/过期回退本地判定 (dnslog 采样 + senseClassify + 本地防抖) */
+		var self = this;
+		fs.read('/tmp/netsteer/sense.json').then(function(txt) {
+			var j = null;
+			try { j = JSON.parse(txt); } catch (e) {}
+			var age = j && j.ts ? Math.floor(Date.now() / 1000) - j.ts : Infinity;
+			if (j && j.verdict && age <= ((j.interval || 30) * 3 + 10)) {
+				/* 后端已防抖: 直接信任 scene 稳定档, 不做本地二次防抖 (避免双重 4 窗拖慢切档) */
+				self._senseState = { scene: j.scene || 'normal', since: j.ts };
+				self.paintSense(verdictToRes(j.verdict));
+				return;
+			}
+			self.localSense(recs);
+		}).catch(function() { self.localSense(recs); });
+	},
+
+	localSense: function(recs) {
+		/* 回退路径: 本地采样判定 (后端 daemon 不可用时) — 同样应用设备排除 (D14) */
+		var self = this;
+		var skip = {};
+		String(self._senseExclude || '').split(/[\s,]+/).forEach(function(ip) { if (ip) skip[ip] = 1; });
+		recs = recs.filter(function(r) { return !(r.c in skip); });
+		self.loadGameDomains().then(function() {
+			var res = senseClassify(recs, {
+				game: self._domainMap, gameips: self._ipmap, gameports: self._pmap,
+				stream: self._streamMap, dlports: self._dlportMap
+			});
+			self._senseState = senseDebounce(self._senseState, res.scene, Math.floor(Date.now() / 1000));
+			self.paintSense(res);
+		}).catch(function(e) {
+			try { console.error('netsteer-sense:', e); } catch (e2) {}
+			var el = document.getElementById('ns-sense-body');
+			if (el) el.replaceChildren(E('p', { 'class': 'netsteer-note' }, _('场景感知异常: ') + e));
+		});
+	},
+
+	paintSense: function(res) {
+		/* 双渲染目标: 智能页场景卡 (#ns-sense-body + #ns-sense-chips) 与 总览四格 tile (#ns-scene-tile-value) */
+		var st = this._senseState || { scene: 'normal', since: Math.floor(Date.now() / 1000) };
+		var pending = res && res.scene !== st.scene;   /* 防抖中 */
+		var shown = pending ? res : st;                 /* 防抖期: tile 先显示新场景 + 确认中 */
+		var meta = SENSE_SCENE_META[shown.scene] || SENSE_SCENE_META.normal;
+
+		/* --- 总览四格 tile --- */
+		var tileVal = document.getElementById('ns-scene-tile-value');
+		if (tileVal) {
+			tileVal.replaceChildren(nsIcon(meta.icon, 20), ' ' + meta.name);
+			tileVal.className = 'vt-dcard-value vt-tn' + (meta.cls ? ' ' + meta.cls : '');
+		}
+		var tileSub = document.getElementById('ns-scene-tile-sub');
+		if (tileSub) tileSub.textContent = pending ? _('识别中…') : _('AI 智能识别');
+
+		/* --- 智能页场景卡主体: 一句白话依据 --- */
+		var el = document.getElementById('ns-sense-body');
+		if (!el) return;
+		var kids = [];
+		var headline = E('div', { 'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, [
+			E('span', { 'class': 'netsteer-badge is-icontag' + (meta.cls ? ' ' + meta.cls : ''), 'style': 'font-size:16px;font-weight:600' }, [nsIcon(meta.icon, 17), ' ' + meta.name])
+		]);
+		if (pending)
+			headline.appendChild(E('span', { 'class': 'netsteer-note' }, _('检测到%s流量，确认中…').format(meta.name)));
+		kids.push(headline);
+
+		/* 平台标签 chips (每场景一枚, 只显示平台名不带完整域名 — 域名是内部细节) */
+		var chipsEl = document.getElementById('ns-sense-chips');
+		var chips = [];
+		if (res && res.evidence) {
+			['gaming', 'work', 'streaming', 'download'].forEach(function(s) {
+				var e = res.evidence[s] || [];
+				if (e.length) {
+					var m2 = SENSE_SCENE_META[s] || {};
+					/* 只显示中文场景名 + 命中处数; 平台/协议是内部细节不上 UI */
+					chips.push(E('span', { 'class': 'netsteer-badge is-icontag', 'style': 'margin:2px' },
+						[nsIcon(m2.icon || 'web', 14), ' ' + (m2.name || s) + (e.length > 1 ? ' · ' + e.length + _(' 处') : '')]));
+				}
+			});
+		}
+		if (chipsEl) chipsEl.replaceChildren.apply(chipsEl, chips.length ? chips : [E('span', { 'class': 'netsteer-note' }, _('暂无已知平台流量'))]);
+		var evwrapEl = document.getElementById('ns-sense-evwrap');
+		if (evwrapEl) evwrapEl.style.display = 'flex';
+
+		/* 依据句: 仅在需要时补一句 (chips 已表意时不重复) */
+		var whyTxt = '';
+		if (shown.scene === 'normal')
+			whyTxt = _('当前没有明显的游戏 / 视频 / 下载流量');
+		else if (!chips.length && res && res.evidence && res.evidence[shown.scene] && res.evidence[shown.scene][0])
+			whyTxt = _('检测到%s流量').format(res.evidence[shown.scene][0].cat || (SENSE_SCENE_META[shown.scene] || {}).name || '');
+		if (whyTxt) kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.25em 0 0' }, whyTxt));
+		el.replaceChildren(E('div', {}, kids));
+	},
+
+	feedCheck: function(ev) {
+		/* 数据源: 检查更新 → 有更新则确认后应用 (D11) */
+		var self = this;
+		var btn = document.getElementById('ns-feed-btn');
+		if (btn) btn.disabled = true;
+		fs.exec('/usr/bin/netsteer-feed', ['check']).then(function(r) {
+			var out = null;
+			try { out = JSON.parse((r.stdout || '').trim()); } catch (e) {}
+			btn.disabled = false;
+			if (!out || out.error) {
+				alert(_('数据源不可达: %s').format(out && out.detail || 'network'));
+				return;
+			}
+			if (!out.update_available) {
+				alert(_('数据集已是最新 (%s)。').format(out.remote_version || '-'));
+				self.paintFeedStatus();
+				return;
+			}
+			var names = (out.changed || []).map(function(c) { return c.file; }).join(', ');
+			if (!confirm(_('发现数据集更新: %s\n\n远端版本 %s → 本地 %s\n更新文件: %s\n\n应用更新? (sha256 校验, 失败自动保留现状)').format('', out.remote_version, out.installed_version, names)))
+				return;
+			fs.exec('/usr/bin/netsteer-feed', ['update']).then(function(r2) {
+				var u = null;
+				try { u = JSON.parse((r2.stdout || '').trim()); } catch (e) {}
+				alert(u && u.count > 0
+					? _('已更新 %d 个数据文件 → 版本 %s%s').format(u.count, u.version || '-', u.failed ? _('\n部分失败: ') + u.failed : '')
+					: (u && u.failed ? _('更新失败: %s (已保留现有数据集)').format(u.failed) : _('无变更'))); 
+				/* 数据热生效: 清缓存重载 + 状态行刷新 */
+				self._domainMapP = null; self.loadGameDomains();
+				self.paintFeedStatus();
+			});
+		}).catch(function() { btn.disabled = false; alert(_('检查失败: 无法执行 netsteer-feed')); });
+	},
+
+	paintFeedStatus: function() {
+		var el = document.getElementById('ns-feed-status');
+		if (!el) return;
+		var self = this;
+		fs.exec('/usr/bin/netsteer-feed', ['status']).then(function(r) {
+			var s = null;
+			try { s = JSON.parse((r.stdout || '').trim()); } catch (e) {}
+			var raw = (s && s.installed_version) || self._dataVersion || '';
+			/* 2026.11.08-24bdaf → 2026-11-08 (只给用户看日期, 哈希是内部细节) */
+			var mv = raw.match(/^(\d{4})\.(\d{2})\.(\d{2})/);
+			var v = mv ? _('识别库已更新至 %s-%s-%s').format(mv[1], mv[2], mv[3]) : (raw ? _('识别库 v%s').format(raw) : _('识别库：随包版本'));
+			var integ = s && s.integrity;
+			el.replaceChildren(
+				E('span', { 'class': 'netsteer-note' }, _('%s%s').format(v, integ === false ? _(' (本地有改动)') : '')),
+				E('button', {
+					'class': 'ns-btn-act', 'id': 'ns-feed-btn',
+					'style': 'margin-left:8px',
+					'click': L.bind(self.feedCheck, self)
+				}, _('更新识别库'))
+			);
+		}).catch(function() {
+			el.replaceChildren(E('span', { 'class': 'netsteer-note' }, _('识别库：随包版本')));
+		});
+	},
+
+	paintGameDns: function(sum) {
+		var el = document.getElementById('ns-game-dns-body');
+		if (!el || !sum) return;
+		if (!sum.total) {
+			el.replaceChildren(E('p', { 'class': 'netsteer-note' }, _('暂无该设备的活跃连接记录（快照只含活跃连接；设备空闲或走加密 DNS 时不显示——这是观测边界，不影响加速通道本身）。')));
+			return;
+		}
+		var cats = Object.keys(sum.platforms).sort(function(a, b) { return sum.platforms[b] - sum.platforms[a]; });
+		/* 信息层级: 总连接数/命中数 → 命中 badge → 最近连接明细 (命中带标签, 未命中灰显"未命中" — 避免误读为全部命中) */
+		var chips = [E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('该设备 %d 个连接 · 识别到 %d 个已知平台：').format(sum.total, sum.hit))];
+		if (!cats.length) chips.push(E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('暂未识别到已知平台')));
+		cats.forEach(function(c) {
+			chips.push(E('span', { 'class': 'netsteer-badge is-tag', 'style': 'margin:2px' }, '%s ×%d'.format(c, sum.platforms[c])));
+		});
+		var kids = [E('div', { 'style': 'display:flex;gap:4px;flex-wrap:wrap;align-items:center' }, chips)];
+		var srcTag = { name: _('域名'), ip: _('IP 段'), port: _('端口') };
+		sum.last.slice(-3).reverse().forEach(function(r) {
+			var hit = !!r.cat;
+			kids.push(E('p', { 'class': 'netsteer-note', 'style': 'margin:.1em 0;font-size:12px' + (hit ? '' : ';opacity:.55') },
+				(hit ? '[%s] '.format(r.cat) : '') + r.q +
+				(hit ? (r.src && srcTag[r.src] ? ' · ' + srcTag[r.src] : '') : '')));
+		});
+		el.replaceChildren(E('div', {}, kids));
+	},
+
+	gameSparkSvg: function(series) {
+		/* 延迟序列 → SVG polyline (滚动 5 分钟窗, 时间比例 x 轴) */
+		if (!series || series.length < 2) return null;
+		var W = 300, H = 64, win = 300000, now = Date.now();
+		var pts = series.filter(function(p) { return now - p.t <= win; });
+		if (pts.length < 2) return null;
+		var vmax = Math.max(50, Math.max.apply(null, pts.map(function(p) { return p.v; })) * 1.15);
+		var t0 = pts[0].t, t1 = pts[pts.length - 1].t, span = Math.max(t1 - t0, 1);
+		var d = pts.map(function(p, i) {
+			var x = (p.t - t0) / span * W;
+			var y = H - (p.v / vmax) * (H - 6) - 2;
+			return x.toFixed(1) + ',' + y.toFixed(1);
+		}).join(' ');
+		var svg = svgEl('svg', { 'viewBox': '0 0 ' + W + ' ' + H, 'preserveAspectRatio': 'none' });
+		svg.setAttribute('style', 'width:100%;height:64px');
+		svg.appendChild(svgEl('polyline', { 'points': d, 'fill': 'none', 'stroke': 'var(--accent,#c8f031)', 'stroke-width': '2' }));
+		return svg;
+	},
+
+	pollGame: function() {
+		var self = this;
+		Promise.all([
+			fs.exec('/usr/bin/netsteer-qos', ['tins']).catch(function() { return null; }),
+			fs.exec('/usr/bin/netsteer-qos', ['probe']).catch(function() { return null; }),
+			fs.exec('/usr/bin/netsteer-qos', ['dnslog', '200']).catch(function() { return null; })
+		]).then(function(res) {
+			var pr = null;
+			try { pr = JSON.parse(((res[1] && res[1].stdout) || '').trim()); } catch (e) {}
+			if (pr && pr.latency_ms != null) {
+				if (!self._gameLat) self._gameLat = [];
+				seriesPush(self._gameLat, { t: Date.now(), v: pr.latency_ms }, 300000, 150);
+			}
+			var txt = (res[0] && res[0].stdout) || '';
+			var parts = txt.split('#DOWN');
+			var up = parseTinStats((parts[0] || '').replace(/^#UP[^\n]*\n/, ''));
+			var dn = parseTinStats((parts[1] || '').replace(/^[^\n]*\n/, ''));
+			self.paintGame(up, dn, pr);
+			var recs = [];
+			try { recs = JSON.parse(((res[2] && res[2].stdout) || '').trim()) || []; } catch (e) {}
+			self.loadGameDomains().then(function(map) {
+				self.paintGameDns(dnsSummary(recs, map, self._gameDevice, self._ipmap, self._pmap));
+			});
+			/* 场景感知 (D12): 同一份采样喂判定引擎 (全设备视角, 不按游戏设备过滤) */
+			self.pollSense(recs);
+			if (!self._feedPainted) { self._feedPainted = true; self.paintFeedStatus(); }
+		});
+	},
+
+	gameTinRows: function(up, dn, prev, ts) {
+		/* 双向分桶解析结果 → 表格行数据 [{tin, upRate, dnRate, upPkts, dnPkts, drops}] (纯计算) */
+		var rows = [];
+		var names = [];
+		['bulk', 'best_effort', 'video', 'voice'].forEach(function(n) {
+			if ((up && up.tins && up.tins[n]) || (dn && dn.tins && dn.tins[n])) names.push(n);
+		});
+		var dt = prev && prev.ts ? Math.max(ts - prev.ts, 1) : 0;
+		names.forEach(function(n) {
+			var u = up && up.tins ? up.tins[n] : null;
+			var d = dn && dn.tins ? dn.tins[n] : null;
+			var pu = u ? parseInt(u.pkts, 10) || 0 : 0;
+			var pd = d ? parseInt(d.pkts, 10) || 0 : 0;
+			var bu = u ? parseInt(u.bytes, 10) || 0 : 0;
+			var bd = d ? parseInt(d.bytes, 10) || 0 : 0;
+			var upRate = dt && prev.tins && prev.tins.up && prev.tins.up[n]
+				? Math.max(bu - (prev.tins.up[n].bytes || 0), 0) * 8 / dt : null;
+			var dnRate = dt && prev.tins && prev.tins.dn && prev.tins.dn[n]
+				? Math.max(bd - (prev.tins.dn[n].bytes || 0), 0) * 8 / dt : null;
+			var upPkts = dt && prev.tins && prev.tins.up && prev.tins.up[n]
+				? Math.max(pu - (prev.tins.up[n].pkts || 0), 0) : null;
+			var dnPkts = dt && prev.tins && prev.tins.dn && prev.tins.dn[n]
+				? Math.max(pd - (prev.tins.dn[n].pkts || 0), 0) : null;
+			rows.push({
+				tin: n,
+				upRate: upRate, dnRate: dnRate,
+				upPkts: upPkts, dnPkts: dnPkts,
+				upPktsTot: pu, dnPktsTot: pd,
+				drops: (u ? parseInt(u.drops, 10) || 0 : 0) + (d ? parseInt(d.drops, 10) || 0 : 0)
+			});
+		});
+		return rows;
+	},
+
+	paintGame: function(up, dn, pr) {
+		var self = this;
+		var ts = Date.now();
+		var infoEl = document.getElementById('ns-cakeinfo');
+		if (infoEl && up) {
+			infoEl.textContent = _('整形实况：上行 %s %s · 下行 %s %s').format(
+				up.mode || '-', up.bandwidth || '', dn ? dn.mode || '-' : '-', dn ? dn.bandwidth || '' : '');
+		}
+		var sparkEl = document.getElementById('ns-game-spark');
+		if (sparkEl) {
+			var svg = self.gameSparkSvg(self._gameLat);
+			if (svg) sparkEl.replaceChildren(svg);
+		}
+		var latEl = document.getElementById('ns-game-lat');
+		if (latEl && self._gameLat && self._gameLat.length) {
+			var arr = self._gameLat, last = arr[arr.length - 1].v;
+			var sum = 0, mx = 0;
+			arr.forEach(function(p) { sum += p.v; mx = Math.max(mx, p.v); });
+			var tg = (pr && pr.target) ? ' · ' + _('经 %s').format(pr.target) : '';
+			latEl.textContent = _('最近 %s ms · 均值 %s ms · 峰值 %s ms（%d 个采样）%s').format(
+				last.toFixed(1), (sum / arr.length).toFixed(1), mx.toFixed(1), arr.length, tg);
+		}
+		var tinsEl = document.getElementById('ns-tins');
+		if (tinsEl) {
+			var prev = self._gameTinPrev || null;
+			var rows = self.gameTinRows(up, dn, prev, ts);
+			self._gameTinPrev = { ts: ts, tins: { up: up && up.tins, dn: dn && dn.tins } };
+			var namesZh = { bulk: 'Bulk 后台', best_effort: 'Best Effort 默认', video: 'Video 优先（游戏设备）', voice: 'Voice 最高' };
+			if (rows.length) {
+				var trs = rows.map(function(r) {
+					return E('tr', {}, [
+						E('td', {}, _(namesZh[r.tin] || r.tin)),
+						E('td', {}, r.upRate != null ? fmtBps(r.upRate) : '—'),
+						E('td', {}, r.dnRate != null ? fmtBps(r.dnRate) : '—'),
+						E('td', {}, r.upPkts != null ? fmtCount(r.upPkts) + ' 包/采样' : fmtCount(r.upPktsTot) + ' 累计'),
+						E('td', {}, r.dnPkts != null ? fmtCount(r.dnPkts) + ' 包/采样' : fmtCount(r.dnPktsTot) + ' 累计')
+					]);
+				});
+				var table = E('table', { 'class': 'netsteer-game-tins table', 'style': 'width:100%;font-size:12px;border-collapse:collapse;margin:.3em 0' }, [
+					E('tr', {}, [_('分桶'), _('上行速率'), _('下行速率'), _('上行包'), _('下行包')].map(function(h) {
+						return E('th', { 'style': 'text-align:left;padding:.25em .5em;border-bottom:1px solid var(--line-2,#c1c7ce)' }, h);
+					}))
+				].concat(trs));
+				tinsEl.replaceChildren(table);
+			}
+		}
+	},
+
 	/* 问号浮窗: 原理与用法 */
 	toggleHelp: function(ev) {
 		var old = document.getElementById('netsteer-help-pop');
@@ -1843,7 +3018,7 @@ renderSoftirqCard: function(text) {
 			E('strong', {}, _('它解决什么问题')),
 			E('p', { 'class': 'netsteer-note' }, _('路由器每个数据包都要 CPU 处理。系统默认压在单个核心——高速下载、多设备并发时单核打满，表现为网速上不去、网页卡顿、延迟波动。')),
 			E('strong', {}, _('它做什么')),
-			E('p', { 'class': 'netsteer-note' }, _('基于内核 RPS / RFS / XPS 机制，把网络负载分摊到全部 %d 个核心：吞吐更高，高峰期更流畅。'.format(NCPU))),
+			E('p', { 'class': 'netsteer-note' }, _('基于内核 RPS / RFS / XPS 机制，把网络负载分摊到全部 %d 个核心：吞吐更高，高峰期更流畅。').format(NCPU)),
 			E('strong', {}, _('怎么用')),
 			E('p', { 'class': 'netsteer-note' }, _('选一个方案立即生效；断电重启自动恢复；随时可切回系统默认。逐核点选可自定义。'))
 		]);
@@ -1878,7 +3053,7 @@ renderSoftirqCard: function(text) {
 		var css = E('style', { 'type': 'text/css' }, [
 			/* 卡片 (首页 Overview 同款: s1 面 + line 描边 + r 圆角 + 极浅阴影) */
 			'.netsteer-card{background:var(--s1,#f8f9fa);border:1px solid var(--line,#d6dade);border-radius:var(--r,6px);padding:var(--sp-4,16px);box-shadow:0 1px 2px rgba(0,0,0,.05)}',
-			'.netsteer-card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2,8px);margin-bottom:var(--sp-3,12px)}',
+			'.netsteer-card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2,8px);margin-bottom:var(--sp-3,12px);flex-wrap:wrap}',
 			'.netsteer-card-title{font-size:var(--fs-md,14px);font-weight:600;color:var(--text,#14171a)}',
 			'.netsteer-note{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);font-weight:400}',
 			'.netsteer-foot{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);margin-top:var(--sp-2,8px)}',
@@ -1892,10 +3067,12 @@ renderSoftirqCard: function(text) {
 			'.netsteer-help-pop p{margin:.1em 0}',
 
 			/* 徽标 (accent-soft 底, 不再大色块) */
-			'.netsteer-badge{display:inline-flex;align-items:center;gap:.4em;padding:.22em .85em;border-radius:999px;border:1px solid var(--accent,#c8f031);background:var(--accent-soft,rgba(122,163,0,.13));color:var(--text,#14171a);font-size:var(--fs-sm,12px);font-weight:600}',
+			'.netsteer-badge{display:inline-flex;align-items:center;gap:.4em;padding:.22em .85em;border-radius:999px;border:1px solid var(--accent,#c8f031);background:var(--accent-soft,rgba(122,163,0,.13));color:var(--text,#14171a);font-size:var(--fs-sm,12px);font-weight:600;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}',
 			'.netsteer-badge.is-custom{border-color:var(--line-2,#c1c7ce);background:var(--s3,#eef0f3);color:var(--text-2,#4a515a)}',
+			'.netsteer-badge.is-warn{border-color:#d8a531;background:rgba(216,165,49,.13);color:#8a6a10}',
 			'.netsteer-badge::before{content:"";width:.5em;height:.5em;border-radius:50%;background:var(--accent,#c8f031)}',
 			'.netsteer-badge.is-custom::before{background:var(--text-3,#5f666f)}',
+			'.netsteer-badge.is-warn::before{background:#d8a531}',
 
 			/* 状态条 */
 			'.netsteer-statusbar{display:flex;align-items:center;gap:var(--sp-3,12px);margin-bottom:var(--sp-3,12px);flex-wrap:wrap}',
@@ -1915,7 +3092,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:var(--sp-3,12px);margin:.6em 0 1.2em 0}',
 			'.netsteer-row{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2,8px);margin:.5em 0}',
 			'.netsteer-rowlabel{display:flex;flex-direction:column;gap:.15em;font-size:var(--fs-sm,12px);color:var(--text-2,#4a515a)}',
-			'.netsteer-mask{font-style:normal;font-family:var(--mono,ui-monospace,monospace);font-size:.92em;color:var(--text-3,#5f666f)}',
+			'.netsteer-mask{font-style:normal;font-family:var(--mono,ui-monospace,monospace);font-size:var(--fs-sm,12px);color:var(--text-3,#5f666f)}',
 			'.netsteer-chips{display:flex;flex-wrap:wrap;gap:.3em}',
 			'.netsteer-chip{min-width:2.3em;padding:.28em .5em;border-radius:999px;border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-3,#5f666f);cursor:pointer;font-size:var(--fs-sm,12px);font-family:var(--mono,ui-monospace,monospace);transition:all .15s}',
 			'.netsteer-chip:hover{border-color:var(--accent,#c8f031)}',
@@ -1923,9 +3100,19 @@ renderSoftirqCard: function(text) {
 
 			/* 软中断分布 (Memory 卡同款) */
 			'.netsteer-softirq{margin:.6em 0}',
-			'.netsteer-minibtn{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a);border-radius:var(--r-sm,4px);padding:.2em .7em;font-size:var(--fs-sm,12px);cursor:pointer}',
-			'.netsteer-minibtn:hover{border-color:var(--accent,#c8f031);color:var(--text-2,#4a515a)}',
+			'.netsteer-minibtn{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a)!important;border-radius:var(--r-sm,4px);padding:.2em .7em;font-size:var(--fs-sm,12px);cursor:pointer}',
+			'.ns-btn-act{border:1px solid var(--ok,#0b7f6c);background:var(--s2,#fff);color:var(--ok,#0b7f6c)!important;border-radius:var(--r-sm,4px);padding:.35em 1em;font-size:var(--fs-sm,12px);font-weight:600;cursor:pointer;transition:all .15s}',
+			'.ns-suggest-band{display:none;gap:8px;align-items:flex-start;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:var(--accent-soft,rgba(122,163,0,.08));border-radius:var(--r-sm,6px)}',
+			'.ns-band-label{font-weight:600;white-space:nowrap;margin-top:2px}',
+			'.ns-chip-glyph{margin-left:.55em;opacity:.55;font-weight:400}',
+			'.netsteer-badge.is-icontag::before{display:none}',
+			'.netsteer-badge.is-tag{border-color:var(--line-2,#c1c7ce);background:var(--s3,#eef0f3);color:var(--text-2,#4a515a)}',
+			'.netsteer-badge.is-tag::before{display:none}',
+			'.ns-btn-quiet{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a)!important;border-radius:var(--r-sm,4px);padding:.35em 1em;font-size:var(--fs-sm,12px);font-weight:600;cursor:pointer;transition:all .15s}',
+			'.ns-btn-act:hover{background:var(--ok,#0b7f6c)!important;color:#fff!important}',
+			'.netsteer-minibtn:hover{border-color:var(--accent,#c8f031);color:var(--text-2,#4a515a)!important}',
 			'.netsteer-conc{display:flex;align-items:baseline;gap:.7em;margin:.2em 0 .8em 0}',
+			'.netsteer-root .vt-health{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))!important}',
 			'.netsteer-big{font-size:26px;font-weight:700;font-family:var(--mono,ui-monospace,monospace);color:var(--text,#14171a);line-height:1}',
 			'.netsteer-big.is-ok{color:var(--ok,#0b7f6c)}',
 			'.netsteer-big.is-bad{color:var(--warn,#9a5b00)}',
@@ -1968,6 +3155,9 @@ renderSoftirqCard: function(text) {
 			'.netsteer-root .ns-toggle.on{background:var(--vt-accent,#c8f031)!important;border-color:var(--vt-accent-line,var(--vt-accent,#c8f031))!important}',
 			'.netsteer-root .ns-toggle-knob{position:absolute!important;top:3px!important;left:3px!important;width:24px!important;height:24px!important;border-radius:50%!important;background:var(--vt-surface,#fff)!important;box-shadow:0 1px 4px rgba(0,0,0,.25);transition:left .22s;display:block!important}',
 			'.netsteer-root .ns-toggle.on .ns-toggle-knob{left:29px!important}',
+			/* 滑动开关: 禁用态 (总开关关闭时的子开关) — 灰化 + 不可点 */
+			'.netsteer-root .ns-toggle:disabled{opacity:.45!important;cursor:not-allowed!important}',
+			'.netsteer-root .ns-toggle:focus-visible{outline:2px solid var(--vt-accent,#c8f031);outline-offset:2px!important}',
 			'.ns-master-info{min-width:0;flex:1}',
 			'.ns-master-desc{font-size:12.5px;color:var(--vt-text-3,var(--text-3,#5f666f));margin:0 0 4px}',
 			'.ns-master-gain{font-size:13px;font-weight:600;color:var(--vt-text,var(--text,#14171a));margin:0}',
@@ -2004,8 +3194,7 @@ renderSoftirqCard: function(text) {
 			'.ns-sw{width:14px;height:3px;border-radius:2px;flex:none}',
 			'.ns-sw-tx{background-image:linear-gradient(90deg,currentColor 55%,transparent 55%);background-size:5px 3px}','.ns-traffic-foot{margin:6px 0 0}',
 			'.ns-grid{stroke:var(--vt-line,#d6dade);stroke-width:1;stroke-dasharray:3 6;opacity:.55}',
-			'.ns-axis-y{font-size:11px;fill:var(--vt-text-3,#5f666f);font-family:var(--vt-mono,monospace);text-anchor:end}',
-			'.ns-axis-x{font-size:10.5px;fill:var(--vt-text-3,#5f666f);opacity:.8}',
+			'.ns-axis-row{display:flex;justify-content:space-between;margin:-4px 2px 0;font-size:10.5px;color:var(--vt-text-3,#5f666f);opacity:.8;font-family:var(--vt-mono,monospace)}',
 			'.vt-tile-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}',
 			'.vt-tile-title{font-size:var(--vt-fs-md,14px);font-weight:640}',
 
@@ -2015,12 +3204,15 @@ renderSoftirqCard: function(text) {
 			'.netsteer-tab:hover{color:var(--text,#14171a)}',
 			'.netsteer-tab.on{color:var(--text,#14171a);border-bottom-color:var(--vt-accent-line,var(--vt-accent,#c8f031))}',
 			'.netsteer-tabpanel{padding-top:6px}',
+			'#netsteer-panel-smart>.netsteer-card+.netsteer-card,#netsteer-panel-pro>.netsteer-card+.netsteer-card{margin-top:16px}',
 
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
 			'@media (max-width: 640px){',
 			'.netsteer-root{padding-bottom:96px}',
 			'.netsteer-statusbar{flex-direction:column;align-items:flex-start;gap:6px}',
 			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
+			'.netsteer-minibtn,.ns-btn-act,.ns-btn-quiet{min-height:36px!important;padding:.45em 1em}',
+			'.netsteer-badge{max-width:calc(100% - 2em)}',
 			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',
 			'.netsteer-sq-row{grid-template-columns:6.2em 1fr 3.8em;gap:8px}',
 			'.netsteer-lede{font-size:13px;line-height:1.55}',
@@ -2033,11 +3225,11 @@ renderSoftirqCard: function(text) {
 		/* Tab 面板内容 */
 		var panelSteer = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-pro' }, [
 			E('p', { 'class': 'netsteer-lede' }, [
-				E('span', {}, _('把网络负载摊到全部 %d 个核心，多设备高速下载时不掉速、不卡顿。'.format(NCPU))),
+				E('span', {}, _('把网络负载摊到全部 %d 个核心，多设备高速下载时不掉速、不卡顿。').format(NCPU)),
 				E('button', { 'class': 'netsteer-help', 'type': 'button', 'title': _('了解原理与用法'), 'click': ui.createHandlerFn(this, 'toggleHelp') }, '?')
 			]),
 			E('div', { 'class': 'netsteer-card netsteer-statusbar' }, [
-				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前：%s'.format(curLabel))),
+				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前：%s').format(curLabel)),
 				E('button', {
 					'class': 'netsteer-minibtn',
 					'type': 'button',
@@ -2062,7 +3254,9 @@ renderSoftirqCard: function(text) {
 			})),
 			E('div', { 'style': 'height:12px' }),
 			this.renderSoftirqCard(values[1 + IFACES.length * 2] || ''),
-			E('div', { 'id': 'netsteer-irq-card-slot' }, [ this.renderIrqCard('') ])
+			E('div', { 'id': 'netsteer-irq-card-slot' }, [ this.renderIrqCard('') ]),
+			this.renderAuditCard(),
+			this.renderTinsCard(values[4 + IFACES.length * 2])
 		]);
 				/* IRQ 列表异步填入 (不阻塞首屏) */
 		var self2 = this;
@@ -2073,7 +3267,6 @@ renderSoftirqCard: function(text) {
 /* 主题 token + 总览面板 (wires/health/traffic) */
 		this.loadVtCss();
 		var panelOverview = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-overview' }, [
-			this.renderMaster(),
 			this.renderWires(),
 			E('div', { 'id': 'ns-health-slot' }, [ this.renderHealth(null) ]),
 			this.renderTraffic()
@@ -2087,8 +3280,12 @@ renderSoftirqCard: function(text) {
 			if (slot) slot.replaceChildren(selfOv.renderHealth(a));
 		});
 		var panelSmart = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-smart' }, [
-			this.renderP2PCard(values[3 + IFACES.length * 2]),
-			this.renderAuditCard()
+			this.renderMaster(),
+			this.renderSceneCard(),
+			this.renderDeviceCard(values[4 + IFACES.length * 2]),
+			this.renderBulkCard(values[5 + IFACES.length * 2]),
+			this.renderExcludeCard(),
+			this.renderP2PCard(values[3 + IFACES.length * 2])
 		]);
 		var PANELS = { overview: panelOverview, smart: panelSmart, pro: panelSteer };
 
@@ -2118,7 +3315,10 @@ renderSoftirqCard: function(text) {
 			menu,
 			panelOverview,
 			panelSmart,
-			panelSteer
+			panelSteer,
+			/* 版本脚: 一眼可辨当前安装版本 (build 注入; dev=未打包的开发直推版) */
+			E('div', { 'class': 'netsteer-foot', 'id': 'ns-version-foot' },
+				_('NetSteer v%s').format(NS_VERSION || 'dev'))
 		]);
 		/* 总览 5s 轮询 (可见时) + visibility 节流 */
 		var pollFn = function() {
@@ -2127,14 +3327,26 @@ renderSoftirqCard: function(text) {
 		};
 		window.setInterval(pollFn, 5000);
 		window.setTimeout(pollFn, 300);
+		/* 实时数据 8s 轮询: 延迟曲线(智能优先) + 分桶表(专家) + 场景横幅(总览) 共用一次采样 */
+		var pollGameFn = function() {
+			var anyVisible = Array.prototype.some.call(
+				document.querySelectorAll('.netsteer-tabpanel'),
+				function(el) { return el.style.display !== 'none'; });
+			if (anyVisible && !document.hidden)
+				self.pollGame();
+		};
+		window.setInterval(pollGameFn, 8000);
+		window.setTimeout(pollGameFn, 1200);
 		menu.addEventListener('click', function(ev) {
 			var b = ev.target.closest ? ev.target.closest('.netsteer-tab') : null;
 			if (!b) return;
 			var tid = b.getAttribute('data-tab');
 		});
 
-		/* 首次使用: 自动询问智能测速 */
-		if (!meta.autotuneDone)
+		/* 首次使用: v1.18 向导优先 (分级+校准+推荐模式); 老升级用户走原测速询问 */
+		if (!meta.wizardDone && !meta.autotuneDone)
+			window.setTimeout(function() { self.wizardInit(); }, 600);
+		else if (!meta.autotuneDone)
 			window.setTimeout(function() { self.autotuneAsk(); }, 800);
 
 		return root;

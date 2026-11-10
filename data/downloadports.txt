@@ -1,0 +1,8 @@
+# netsteer: bulk-download well-known ports (category TAB lo-hi/proto)
+# source: protocol specifications — BitTorrent BEP-3 (6881-6889), eMule protocol docs (4662/4672)
+# usage: scene sensing (download scene evidence) — NOT a QoS enforcement list
+# caveat: P2P clients can use arbitrary ports; port hit = strong evidence, miss ≠ absence
+bt	6881-6889/tcp
+bt	6881-6889/udp
+emule	4662/tcp
+emule	4672/udp

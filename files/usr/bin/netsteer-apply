@@ -1,10 +1,90 @@
 #!/bin/sh
 # netsteer-apply: 按 /etc/config/netsteer 应用 RPS/RFS/XPS/IRQ 亲和 (幂等)
 # 运行后写 /tmp/netsteer/state.json 供 LuCI 页面读取 IRQ 现值
+#
+# 用法: netsteer-apply [apply|clear|preset <name>|auto]
+#   apply (缺省)   按 uci 现值应用 (幂等, init/hotplug/tune/前端均用此模式)
+#   clear          分核清零 (rps=0 xps=0, IRQ 不动) = 「系统默认」预设; off 模式用
+#   preset <name>  先写回 uci 再应用 (uci 仍是唯一真相, 避免 netsteer-check 判漂移反复摆震)
+#                  name: all / balanced (=全核, 同义) / off (=清零)
+#   auto           同 preset all (首装探测默认)
 . /lib/functions.sh
 
 LOG_TAG=netsteer
 log() { logger -t $LOG_TAG "$@"; echo "$@"; }
+
+MODE="${1:-apply}"
+PRESET=""
+case "$MODE" in
+	apply|clear) ;;
+	preset) PRESET="${2:-}" ;;
+	auto) PRESET='all' ;;
+	*)
+		echo "Usage: netsteer-apply [apply|clear|preset {all|balanced|off}|auto]" >&2
+		exit 1
+		;;
+esac
+case "${MODE}:${PRESET}" in
+	preset:all|preset:balanced|preset:off|apply:*) ;;
+	preset:*) echo "ERROR: unknown preset '$PRESET' (all|balanced|off)" >&2; exit 1 ;;
+esac
+
+NCPU=$(grep -c ^processor /proc/cpuinfo 2>/dev/null)
+[ "$NCPU" -ge 1 ] 2>/dev/null || NCPU=1
+FULL=$(printf '%x' $(( (1 << NCPU) - 1 )))
+
+_sections() { uci -q show netsteer 2>/dev/null | sed -n 's/^netsteer\.\([^.=]*\)=interface$/\1/p'; }
+_sec_for_dev() { # 已有节的 iface == $1 → 回节名; 否则回设备名转写
+	local want="$1" s
+	for s in $(_sections); do
+		[ "$(uci -q get "netsteer.$s.iface")" = "$want" ] && { echo "$s"; return; }
+	done
+	echo "$want" | tr '-' '_'
+}
+_ensure_sec() { # 节不存在则建; 不覆盖已有选项
+	uci -q get "netsteer.$1" >/dev/null 2>&1 || uci -q set "netsteer.$1=interface"
+	uci -q set "netsteer.$1.iface='$2'"
+	[ -n "$(uci -q get "netsteer.$1.rfs_flow_cnt" 2>/dev/null)" ] || uci -q set "netsteer.$1.rfs_flow_cnt='4096'"
+}
+preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-check 判漂移摆震)
+	local d n sec s vsec i=0 k changed=0
+	case "$PRESET" in
+		off)
+			for s in $(_sections); do
+				uci -q set "netsteer.$s.rps_cpus=0"
+				uci -q set "netsteer.$s.xps_cpus=0"
+				log "preset=off $s rps/xps=0 (IRQ 不动)"
+				changed=1
+			done
+			;;
+		all|balanced)
+			# 物理口: 全核 RPS/XPS + IRQ 逐口错开 (与 netsteer-detect 同规则)
+			for d in /sys/class/net/*; do
+				[ -d "$d/device" ] || continue
+				n=${d##*/}
+				sec=$(_sec_for_dev "$n")
+				k=$(( NCPU - 1 - i ))
+				[ "$k" -lt 0 ] && k=$(( i % NCPU ))
+				_ensure_sec "$sec" "$n"
+				uci -q set "netsteer.$sec.rps_cpus='$FULL'"
+				uci -q set "netsteer.$sec.xps_cpus='$FULL'"
+				uci -q set "netsteer.$sec.irq_cpus='$(printf '%x' $(( 1 << k )))'"
+				i=$(( i + 1 )); changed=1
+				log "preset=$PRESET $sec($n) rps/xps=$FULL irq_cpu=$k"
+			done
+			# 虚拟口 (pppoe 等): 只给全核 RPS, 无硬件中断可摆
+			for s in $(_sections); do
+				vsec=$(uci -q get "netsteer.$s.iface" 2>/dev/null)
+				[ -n "$vsec" ] && [ -d "/sys/class/net/$vsec" ] && [ ! -d "/sys/class/net/$vsec/device" ] || continue
+				uci -q set "netsteer.$s.rps_cpus='$FULL'"
+				log "preset=$PRESET $s($vsec) rps=$FULL (虚拟口, IRQ 不动)"
+				changed=1
+			done
+			;;
+	esac
+	[ "$changed" = "1" ] && uci -q commit netsteer
+	return 0
+}
 
 STATE_DIR=/tmp/netsteer
 STATE_FILE=$STATE_DIR/state.json
@@ -15,9 +95,11 @@ echo "{" > "$STATE_TMP"
 : > "$STATE_TXT"
 
 config_load netsteer
+[ -n "$PRESET" ] && { preset_to_uci; config_load netsteer; }   # 重载: 后续 apply 读新值
 
 config_get enabled state enabled 1
-[ "$enabled" = "1" ] || { log "disabled in uci, skip"; exit 0; }
+# clear 模式不受 enabled 开关限制 (否则 off 模式在禁用态下静默不生效)
+[ "$enabled" = "1" ] || [ "$MODE" = "clear" ] || { log "disabled in uci, skip"; exit 0; }
 
 # 全局 RFS
 config_get entries global rfs_sock_flow_entries 32768
@@ -42,6 +124,10 @@ apply_iface() {
 	config_get xps "$cfg" xps_cpus 0
 	config_get flow "$cfg" rfs_flow_cnt 4096
 	config_get irq "$cfg" irq_cpus ""
+	# clear 模式: 分核清零 (= 「系统默认」预设), IRQ 不动
+	if [ "$MODE" = "clear" ]; then
+		rps=0; xps=0; irq=""
+	fi
 
 	for q in /sys/class/net/$iface/queues/rx-*; do
 		[ -d "$q" ] || continue

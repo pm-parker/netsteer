@@ -1,0 +1,102 @@
+#!/bin/sh
+# netsteer-tune: v1.18 D20 参数自适应 — 按设备档位写内核/守护参数
+# 用法:
+#   netsteer-tune <tier>   T0|T1|T2 → 应用该档参数并持久化
+#   netsteer-tune show     输出当前各参数 JSON
+# 公式依据 (docs/05 容量审计):
+#   - nf_conntrack_max: OpenWrt 小内存设备默认仅 4k-16k, BT/PT 重度家庭易打满 = 断网级故障。
+#     每条 conntrack 内核占用 ~320B, 按 512 条/MB 预算 (≈164B/条 保守) 自适应:
+#     64MB→32768, 128MB→65536, 256MB→131072, ≥512MB→262144 顶格
+#   - buckets = max/4 (内核推荐 max ≈ bucket*4)
+#   - rfs_sock_flow_entries: T0 16384 (省内存) / T1 32768 / T2 65536
+#   - sense_interval (判定守护轮询): T0 60s (省 CPU) / T1 30s / T2 20s
+# 持久化: /etc/sysctl.d/10-netsteer.conf (sysctl init 开机重放)
+
+SYSCTL_CONF="/etc/sysctl.d/10-netsteer.conf"
+
+clampi() { # clampi <v> <lo> <hi>
+	case "$1" in ''|*[!0-9]*) echo "$2"; return ;; esac
+	[ "$1" -lt "$2" ] && { echo "$2"; return; }
+	[ "$1" -gt "$3" ] && { echo "$3"; return; }
+	echo "$1"
+}
+
+mem_mb() {
+	awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null
+}
+
+ncpu() {
+	grep -c '^processor' /proc/cpuinfo 2>/dev/null
+}
+
+# tier_params <tier> → 输出 "max buckets rfs interval"
+tier_params() {
+	local tier="$1" mem ncpu max rfs iv
+	mem=$(mem_mb); ncpu=$(ncpu)
+	case "$tier" in
+		T0) rfs=16384; iv=60 ;;
+		T2) rfs=65536; iv=20 ;;
+		*)  rfs=32768; iv=30 ;;
+	esac
+	max=$(clampi "$((mem * 512))" 16384 262144)
+	echo "$max $((max / 4)) $rfs $iv"
+}
+
+apply_tier() {
+	local tier="$1"
+	case "$tier" in T0|T1|T2) ;; *) echo "bad tier" >&2; exit 1 ;; esac
+	local p max buckets rfs iv
+	p=$(tier_params "$tier")
+	set -- $p
+	max="$1"; buckets="$2"; rfs="$3"; iv="$4"
+
+	# 1. conntrack_max + buckets (运行时 + 持久化)
+	if [ -d /proc/sys/net/netfilter ]; then
+		sysctl -w net.netfilter.nf_conntrack_max="$max" >/dev/null 2>&1
+		[ -r /proc/sys/net/netfilter/nf_conntrack_buckets ] && \
+			sysctl -w net.netfilter.nf_conntrack_buckets="$buckets" >/dev/null 2>&1   # buckets 只读的内核会忽略
+		mkdir -p /etc/sysctl.d
+		printf 'net.netfilter.nf_conntrack_max=%d\nnet.netfilter.nf_conntrack_buckets=%d\n' "$max" "$buckets" > "$SYSCTL_CONF"
+	fi
+
+	# 2. rfs + interval (uci)
+	uci -q set netsteer.global='global' 2>/dev/null
+	uci -q set netsteer.global.rfs_sock_flow_entries="$rfs"
+	uci -q set netsteer.qos='qos' 2>/dev/null
+	uci -q set netsteer.qos.sense_interval="$iv"
+	uci -q set netsteer.qos.tier="$tier"
+	uci -q commit netsteer
+
+	# 3. 重载 RFS (netsteer-apply 是现成入口) + daemon 换间隔 (kill 后等退干净再拉起, 否则幂等 restart 会跳过)
+	/usr/bin/netsteer-apply >/dev/null 2>&1
+	if [ -f /tmp/netsteer/sense.pid ]; then
+		pid=$(cat /tmp/netsteer/sense.pid)
+		kill "$pid" 2>/dev/null
+		n=0
+		while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 15 ]; do
+			sleep 0.2; n=$((n + 1))
+		done
+		kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+		rm -f /tmp/netsteer/sense.pid
+	fi
+	/etc/init.d/netsteer restart >/dev/null 2>&1
+
+	logger -t netsteer-tune "tier=$tier max=$max buckets=$buckets rfs=$rfs interval=${iv}s"
+	echo "{\"tier\":\"$tier\",\"ct_max\":$max,\"ct_buckets\":$buckets,\"rfs\":$rfs,\"interval\":$iv}"
+}
+
+show() {
+	local max buckets rfs iv tier
+	max=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)
+	buckets=$(cat /proc/sys/net/netfilter/nf_conntrack_buckets 2>/dev/null)
+	rfs=$(uci -q get netsteer.global.rfs_sock_flow_entries)
+	iv=$(uci -q get netsteer.qos.sense_interval)
+	tier=$(uci -q get netsteer.qos.tier)
+	echo "{\"tier\":\"${tier:-unset}\",\"ct_max\":${max:-0},\"ct_buckets\":${buckets:-0},\"rfs\":${rfs:-0},\"interval\":${iv:-30}}"
+}
+
+case "$1" in
+	show) show ;;
+	T0|T1|T2) apply_tier "$1" ;;
+	*) echo "Usage: netsteer-tune {T0|T1|T2|show}" >&2; exit 1 ;;
+esac

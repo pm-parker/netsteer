@@ -6,6 +6,12 @@ set -euo pipefail
 
 VERSION="${1:-1.6.0}"
 ARCH="${2:-aarch64_generic}"
+# 防御: 版本串只允许安全字符 (会被插入 sed 表达式与包名; 斜杠等会导致 sed 分隔符提前终止)
+case "$VERSION" in
+  *[!0-9a-zA-Z._-]*)
+    echo "ERROR: invalid version '$VERSION' — allowed chars: [0-9a-zA-Z._-]" >&2
+    exit 1 ;;
+esac
 NAME="luci-app-netsteer"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
@@ -30,6 +36,11 @@ MKPKG="$APKTOOL/sbin/apk.static"
 # 2. assemble package root from files/
 PKGROOT="$WORK/PKGROOT"
 cp -r "$HERE/files/." "$PKGROOT"
+# 注入发布版本到页脚 (源内默认 'dev'; NS_VERSION 缺失则跳过 — 单测另有断言)
+sed -i "s/var NS_VERSION = '[^']*';/var NS_VERSION = '$VERSION';/" \
+  "$PKGROOT/www/luci-static/resources/view/netsteer.js"
+grep -q "var NS_VERSION = '$VERSION';" "$PKGROOT/www/luci-static/resources/view/netsteer.js" \
+  || { echo "FATAL: NS_VERSION inject failed" >&2; exit 1; }
 chmod 755 "$PKGROOT"/usr/bin/netsteer-* "$PKGROOT"/etc/init.d/netsteer 2>/dev/null
 find "$PKGROOT" -name '*.js' -o -name '*.json' | xargs chmod 644
 
@@ -65,6 +76,21 @@ find "$WORK/check" -type f | sort | sed 's/^/   /'
 # sanity: js must be present and non-empty
 JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
 [ -s "$JS" ] || { echo "ERROR: package is missing netsteer.js — build is broken"; exit 1; }
-[ "$(md5sum < "$JS" | cut -d' ' -f1)" = "$(md5sum < "$HERE/files/www/luci-static/resources/view/netsteer.js" | cut -d' ' -f1)" ] \
-  || { echo "ERROR: packaged js differs from source"; exit 1; }
+# 版本注入是唯一的预期差异: 把包内 NS_VERSION 还原为 'dev' 后应与源文件逐字节相同
+grep -q "var NS_VERSION = '$VERSION';" "$JS" \
+  || { echo "ERROR: packaged js missing NS_VERSION=$VERSION (version inject failed)"; exit 1; }
+[ "$(sed "s/var NS_VERSION = '$VERSION';/var NS_VERSION = 'dev';/" "$JS" | md5sum | cut -d' ' -f1)" = "$(md5sum < "$HERE/files/www/luci-static/resources/view/netsteer.js" | cut -d' ' -f1)" ] \
+  || { echo "ERROR: packaged js differs from source (beyond version inject)"; exit 1; }
+GD="$WORK/check/usr/share/netsteer/gamedomains.txt"
+[ -s "$GD" ] || { echo "ERROR: package is missing gamedomains.txt (L1 DNS 分类数据集)"; exit 1; }
+GI="$WORK/check/usr/share/netsteer/gameips.txt"
+[ -s "$GI" ] || { echo "ERROR: package is missing gameips.txt (L2 IP 段数据集)"; exit 1; }
+SD="$WORK/check/usr/share/netsteer/streamdomains.txt"
+[ -s "$SD" ] || { echo "ERROR: package is missing streamdomains.txt (流媒体场景数据集)"; exit 1; }
+DP="$WORK/check/usr/share/netsteer/downloadports.txt"
+[ -s "$DP" ] || { echo "ERROR: package is missing downloadports.txt (下载场景端口数据集)"; exit 1; }
+MF="$WORK/check/usr/share/netsteer/manifest.tsv"
+[ -s "$MF" ] || { echo "ERROR: package is missing manifest.tsv (数据集清单, feed 基线)"; exit 1; }
+GP="$WORK/check/usr/share/netsteer/gameports.txt"
+[ -s "$GP" ] || { echo "ERROR: package is missing gameports.txt (L2 端口数据集)"; exit 1; }
 echo ">> OK"

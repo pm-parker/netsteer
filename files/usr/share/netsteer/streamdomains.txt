@@ -1,0 +1,63 @@
+# NetSteer 流媒体平台域名数据集 (streaming scene evidence)
+# 来源: 各平台官方公开 CDN 域名 (官方文档/播放器网络面板), 策划 2026-11-08
+# 格式: <类别>\t<域名后缀>; 匹配=host 等于后缀或以其结尾 (与 gamedomains.txt 同法)
+# 用途: 场景感知 (streaming 场景证据), 不做 QoS enforcement
+
+# netflix
+netflix	netflix.com
+netflix	nflxvideo.net
+netflix	nflximg.net
+netflix	nflxext.com
+# youtube
+youtube	youtube.com
+youtube	googlevideo.com
+youtube	ytimg.com
+youtube	youtu.be
+# twitch (amazon)
+twitch	twitch.tv
+twitch	ttvnw.net
+twitch	twitchcdn.net
+# disney+
+disney	disneyplus.com
+disney	dssott.com
+# hbo max
+hbo	max.com
+hbo	hbomaxcdn.com
+# prime video
+prime	primevideo.com
+# bilibili
+bilibili	bilibili.com
+bilibili	bilivideo.com
+bilibili	bilivideocdn.com
+bilibili	acgvideo.com
+bilibili	hdslb.com
+bilibili	biliapi.net
+# iqiyi
+iqiyi	iqiyi.com
+iqiyi	iq.com
+iqiyi	iqiyipic.com
+iqiyi	qy.net
+# youku (alibaba)
+youku	youku.com
+youku	ykimg.com
+# tencent video
+qqvideo	v.qq.com
+qqvideo	video.qq.com
+qqvideo	tencentvideo.site
+# douyin
+douyin	douyin.com
+douyin	douyinvod.com
+douyin	douyinpic.com
+douyin	iesdouyin.com
+# kuaishou
+kuaishou	kuaishou.com
+kuaishou	ksapisrv.com
+kuaishou	kwimgs.com
+# mgtv / sohu / letv
+mgtv	mgtv.com
+sohu	tv.sohu.com
+sohu	data.vod.itc.cn
+letv	letv.com
+letv	letvimg.com
+# hunan/aipai etc.
+pptv	pptv.com

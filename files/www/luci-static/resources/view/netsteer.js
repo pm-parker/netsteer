@@ -558,12 +558,46 @@ function senseDebounce(state, scene, nowSec) {
 }
 
 var SENSE_SCENE_META = {
-	gaming:    { icon: '◈', name: _('游戏'), cls: 'ns-scene-game' },
-	work:      { icon: '☂', name: _('视频会议'), cls: 'ns-scene-work' },
-	streaming: { icon: '▶', name: _('视频'), cls: 'ns-scene-stream' },
-	download:  { icon: '⇩', name: _('下载'), cls: 'ns-scene-dl' },
-	normal:    { icon: '·', name: _('普通浏览'), cls: '' }
+	gaming:    { icon: 'game', name: _('游戏'), cls: 'ns-scene-game' },
+	work:      { icon: 'work', name: _('视频会议'), cls: 'ns-scene-work' },
+	streaming: { icon: 'stream', name: _('视频'), cls: 'ns-scene-stream' },
+	download:  { icon: 'download', name: _('下载'), cls: 'ns-scene-dl' },
+	normal:    { icon: 'web', name: _('普通浏览'), cls: '' }
 };
+
+/* 场景图标: 手绘 24x24 线性 SVG (描边 2, currentColor 跟随文字色/深浅主题), 零外部依赖可商用 */
+var NS_ICONS = {
+	game: [['rect', { x: 2.5, y: 7.5, width: 19, height: 11, rx: 5 }],
+		['line', { x1: 6.5, y1: 11.5, x2: 10.5, y2: 11.5 }],
+		['line', { x1: 8.5, y1: 9.5, x2: 8.5, y2: 13.5 }],
+		['circle', { cx: 15.6, cy: 10.6, r: 1 }],
+		['circle', { cx: 18, cy: 13.4, r: 1 }]],
+	work: [['rect', { x: 2.5, y: 6.5, width: 13, height: 11, rx: 2.5 }],
+		['path', { d: 'M15.5 10.5 21.5 7v10l-6-3.5z' }]],
+	stream: [['circle', { cx: 12, cy: 12, r: 9.25 }],
+		['path', { d: 'M10 8.4 16 12l-6 3.6z', fill: 'currentColor', stroke: 'none' }]],
+	download: [['path', { d: 'M12 4.5v10.5' }],
+		['path', { d: 'm7.5 10.5 4.5 4.5 4.5-4.5' }],
+		['path', { d: 'M5 19.5h14' }]],
+	web: [['circle', { cx: 12, cy: 12, r: 9.25 }],
+		['path', { d: 'M2.75 12h18.5' }],
+		['path', { d: 'M12 2.75c3.8 3.6 3.8 14.9 0 18.5-3.8-3.6-3.8-14.9 0-18.5z' }]]
+};
+/* SVG 命名空间构造器 — LuCI 的 E() 创建的是 HTMLUnknownElement 不渲染, 全部 SVG 走这里 */
+function svgEl(tag, attrs) {
+	var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+	for (var k in (attrs || {})) el.setAttribute(k, attrs[k]);
+	return el;
+}
+function nsIcon(name, size) {
+	var parts = NS_ICONS[name] || NS_ICONS.web;
+	var kids = parts.map(function(p) { return svgEl(p[0], p[1]); });
+	var svg = svgEl('svg', { viewBox: '0 0 24 24', width: size || 16, height: size || 16, fill: 'none',
+		stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+	svg.setAttribute('style', 'vertical-align:-3px;flex:none');
+	kids.forEach(function(k) { svg.appendChild(k); });
+	return svg;
+}
 
 function gameStatusMeta(st) {
 	/* st = netsteer-qos status 的 JSON → 徽标五态 (诚实降级: 标记在但整形不在 = 降级) */
@@ -1410,7 +1444,7 @@ return view.extend({
 		/* 四格首格 = 当前场景 (AI 识别; paintSense 实时刷新 #ns-scene-tile-value) */
 		var sst = this._senseState || { scene: 'normal' };
 		var smeta = SENSE_SCENE_META[sst.scene] || SENSE_SCENE_META.normal;
-		var sceneValEl = E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-scene-tile-value' }, smeta.icon + ' ' + smeta.name);
+		var sceneValEl = E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-scene-tile-value' }, [nsIcon(smeta.icon, 20), ' ' + smeta.name]);
 		var sceneSubEl = E('span', { 'class': 'vt-dcard-sub', 'id': 'ns-scene-tile-sub' }, _('AI 智能识别'));
 		return E('div', { 'class': 'vt-health ns-health' }, [
 			E('div', { 'class': 'vt-dcard ns-hc ns-good' }, [
@@ -2693,7 +2727,7 @@ renderSoftirqCard: function(text) {
 		/* --- 总览四格 tile --- */
 		var tileVal = document.getElementById('ns-scene-tile-value');
 		if (tileVal) {
-			tileVal.textContent = pending ? (meta.icon + ' ' + meta.name) : (meta.icon + ' ' + meta.name);
+			tileVal.replaceChildren(nsIcon(meta.icon, 20), ' ' + meta.name);
 			tileVal.className = 'vt-dcard-value vt-tn' + (meta.cls ? ' ' + meta.cls : '');
 		}
 		var tileSub = document.getElementById('ns-scene-tile-sub');
@@ -2704,7 +2738,7 @@ renderSoftirqCard: function(text) {
 		if (!el) return;
 		var kids = [];
 		var headline = E('div', { 'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, [
-			E('span', { 'class': 'netsteer-badge is-icontag' + (meta.cls ? ' ' + meta.cls : ''), 'style': 'font-size:16px;font-weight:600' }, meta.icon + ' ' + meta.name)
+			E('span', { 'class': 'netsteer-badge is-icontag' + (meta.cls ? ' ' + meta.cls : ''), 'style': 'font-size:16px;font-weight:600' }, [nsIcon(meta.icon, 17), ' ' + meta.name])
 		]);
 		if (pending)
 			headline.appendChild(E('span', { 'class': 'netsteer-note' }, _('检测到%s流量，确认中…').format(meta.name)));
@@ -2720,7 +2754,7 @@ renderSoftirqCard: function(text) {
 					var m2 = SENSE_SCENE_META[s] || {};
 					/* 只显示中文场景名 + 命中处数; 平台/协议是内部细节不上 UI */
 					chips.push(E('span', { 'class': 'netsteer-badge is-icontag', 'style': 'margin:2px' },
-						(m2.icon || '') + ' ' + (m2.name || s) + (e.length > 1 ? ' · ' + e.length + _(' 处') : '')));
+						[nsIcon(m2.icon || 'web', 14), ' ' + (m2.name || s) + (e.length > 1 ? ' · ' + e.length + _(' 处') : '')]));
 				}
 			});
 		}
@@ -2835,9 +2869,10 @@ renderSoftirqCard: function(text) {
 			var y = H - (p.v / vmax) * (H - 6) - 2;
 			return x.toFixed(1) + ',' + y.toFixed(1);
 		}).join(' ');
-		return E('svg', { 'viewBox': '0 0 ' + W + ' ' + H, 'style': 'width:100%;height:64px', 'preserveAspectRatio': 'none' }, [
-			E('polyline', { 'points': d, 'fill': 'none', 'stroke': 'var(--accent,#c8f031)', 'stroke-width': '2' })
-		]);
+		var svg = svgEl('svg', { 'viewBox': '0 0 ' + W + ' ' + H, 'preserveAspectRatio': 'none' });
+		svg.setAttribute('style', 'width:100%;height:64px');
+		svg.appendChild(svgEl('polyline', { 'points': d, 'fill': 'none', 'stroke': 'var(--accent,#c8f031)', 'stroke-width': '2' }));
+		return svg;
 	},
 
 	pollGame: function() {

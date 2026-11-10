@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 # 生成 netsteer 官网单文件 HTML (图片 base64 内嵌)
-import base64, os
+import base64
+import os
 
-IM = "/home/abc/.hermes/workspace/netsteer/docs/images"
+# 图片目录锚定仓库位置, 不再依赖开发机的绝对路径
+IM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "images")
 def b64(f):
-    return "data:image/png;base64," + base64.b64encode(open(os.path.join(IM,f),'rb').read()).decode()
+    path = os.path.join(IM, f)
+    try:
+        with open(path, "rb") as fp:
+            return "data:image/png;base64," + base64.b64encode(fp.read()).decode()
+    except OSError as e:
+        raise SystemExit(f"ERROR: cannot read image {path}: {e}") from e
 
 ab_bench = b64("netsteer-ab-benchmark.png")
 overview = b64("screenshot-overview.png")
@@ -390,9 +397,14 @@ apk add --allow-untrusted /tmp/luci-app-netsteer-1.12.4-aarch64_generic.apk
     const dark = t ? t==='dark'
       : window.matchMedia('(prefers-color-scheme: dark)').matches;
     const ic=document.getElementById('themeIcon');
-    ic.innerHTML = dark
-      ? '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>'
-      : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+    // 图标切换: DOM API 构建, 不经 innerHTML
+    const NS = 'http://www.w3.org/2000/svg';
+    const mk = (tag, attrs) => { const el = document.createElementNS(NS, tag); for (const k in attrs) el.setAttribute(k, attrs[k]); return el; };
+    const moon = mk('path', { d: 'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z' });
+    const sun = mk('g', {});
+    sun.appendChild(mk('circle', { cx: 12, cy: 12, r: 4 }));
+    for (const d of ['M12 2v2', 'M12 20v2', 'M4.9 4.9l1.4 1.4', 'M17.7 17.7l1.4 1.4', 'M2 12h2', 'M20 12h2', 'M4.9 19.1l1.4-1.4', 'M17.7 6.3l1.4-1.4']) sun.appendChild(mk('path', { d }));
+    ic.replaceChildren(dark ? moon : sun);
   }
   let saved=null; try{ saved=localStorage.getItem('ns-theme'); }catch(e){}
   applyTheme(saved);
@@ -465,6 +477,10 @@ apk add --allow-untrusted /tmp/luci-app-netsteer-1.12.4-aarch64_generic.apk
 """
 
 html = html.replace("__AB_BENCH__", ab_bench).replace("__OVERVIEW__", overview)
-out = "/home/abc/.hermes/workspace/netsteer-site.html"
-open(out, "w").write(html)
+out = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "netsteer-site.html"))
+try:
+    with open(out, "w", encoding="utf-8") as fp:
+        fp.write(html)
+except OSError as e:
+    raise SystemExit(f"ERROR: cannot write {out}: {e}") from e
 print(out, os.path.getsize(out)//1024, "KB")

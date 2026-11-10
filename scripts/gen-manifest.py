@@ -16,7 +16,7 @@ import json
 import os
 import shutil
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'files', 'usr', 'share', 'netsteer')
@@ -32,9 +32,12 @@ DATA_FILES = [
 
 def sha256(path):
     h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(65536), b''):
-            h.update(chunk)
+    try:
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+    except OSError as e:
+        raise OSError(f'cannot hash {path}: {e}') from e
     return h.hexdigest()
 
 
@@ -44,23 +47,31 @@ def main():
         out = sys.argv[sys.argv.index('--out') + 1]
     if not out:
         out = os.path.join(ROOT, 'data')
-    os.makedirs(out, exist_ok=True)
+    try:
+        os.makedirs(out, exist_ok=True)
+    except OSError as e:
+        print(f'ERROR: cannot create {out}: {e}', file=sys.stderr)
+        return 1
 
     files = {}
     for name in DATA_FILES:
         src = os.path.join(SRC, name)
         if not os.path.exists(src):
-            print('MISSING: %s' % src, file=sys.stderr)
+            print(f'MISSING: {src}', file=sys.stderr)
             return 1
-        shutil.copyfile(src, os.path.join(out, name))
-        files[name] = {'sha256': sha256(src), 'size': os.path.getsize(src)}
+        try:
+            shutil.copyfile(src, os.path.join(out, name))
+            files[name] = {'sha256': sha256(src), 'size': os.path.getsize(src)}
+        except OSError as e:
+            print(f'ERROR: cannot process {src}: {e}', file=sys.stderr)
+            return 1
 
     # 版本 = 日期 + 内容指纹前 6 位 (内容变则版本变, 便于用户侧比对)
     digest = hashlib.sha256(
-        ''.join('%s:%s' % (k, files[k]['sha256']) for k in sorted(files)).encode()
+        ''.join(f'{k}:{files[k]["sha256"]}' for k in sorted(files)).encode()
     ).hexdigest()[:6]
     now = datetime.now(timezone(timedelta(hours=8)))
-    version = '%s-%s' % (now.strftime('%Y.%m.%d'), digest)
+    version = f'{now.strftime("%Y.%m.%d")}-{digest}'
     generated = now.isoformat()
 
     manifest = {
@@ -69,21 +80,25 @@ def main():
         'generated_at': generated,
         'files': files,
     }
-    with open(os.path.join(out, 'manifest.json'), 'w') as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=True)
-        f.write('\n')
+    try:
+        with open(os.path.join(out, 'manifest.json'), 'w') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=True)
+            f.write('\n')
 
-    with open(os.path.join(out, 'manifest.tsv'), 'w') as f:
-        f.write('# netsteer-data-manifest v=%s generated=%s\n' % (version, generated))
-        for name in sorted(files):
-            f.write('%s\t%s\t%d\n' % (name, files[name]['sha256'], files[name]['size']))
+        with open(os.path.join(out, 'manifest.tsv'), 'w') as f:
+            f.write(f'# netsteer-data-manifest v={version} generated={generated}\n')
+            for name in sorted(files):
+                f.write(f'{name}\t{files[name]["sha256"]}\t{files[name]["size"]}\n')
 
-    # 包内基线副本: 随 apk 分发, netsteer-feed status/check 以此为本地版本锚点
-    pkg_manifest = os.path.join(SRC, 'manifest.tsv')
-    if os.path.abspath(pkg_manifest) != os.path.abspath(os.path.join(out, 'manifest.tsv')):
-        shutil.copyfile(os.path.join(out, 'manifest.tsv'), pkg_manifest)
+        # 包内基线副本: 随 apk 分发, netsteer-feed status/check 以此为本地版本锚点
+        pkg_manifest = os.path.join(SRC, 'manifest.tsv')
+        if os.path.abspath(pkg_manifest) != os.path.abspath(os.path.join(out, 'manifest.tsv')):
+            shutil.copyfile(os.path.join(out, 'manifest.tsv'), pkg_manifest)
+    except OSError as e:
+        print(f'ERROR: cannot write manifest: {e}', file=sys.stderr)
+        return 1
 
-    print('OK: version=%s files=%d out=%s' % (version, len(files), out))
+    print(f'OK: version={version} files={len(files)} out={out}')
     return 0
 
 

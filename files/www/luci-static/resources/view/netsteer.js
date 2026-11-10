@@ -85,7 +85,7 @@ function maskLabel(mask) {
 	if (!on.length) return _('关闭');
 	if (on.length === 1) return 'C%d'.format(on[0]);
 	if (on.length <= 3) return on.map(function(i) { return 'C%d'.format(i); }).join('+');
-	return _('%d 核 (%s)'.format(on.length, mask));
+	return _('%d 核 (%s)').format(on.length, mask);
 }
 
 function fmtCount(n) {
@@ -110,7 +110,7 @@ function getPresets() {
 		all: {
 			label: _('全核分摊'),
 			short: _('所有核一起干活，负载摊得最平。'),
-			desc: _('软中断分摊到全部 %d 核，硬中断错开响应。通用推荐：负载最均匀。'.format(NCPU)),
+			desc: _('软中断分摊到全部 %d 核，硬中断错开响应。通用推荐：负载最均匀。').format(NCPU),
 			rec: true,
 			map: map,
 			irq: irqMap
@@ -597,6 +597,20 @@ function netdevParse(txt) {
 	});
 	return out;
 }
+function netdevPick(nd, preferL3) {
+	/* 从 netsteer-netdev rows 选 WAN 口: preferL3 时优先 role=wan (L3 承载口), 否则 wan/uplink */
+	if (!nd || !nd.rows) return null;
+	var i, r;
+	if (preferL3) {
+		for (i = 0; i < nd.rows.length; i++) if (nd.rows[i].role === 'wan') return nd.rows[i];
+	}
+	for (i = 0; i < nd.rows.length; i++) {
+		r = nd.rows[i];
+		if (r.role === 'wan' || r.role === 'uplink') return r;
+	}
+	return null;
+}
+
 function netdevDelta(prev, cur, dtMs) {
 	/* 两次累计值 → bps (回绕/重启保护: 负值或超大跳变视为无效返回 null) */
 	var out = {};
@@ -827,8 +841,8 @@ function parseCpuRange(txt) {
 	return single.length || 4;
 }
 
-/* uci get 结果 → IFACES; 读不到时退回经典三口 */
-function buildIfaces(uciRes) {
+/* uci get 结果 → IFACES; 失败时依次用 netdev role 表还原 (DSA 命名兼容)、再退回经典三口 */
+function buildIfaces(uciRes, nd) {
 	var out = [];
 	var vals = (uciRes && uciRes.values) || null;
 	if (vals) {
@@ -843,10 +857,19 @@ function buildIfaces(uciRes) {
 			});
 		});
 	}
+	if (!out.length && nd && nd.rows && nd.rows.length) {
+		/* uci 通道失败: 从 netsteer-netdev 的 role 字段还原 (兼容 DSA 命名 wan/lan1/...) */
+		nd.rows.forEach(function(row) {
+			if (row.role === 'wan' || row.role === 'uplink')
+				out.push({ dev: row.dev, sec: row.dev.replace(/-/g, '_'), note: 'WAN 物理口', virtual: false });
+			else if (row.role === 'lan')
+				out.push({ dev: row.dev, sec: row.dev.replace(/-/g, '_'), note: 'LAN 物理口', virtual: false });
+		});
+	}
 	if (!out.length) {
 		out = [
-			{ dev: 'eth0',      sec: 'eth0',      note: 'WAN 物理口', virtual: false },
-			{ dev: 'eth1',      sec: 'eth1',      note: 'LAN 物理口', virtual: false },
+			{ dev: 'wan',       sec: 'wan',       note: 'WAN 物理口', virtual: false },
+			{ dev: 'lan1',      sec: 'lan1',      note: 'LAN 物理口', virtual: false },
 			{ dev: 'pppoe-wan', sec: 'pppoe_wan', note: 'PPPoE 拨号口 · 重拨自动保持', virtual: true }
 		];
 	}
@@ -888,11 +911,15 @@ return view.extend({
 		 * values 布局: [0]=meta, [1+2i]=rps, [2+2i]=xps, [1+2N]=softirqs, [2+2N]=state.json */
 		return Promise.all([
 			L.resolveDefault(fs.read('/sys/devices/system/cpu/online'), '0-3'),
-			ubusCall('uci', 'get', { config: 'netsteer' }).catch(function() { return null; })
+			ubusCall('uci', 'get', { config: 'netsteer' }).catch(function() { return null; }),
+			/* netdev role 表: uci 通道失败时兜底还原 IFACES (DSA 命名兼容) */
+			fs.exec('/usr/bin/netsteer-netdev', []).then(function(r) {
+				try { return JSON.parse((r && r.stdout) || '{}'); } catch (e) { return null; }
+			}).catch(function() { return null; })
 		]).then(function(meta) {
 			var cpuTxt = (meta[0] && meta[0].data) ? meta[0].data : meta[0];
 			NCPU = parseCpuRange(typeof cpuTxt === 'string' ? cpuTxt : '0-3');
-			IFACES = buildIfaces(meta[1]);
+			IFACES = buildIfaces(meta[1], meta[2]);
 			/* D14 设备排除列表 (qos 节 sense_exclude): 本地判定回退路径的采样过滤用 */
 			view._senseExclude = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_exclude) || '';
 			view._linked = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_linked) || '0';
@@ -1227,21 +1254,30 @@ return view.extend({
 				cur[d.rows[i].dev] = { rx: +d.rows[i].rx, tx: +d.rows[i].tx };
 			var now = d.ts || Date.now();
 			if (now < 1e12) now *= 1000; /* busybox date 只给秒 */
-			var st = self._series;
-			if (st.last && cur.eth0) {
+		var st = self._series;
+		if (st.last) {
+			/* wan 口 = role=wan (pppoe 场景即 pppoe-wan, 与 SQM 挂口一致); 老版本脚本无 role → 退回 eth0 */
+			var legacy = d.rows.length > 0 && !d.rows[0].role; /* 老版本脚本无 role 字段 */
+			var wanRow = netdevPick(d, true), lanRow = null, i;
+			for (i = 0; i < d.rows.length; i++) if (d.rows[i].role === 'lan') { lanRow = d.rows[i]; break; }
+			if (!wanRow && legacy) wanRow = d.rows.filter(function(r) { return r.dev === 'eth0'; })[0] || null;
+			if (!lanRow && legacy) lanRow = d.rows.filter(function(r) { return r.dev === 'eth1'; })[0] || null;
+			var lastWan = st.last.d[wanRow ? wanRow.dev : ''], lastLan = st.last.d[lanRow ? lanRow.dev : ''];
+			if ((wanRow && lastWan) || (lanRow && lastLan)) {
 				var dt = now - st.last.t;
 				if (dt >= 2500 && dt <= 30000) {
 					var dd = netdevDelta(st.last.d, cur, dt);
-					var rx = dd.eth0 ? dd.eth0.rx_bps : null;
-					var tx = dd.eth0 ? dd.eth0.tx_bps : null;
+					var rx = (wanRow && dd[wanRow.dev]) ? dd[wanRow.dev].rx_bps : null;
+					var tx = (wanRow && dd[wanRow.dev]) ? dd[wanRow.dev].tx_bps : null;
 					st.rx = seriesPush(st.rx, [now, rx], 7.5 * 60 * 1000, 90);
 					st.tx = seriesPush(st.tx, [now, tx], 7.5 * 60 * 1000, 90);
 					self.drawTraffic();
-					self.setWireRate('lan', rx);
-					self.setWireRate('wan', dd.eth1 ? dd.eth1.rx_bps : null);
+					self.setWireRate('wan', rx);
+					self.setWireRate('lan', (lanRow && dd[lanRow.dev]) ? dd[lanRow.dev].rx_bps : null);
 				}
 			}
-			st.last = { t: now, d: cur };
+		}
+		st.last = { t: now, d: cur };
 		}).catch(function() {});
 	},
 
@@ -1312,8 +1348,8 @@ return view.extend({
 		/* 增益层: vs 关闭基线的差值线 (真实测量, 正=超出基线的吞吐) */
 		var gl = svg.querySelector('.ns-gain-line'), gz = svg.querySelector('.ns-gain-zero');
 		var benchOff = this._benchOff;
-		if (benchOff) {
-			var y0 = H - Math.min(1, self._benchOff / peak) * (H - 8) - 2;
+		if (benchOff && peak > 0) {
+			var y0 = H - Math.min(1, benchOff / peak) * (H - 8) - 2;
 			if (!gz) {
 				gz = document.createElementNS('http://www.w3.org/2000/svg', 'line');
 				gz.setAttribute('class', 'ns-gain-zero');
@@ -1519,7 +1555,7 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-note' },
 					conc === null
 						? _('开机以来暂无收包计数')
-						: _('收包负载集中在 CPU%d。%d 核分摊生效时应接近 %d%%；越集中越需要调整。'.format(concCpu, NCPU, Math.round(100 / NCPU))))
+						: _('收包负载集中在 CPU%d。%d 核分摊生效时应接近 %d%%；越集中越需要调整。').format(concCpu, NCPU, Math.round(100 / NCPU)))
 			]),
 			E('div', { 'class': 'netsteer-sq-row' }, [
 				E('span', { 'class': 'netsteer-sq-label' }, _('收包 NET_RX')),
@@ -1734,7 +1770,7 @@ renderSoftirqCard: function(text) {
 			try { irq = JSON.parse(stateTxt || ''); } catch (e) { irq = null; }
 			var cur = matchPreset(m, irq);
 			var PRESETS = getPresets();
-			el.textContent = _('当前：%s'.format(cur ? PRESETS[cur].label : '自定义组合'));
+			el.textContent = _('当前：%s').format(cur ? PRESETS[cur].label : '自定义组合');
 			el.classList.toggle('is-custom', !cur);
 			Object.keys(PRESETS).forEach(function(name) {
 				var btn = document.querySelector('.netsteer-preset[data-preset="%s"]'.format(name));
@@ -1791,7 +1827,7 @@ renderSoftirqCard: function(text) {
 				});
 			});
 			if (!silent) {
-				ui.showModal(_('已切换: %s'.format(preset.label)), E('p', { 'class': 'netsteer-note' }, preset.desc));
+				ui.showModal(_('已切换: %s').format(preset.label), E('p', { 'class': 'netsteer-note' }, preset.desc));
 				window.setTimeout(function() { ui.hideModal(); }, 2200);
 			}
 			self.refreshBadge();
@@ -1878,7 +1914,7 @@ renderSoftirqCard: function(text) {
 			var chain = Promise.resolve();
 			seq.forEach(function(name) {
 				chain = chain.then(function() {
-					setStatus(_('正在测: %s … (约 15 秒)'.format(PRESETS[name].label)));
+					setStatus(_('正在测: %s … (约 15 秒)').format(PRESETS[name].label));
 					return self.applyPresetByName(name, true)
 						.then(function() { return new Promise(function(r) { setTimeout(r, 1200); }); })
 						.then(function() { return self.sampleSoftirq(12); })
@@ -1907,7 +1943,7 @@ renderSoftirqCard: function(text) {
 						]));
 					});
 					ui.showModal(_('测速结果'), [
-						E('p', { 'class': 'netsteer-note' }, _('数值 = 收包负载最大单核占比，越低越均匀（%d 核理论最优 %d%%）。测速配置已恢复为测速前的状态。'.format(NCPU, Math.round(100 / NCPU)))),
+						E('p', { 'class': 'netsteer-note' }, _('数值 = 收包负载最大单核占比，越低越均匀（%d 核理论最优 %d%%）。测速配置已恢复为测速前的状态。').format(NCPU, Math.round(100 / NCPU))),
 						table,
 						E('div', { 'class': 'right' }, [
 							E('button', {
@@ -1922,7 +1958,7 @@ renderSoftirqCard: function(text) {
 									self.markAutotuneDone();
 									self.applyPresetByName(best, false);
 								}
-							}, _('采纳推荐 (%s)'.format(PRESETS[best].label)))
+							}, _('采纳推荐 (%s)').format(PRESETS[best].label))
 						])
 					]);
 				});
@@ -2887,7 +2923,7 @@ renderSoftirqCard: function(text) {
 			E('strong', {}, _('它解决什么问题')),
 			E('p', { 'class': 'netsteer-note' }, _('路由器每个数据包都要 CPU 处理。系统默认压在单个核心——高速下载、多设备并发时单核打满，表现为网速上不去、网页卡顿、延迟波动。')),
 			E('strong', {}, _('它做什么')),
-			E('p', { 'class': 'netsteer-note' }, _('基于内核 RPS / RFS / XPS 机制，把网络负载分摊到全部 %d 个核心：吞吐更高，高峰期更流畅。'.format(NCPU))),
+			E('p', { 'class': 'netsteer-note' }, _('基于内核 RPS / RFS / XPS 机制，把网络负载分摊到全部 %d 个核心：吞吐更高，高峰期更流畅。').format(NCPU)),
 			E('strong', {}, _('怎么用')),
 			E('p', { 'class': 'netsteer-note' }, _('选一个方案立即生效；断电重启自动恢复；随时可切回系统默认。逐核点选可自定义。'))
 		]);
@@ -3085,11 +3121,11 @@ renderSoftirqCard: function(text) {
 		/* Tab 面板内容 */
 		var panelSteer = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-pro' }, [
 			E('p', { 'class': 'netsteer-lede' }, [
-				E('span', {}, _('把网络负载摊到全部 %d 个核心，多设备高速下载时不掉速、不卡顿。'.format(NCPU))),
+				E('span', {}, _('把网络负载摊到全部 %d 个核心，多设备高速下载时不掉速、不卡顿。').format(NCPU)),
 				E('button', { 'class': 'netsteer-help', 'type': 'button', 'title': _('了解原理与用法'), 'click': ui.createHandlerFn(this, 'toggleHelp') }, '?')
 			]),
 			E('div', { 'class': 'netsteer-card netsteer-statusbar' }, [
-				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前：%s'.format(curLabel))),
+				E('span', { 'class': 'netsteer-badge' + (cur ? '' : ' is-custom'), 'id': 'netsteer-badge' }, _('当前：%s').format(curLabel)),
 				E('button', {
 					'class': 'netsteer-minibtn',
 					'type': 'button',

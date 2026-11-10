@@ -383,9 +383,14 @@ apk add --allow-untrusted /tmp/luci-app-netsteer-1.12.4-aarch64_generic.apk
     const dark = t ? t==='dark'
       : window.matchMedia('(prefers-color-scheme: dark)').matches;
     const ic=document.getElementById('themeIcon');
-    ic.innerHTML = dark
-      ? '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>'
-      : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+    // 图标切换: DOM API 构建, 不经 innerHTML
+    const NS = 'http://www.w3.org/2000/svg';
+    const mk = (tag, attrs) => { const el = document.createElementNS(NS, tag); for (const k in attrs) el.setAttribute(k, attrs[k]); return el; };
+    const moon = mk('path', { d: 'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z' });
+    const sun = mk('g', {});
+    sun.appendChild(mk('circle', { cx: 12, cy: 12, r: 4 }));
+    for (const d of ['M12 2v2', 'M12 20v2', 'M4.9 4.9l1.4 1.4', 'M17.7 17.7l1.4 1.4', 'M2 12h2', 'M20 12h2', 'M4.9 19.1l1.4-1.4', 'M17.7 6.3l1.4-1.4']) sun.appendChild(mk('path', { d }));
+    ic.replaceChildren(dark ? moon : sun);
   }
   let saved=null; try{ saved=localStorage.getItem('ns-theme'); }catch(e){}
   applyTheme(saved);

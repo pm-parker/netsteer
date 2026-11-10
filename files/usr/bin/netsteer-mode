@@ -34,10 +34,16 @@ sqm_migrate() {
 
 apply_standard() {
 	local acts=""
+	local sec base_dl base_ul
 	sec=$(sqm_migrate)
 	uci set sqm.$sec.enabled='1'
 	uci set sqm.$sec.script='simple.qos'
 	uci set sqm.$sec.qdisc='cake'
+	# 带宽从存档恢复 (latency 降速过的值不得滞留)
+	base_dl=$(uci -q get netsteer.sqm_base.download 2>/dev/null)
+	base_ul=$(uci -q get netsteer.sqm_base.upload 2>/dev/null)
+	[ -n "$base_dl" ] && uci set sqm.$sec.download="$base_dl"
+	[ -n "$base_ul" ] && uci set sqm.$sec.upload="$base_ul"
 	uci commit sqm; /etc/init.d/sqm restart >/dev/null 2>&1
 	acts="$acts sqm:cake-on"
 	if [ "$(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)" = "1" ]; then
@@ -73,17 +79,27 @@ apply_throughput() {
 
 apply_latency() {
 	local acts=""
+	local sec dl ul base_dl base_ul
 	sec=$(sqm_migrate)
 	uci set sqm.$sec.enabled='1'
 	uci set sqm.$sec.script='layer_cake.qos'
 	uci set sqm.$sec.qdisc='cake'
-	dl=$(uci -q get sqm.$sec.download 2>/dev/null || echo 900000)
-	ul=$(uci -q get sqm.$sec.upload 2>/dev/null || echo 48000)
-	dl90=$(( dl * 9 / 10 )); ul90=$(( ul * 9 / 10 ))
-	uci set sqm.$sec.download="$dl90"
-	uci set sqm.$sec.upload="$ul90"
+	# 带宽基值: 首次进 latency 时存档真实带宽, 之后永远以存档为基 (防 ×0.9 累乘腐蚀)
+	base_dl=$(uci -q get netsteer.sqm_base.download 2>/dev/null)
+	base_ul=$(uci -q get netsteer.sqm_base.upload 2>/dev/null)
+	if [ -z "$base_dl" ] || [ -z "$base_ul" ]; then
+		base_dl=$(uci -q get sqm.$sec.download 2>/dev/null || echo 900000)
+		base_ul=$(uci -q get sqm.$sec.upload 2>/dev/null || echo 48000)
+		uci set netsteer.sqm_base='sqm_base'
+		uci set netsteer.sqm_base.download="$base_dl"
+		uci set netsteer.sqm_base.upload="$base_ul"
+		uci commit netsteer
+	fi
+	dl=$(( base_dl * 9 / 10 )); ul=$(( base_ul * 9 / 10 ))
+	uci set sqm.$sec.download="$dl"
+	uci set sqm.$sec.upload="$ul"
 	uci commit sqm; /etc/init.d/sqm restart >/dev/null 2>&1
-	acts="$acts sqm:layer_cake(${dl90}/${ul90})"
+	acts="$acts sqm:layer_cake(${dl}/${ul})"
 	[ "$(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)" = "1" ] && {
 		uci set firewall.@defaults[0].flow_offloading='0'
 		uci commit firewall; fw4 reload >/dev/null 2>&1

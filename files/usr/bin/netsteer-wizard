@@ -128,6 +128,8 @@ apply)
 	uci -q set netsteer.global='global' 2>/dev/null
 	uci -q set netsteer.global.wizard_tier="$_wtier"
 	uci -q commit netsteer
+	# D20 参数自适应: 按档写 conntrack_max/rfs/采样频率 (v1.18.1)
+	/usr/bin/netsteer-tune "$_wtier" >/dev/null 2>&1
 	wizard_done
 	log "wizard apply: mode=$wmode dl=${WIZ_DL:-keep} ul=${WIZ_UL:-keep}"
 	echo "{\"applied\":\"$wmode\",\"dl\":\"${WIZ_DL:-keep}\",\"ul\":\"${WIZ_UL:-keep}\"}"

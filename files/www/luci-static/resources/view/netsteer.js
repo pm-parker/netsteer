@@ -891,6 +891,8 @@ return view.extend({
 			IFACES = buildIfaces(meta[1]);
 			/* D14 设备排除列表 (qos 节 sense_exclude): 本地判定回退路径的采样过滤用 */
 			view._senseExclude = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_exclude) || '';
+			view._linked = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_linked) || '0';
+			view._curMode = (meta[1] && meta[1].values && meta[1].values.scenario && meta[1].values.scenario.mode) || '';
 			var autotuneDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.autotune_done);
 			var wizardDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.wizard_done);
 			var tasks = [ Promise.resolve({ ncpu: NCPU, ifaces: IFACES, autotuneDone: autotuneDone, wizardDone: wizardDone }) ];
@@ -2302,6 +2304,107 @@ renderSoftirqCard: function(text) {
 			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
 	},
 
+	/* v1.18 D14: 自动切换卡 — 开关 + 一句状态 (用户语言, 不暴露档位字母) */
+	renderLinkedCard: function() {
+		var self = this;
+		var linked = (view._linked || '0') === '1';
+		var toggle = E('button', {
+			'class': 'btn cbi-button-' + (linked ? 'neutral' : 'positive'), 'id': 'ns-linked-toggle', 'style': 'padding:2px 10px',
+			'click': function() {
+				var nv = linked ? '0' : '1';
+				ubusCall('uci', 'set', { config: 'netsteer', section: 'qos', values: { sense_linked: nv } })
+					.then(function() { return ubusCall('uci', 'apply', { rollback: false, timeout: 1000 }); })
+					.then(function() {
+						view._linked = nv;
+						ui.addNotification(null, E('p', {}, nv === '1' ? _('自动切换已开启') : _('自动切换已关闭')), 'info');
+						var c = document.getElementById('netsteer-linked');
+						if (c) c.replaceWith(self.renderLinkedCard());
+					}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+			}
+		}, linked ? _('已开启') : _('开启'));
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-linked' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('自动切换')),
+				toggle
+			]),
+			E('div', { 'id': 'ns-linked-status' }, [E('p', { 'class': 'netsteer-note' }, _('开启后：全家在看视频/打网游时自动切到更合适的模式，闲时自动切回均衡。您手动选的模式不会被改动。'))])
+		]);
+		window.setTimeout(function() { self.paintLinked(); }, 1500);
+		return card;
+	},
+
+	paintLinked: function() {
+		var el = document.getElementById('ns-linked-status');
+		if (!el) return;
+		var linked = (view._linked || '0') === '1';
+		if (!linked) {
+			el.replaceChildren(E('p', { 'class': 'netsteer-note' },
+				_('自动切换未开启。开启后，全家看视频/打网游时自动优化，闲时自动恢复均衡；手动选的 P2P/极速档不会被改动。')));
+			return;
+		}
+		var st = this._senseState || {};
+		var scene = st.scene || 'normal';
+		var names = { gaming: '打游戏', work: '视频会议', streaming: '看视频', download: '大流量下载', normal: '日常浏览' };
+		var sn = names[scene] || '日常浏览';
+		var target = (scene === 'gaming' || scene === 'work') ? _('低延迟优先') : _('均衡');
+		var cur = view._curMode || '';
+		var mnames = { standard: _('均衡'), latency: _('低延迟优先'), steering: _('纯分核加速'), p2p: _('P2P 加速'), throughput: _('极速') };
+		var curName = mnames[cur] || _('均衡');
+		var line;
+		if (cur !== 'standard' && cur !== 'latency' && cur !== '' && cur !== 'off')
+			line = _('当前检测到「%s」，建议「%s」。您手动选的「%s」优先，不自动改动。').format(sn, target, curName);
+		else if (cur === target.replace(/^「|」$/g, '') || sn === '日常浏览')
+			line = _('正在检测: %s · 当前已是合适模式（%s）。').format(sn, curName);
+		else
+			line = _('正在检测: %s → 将自动切到「%s」（当前「%s」）。').format(sn, target, curName);
+		el.replaceChildren(E('p', { 'class': 'netsteer-note' }, line));
+	},
+
+	/* v1.18 D14: 排除设备卡 — 运行下载/共享服务的设备退出场景识别 */
+	renderExcludeCard: function() {
+		var self = this;
+		var cur = (view._senseExclude || '').split(/[\s,]+/).filter(Boolean);
+		var listEl = E('div', { 'id': 'ns-excl-list', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0' },
+			cur.length ? cur.map(function(ip) {
+				return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击移除'),
+					'click': function() { self.excludeSave(cur.filter(function(x) { return x !== ip; })); } }, ip + ' ×');
+			}) : [E('span', { 'class': 'netsteer-note' }, _('暂无。带宽共享盒子、下载机这类对外服务设备会干扰识别，可加入排除。'))]);
+		var inputEl = E('input', { 'type': 'text', 'placeholder': _('输入设备 IP，如 192.168.11.175'), 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px' });
+		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-exclude' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('排除设备')),
+				E('span', { 'class': 'netsteer-badge' }, _('识别更准'))
+			]),
+			listEl,
+			E('div', { 'style': 'display:flex;gap:8px' }, [
+				inputEl,
+				E('button', { 'class': 'btn cbi-button-positive', 'click': function() {
+					var v = (inputEl.value || '').trim();
+					if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) {
+						ui.addNotification(null, E('p', {}, _('请输入有效的 IPv4 地址')), 'error');
+						return;
+					}
+					self.excludeSave(cur.concat([v]));
+				} }, _('添加'))
+			])
+		]);
+	},
+
+	excludeSave: function(ips) {
+		var uniq = [];
+		ips.forEach(function(ip) { if (uniq.indexOf(ip) < 0) uniq.push(ip); });
+		view._senseExclude = uniq.join(' ');
+		var self = this;
+		ubusCall('uci', 'set', { config: 'netsteer', section: 'qos', values: { sense_exclude: view._senseExclude } })
+			.then(function() { return ubusCall('uci', 'apply', { rollback: false, timeout: 1000 }); })
+			.then(function() {
+				/* daemon 每轮采样自动重读排除表, 无需 reload */
+				var card = document.getElementById('netsteer-exclude');
+				if (card) card.replaceWith(self.renderExcludeCard());
+				ui.addNotification(null, E('p', {}, _('已保存，下一轮识别生效')), 'info');
+			}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
 	/* ---- 游戏设备优先通道卡 (设备级 DSCP cs4 → cake diffserv4 video tin) ---- */
 	renderSceneCard: function() {
 		/* 智能模式页: 智能场景识别 — 大字场景 + 一句依据 + 平台标签 (不堆明细, 不显示置信度) */
@@ -3029,7 +3132,9 @@ renderSoftirqCard: function(text) {
 		var panelSmart = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-smart' }, [
 			this.renderMaster(),
 			this.renderSceneCard(),
+			this.renderLinkedCard(),
 			this.renderDeviceCard(values[4 + IFACES.length * 2]),
+			this.renderExcludeCard(),
 			this.renderP2PCard(values[3 + IFACES.length * 2])
 		]);
 		var PANELS = { overview: panelOverview, smart: panelSmart, pro: panelSteer };

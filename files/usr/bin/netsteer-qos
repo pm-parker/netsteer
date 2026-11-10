@@ -385,6 +385,54 @@ qos_detect() { # DHCP 租约主机名 → 疑似游戏设备候选 [{"ip":..,"na
 	END { printf "]\n" }' /tmp/dhcp.leases
 }
 
+qos_suggest() { # v1.19 D22: 疑似后台负载设备 — per-src 上行聚合, 排除已管理设备, 供"不抢网"建议卡
+	# $1=上行阈值 MB (默认 16); dnslog 采样窗口内 u 字段聚合 (mihomo 连接累计/conntrack 双向字节)
+	# 输出 [{"ip":..,"up_mb":..,"conns":..}] (按上行降序); 已在 bulk/game/exclude 的设备剔除
+	local th_mb="${1:-16}"
+	local ex="$(qos_get sense_exclude "")"
+	local game_on="$(qos_get enabled 0)"
+	local game_ip="$(qos_get device "")"
+	local bulk="$(uci -q get netsteer.qos.bulk_devices 2>/dev/null || echo "")"
+	qos_dnslog 200 | qos_json2tab | awk -v th_mb="$th_mb" -v ex="$ex" -v game_on="$game_on" -v game_ip="$game_ip" -v bulk="$bulk" '
+	BEGIN { th = th_mb * 1024 * 1024 }
+	{
+		# tab: v/t/c/d/p/u/q — c=源IP(RFC1918 已过滤), u=上行字节
+		if ($3 == "" || $6 == "" || $6 + 0 <= 0) next
+		ip = $3
+		managed = 0
+		# 排除表 (空格分隔)
+		n = split(ex, a, /[ 	]+/)
+		for (k = 1; k <= n; k++) if (a[k] == ip) managed = 1
+		# 游戏通道
+		if (game_on == "1" && game_ip == ip) managed = 1
+		# bulk 列表
+		n = split(bulk, b, /[ 	]+/)
+		for (k = 1; k <= n; k++) if (b[k] == ip) managed = 1
+		if (managed) next
+		up[ip] += $6 + 0
+		conns[ip]++
+	}
+	END {
+		n = 0
+		for (ip in up) {
+			if (up[ip] < th && conns[ip] < 8) continue
+			ips[n] = ip; ups[n] = up[ip] + 0; n++
+		}
+		# 按上行降序 (插入排序, n<20)
+		for (i = 1; i < n; i++) {
+			v = ups[i]; p = ips[i]; j = i - 1
+			while (j >= 0 && ups[j] < v) { ups[j+1] = ups[j]; ips[j+1] = ips[j]; j-- }
+			ups[j+1] = v; ips[j+1] = p
+		}
+		printf "["
+		for (i = 0; i < n; i++) {
+			if (i > 0) printf ","
+			printf "{\"ip\":\"%s\",\"up_mb\":%.1f,\"conns\":%d}", ips[i], ups[i] / 1048576, conns[ips[i]]
+		}
+		printf "]\n"
+	}'
+}
+
 # ---- 场景判定下沉 (v1.18): json2tab + sense 单次判定 + sense-daemon 常驻 ----
 SENSE_DIR="/tmp/netsteer"
 SENSE_JSON="$SENSE_DIR/sense.json"
@@ -495,6 +543,7 @@ sense-daemon) qos_sense_daemon;;
 sense-status) qos_sense_status;;
 sense-link) qos_sense_link;;
 detect)  qos_detect;;
+suggest) shift; qos_suggest "${1:-16}";;
 env)     qos_env;;
 dns-en)  shift; qos_dns_en "${1:-status}";;
 *)       echo "usage: $0 on <ip> | off | device <ip> | reapply | status | probe | tins | dnslog [n] | dnslog-raw [n] | sense [n] | sense-daemon | sense-status | detect | env | dns-en on|off"; exit 1;;

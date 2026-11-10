@@ -914,6 +914,10 @@ return view.extend({
 			tasks.push(fs.exec('/usr/bin/netsteer-qos', ['status']).then(function(r) {
 				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
 			}).catch(function() { return null; }));
+			/* 不抢网设备状态 (v1.19 D22, 脚本不在 = 老版本包 → 静默) */
+			tasks.push(fs.exec('/usr/bin/netsteer-bulk', ['status']).then(function(r) {
+				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
+			}).catch(function() { return null; }));
 			return Promise.all(tasks);
 		});
 	},
@@ -2409,6 +2413,102 @@ renderSoftirqCard: function(text) {
 			}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
 	},
 
+	/* ---- 不抢网设备卡 (v1.19 D22: 设备级 CS1 → cake bulk tin, 与游戏通道 D7 对称反向) ---- */
+	renderBulkCard: function(st) {
+		var self = this;
+		st = st || { devices: [], count: 0, active: 0 };
+		var n = st.count || (st.devices || []).length;
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-bulk' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('不抢网设备')),
+				E('span', { 'class': 'netsteer-badge' + (n > 0 ? '' : ' is-custom'), 'id': 'netsteer-bulk-badge' },
+					n > 0 ? _('已启用 · %d 台让路中').format(n) : _('未启用'))
+			]),
+			E('p', { 'class': 'netsteer-note' }, _('加入后，这台设备的流量在网络繁忙时自动让路：家人看视频、远程访问文件优先，空闲时它仍可用满带宽。适合下载机、共享盒子等后台设备。')),
+			E('div', { 'id': 'ns-bulk-migrate', 'style': 'display:none;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:rgba(211,84,0,.08);border-radius:6px' }, []),
+			E('div', { 'id': 'ns-bulk-suggest', 'style': 'display:none;gap:8px;align-items:flex-start;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:rgba(90,125,10,.06);border-radius:6px' }, []),
+			E('div', { 'id': 'ns-bulk-list', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0' },
+				n > 0 ? (st.devices || []).map(function(ip) {
+					return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击移除'),
+						'click': function() { self.bulkOp(['remove', ip]); } }, ip + ' ×');
+				}) : [E('span', { 'class': 'netsteer-note' }, _('暂无设备'))]),
+			E('div', { 'style': 'display:flex;gap:8px' }, [
+				E('input', { 'id': 'netsteer-bulk-ip', 'type': 'text', 'placeholder': _('输入设备 IP，如 192.168.11.178'), 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px' }),
+				E('button', { 'class': 'ns-btn-act', 'style': 'color:var(--ok,#0b7f6c)', 'click': function() {
+					var v = ((document.getElementById('netsteer-bulk-ip') || {}).value || '').trim();
+					if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v))
+						return ui.addNotification(null, E('p', {}, _('请输入有效的 IPv4 地址')), 'error');
+					self.bulkOp(['add', v]);
+				} }, _('添加'))
+			]),
+			E('p', { 'class': 'netsteer-foot' }, st.cake_up === 'besteffort'
+				? _('当前队列为不分优先级模式，标记已保存，切换到均衡/低延迟模式后生效。')
+				: _('与游戏通道互斥：同一台设备只能在其中一边。'))
+		]);
+		/* 迁移提示 + 判定建议 异步填充 (不阻塞首屏) */
+		window.setTimeout(function() { self.bulkPaintExtras(); }, 350);
+		return card;
+	},
+
+	bulkOp: function(args) {
+		var self = this;
+		return fs.exec('/usr/bin/netsteer-bulk', args).then(function(r) {
+			var out = (r && r.stdout || '').trim();
+			if (out.indexOf('ERR: game-conflict') >= 0)
+				return ui.addNotification(null, E('p', {}, _('该设备正在游戏通道中，请先在「设备加速」里关闭后再加入')), 'error');
+			if (out.indexOf('ERR') === 0)
+				return ui.addNotification(null, E('p', {}, out), 'error');
+			return self.load().then(function(values) {
+				var newSt = values[5 + IFACES.length * 2];
+				var old = document.getElementById('netsteer-bulk');
+				if (old) old.replaceWith(self.renderBulkCard(newSt));
+				ui.addNotification(null, E('p', {}, out.indexOf('OK') === 0 ? _('已保存，规则即时生效') : _('已保存')), 'info');
+			});
+		}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+	},
+
+	bulkPaintExtras: function() {
+		var self = this;
+		/* ① 存量手工规则迁移提示 (nftables.d 里发现 CS1 标记 → 建议迁入统一管理) */
+		fs.exec('/usr/bin/netsteer-bulk', ['migrate']).then(function(r) {
+			var m = null;
+			try { m = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			var slot = document.getElementById('ns-bulk-migrate');
+			if (!slot || !m || !m.found || !m.found.length) return;
+			slot.style.display = 'flex';
+			slot.replaceChildren(
+				E('span', { 'class': 'netsteer-note', 'style': 'flex:1;min-width:0' },
+					_('检测到手工限速规则 (%s)，迁入统一管理后可随插件升级自动维护。').format(m.found.join('、'))),
+				E('button', { 'class': 'ns-btn-act', 'style': 'color:var(--ok,#0b7f6c)', 'click': function() {
+					fs.exec('/usr/bin/netsteer-bulk', ['migrate', '--apply']).then(function() {
+						return self.load();
+					}).then(function(values) {
+						var old = document.getElementById('netsteer-bulk');
+						if (old) old.replaceWith(self.renderBulkCard(values[5 + IFACES.length * 2]));
+						ui.addNotification(null, E('p', {}, _('已迁入。原手工规则文件未删除，确认生效后可手动移除。')), 'info');
+					});
+				} }, _('一键迁入'))
+			);
+		}).catch(function() {});
+		/* ② 判定建议: 持续吃上行的设备 (qos suggest 采样聚合) */
+		fs.exec('/usr/bin/netsteer-qos', ['suggest']).then(function(r) {
+			var list = null;
+			try { list = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			var slot = document.getElementById('ns-bulk-suggest');
+			if (!slot || !list || !list.length) return;
+			slot.style.display = 'flex';
+			var chips = list.slice(0, 3).map(function(s) {
+				return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击加入'),
+					'click': function() { self.bulkOp(['add', s.ip]); } },
+					'%s（上行 %s MB / %d 连接）'.format(s.ip, (s.up_mb || 0).toFixed(0), s.conns || 0) + ' ＋');
+			});
+			slot.replaceChildren(
+				E('span', { 'class': 'netsteer-note', 'style': 'font-weight:600;white-space:nowrap;margin-top:2px' }, _('发现疑似后台占用：')),
+				E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0' }, chips)
+			);
+		}).catch(function() {});
+	},
+
 	/* ---- 游戏设备优先通道卡 (设备级 DSCP cs4 → cake diffserv4 video tin) ---- */
 	renderSceneCard: function() {
 		/* 智能模式页: 智能场景识别 — 大字场景 + 一句依据 + 平台标签 (不堆明细, 不显示置信度) */
@@ -3144,6 +3244,7 @@ renderSoftirqCard: function(text) {
 			this.renderSceneCard(),
 			this.renderLinkedCard(),
 			this.renderDeviceCard(values[4 + IFACES.length * 2]),
+			this.renderBulkCard(values[5 + IFACES.length * 2]),
 			this.renderExcludeCard(),
 			this.renderP2PCard(values[3 + IFACES.length * 2])
 		]);

@@ -99,7 +99,8 @@ with sync_playwright() as p:
     import time as _t
     for sel in ("#ns-master", "#ns-toggle", "#netsteer-scene", "#ns-sense-body",
                 "#ns-feed-status", "#ns-feed-btn", "#netsteer-game", "#netsteer-game-badge",
-                "#netsteer-game-ip", "#ns-game-spark", "#ns-game-suggest", "#netsteer-p2p"):
+                "#netsteer-game-ip", "#ns-game-spark", "#ns-game-suggest", "#netsteer-p2p",
+                "#netsteer-bulk", "#netsteer-bulk-badge", "#ns-bulk-list", "#netsteer-bulk-ip"):
         assert pg.locator(sel).count() == 1, f"missing {sel}"
     tabnames = pg.locator(".netsteer-tab").all_inner_texts()
     assert "智能模式" in tabnames and "专家模式" in tabnames, f"tab 名不对: {tabnames}"
@@ -111,7 +112,14 @@ with sync_playwright() as p:
         _t.sleep(1.0)
     assert any(k in sense_txt for k in ("游戏", "会议", "视频", "下载", "浏览", "流量")), f"sense body empty: {sense_txt!r}"
     assert "置信度" not in sense_txt, "置信度百分比不应再展示"
-    ok(f"智能模式: 总开关+场景识别+设备加速+P2P 在位 → {sense_txt.splitlines()[0][:20]}")
+    ok(f"智能模式: 总开关+场景识别+设备加速+不抢网+P2P 在位 → {sense_txt.splitlines()[0][:20]}")
+
+    # v1.19 D22 不抢网设备: 徽标语义 + 与游戏通道互斥脚注 + 无 JS 错误
+    bulk_badge = pg.inner_text("#netsteer-bulk-badge").strip()
+    assert bulk_badge in ("未启用",) or bulk_badge.startswith("已启用"), f"bulk badge 异常: {bulk_badge!r}"
+    bulk_foot = pg.inner_text("#netsteer-bulk p.netsteer-foot").strip()
+    assert "互斥" in bulk_foot or "优先级模式" in bulk_foot, f"bulk foot 异常: {bulk_foot!r}"
+    ok(f"不抢网卡: 徽标={bulk_badge} 脚注语义正确")
 
     # v1.18 判定下沉: 场景卡显示后端 daemon 判定 (与 /tmp/netsteer/sense.json 一致)
     import subprocess as _sp, json as _json

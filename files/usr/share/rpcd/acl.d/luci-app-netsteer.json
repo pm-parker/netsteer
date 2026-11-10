@@ -82,6 +82,9 @@
         "/usr/bin/netsteer-qos": [
           "exec"
         ],
+        "/usr/bin/netsteer-bulk": [
+          "exec"
+        ],
         "/usr/bin/netsteer-feed": [
           "exec"
         ],

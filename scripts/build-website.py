@@ -259,7 +259,7 @@ html = """<!DOCTYPE html>
 <div class="nav-scrim" id="scrim"></div>
 <main id="top">
 
-  <p class="crumb">Product updates <span style="margin:0 8px;color:#D1D5DB">/</span> <b>2026 年 11 月 · v1.12.4</b></p>
+  <p class="crumb">Product updates <span style="margin:0 8px;color:#D1D5DB">/</span> <b>2026 年 11 月 · v1.19.3</b></p>
 
   <h1>Net<span class="accent">Steer</span><span class="suffix">for OpenWrt</span></h1>
   <p class="tagline">一个总开关，两种网络体验 —— OpenWrt 的整合网络加速方案</p>
@@ -310,9 +310,19 @@ html = """<!DOCTYPE html>
         <p>为指定设备提供 Fullcone 等效 NAT，游戏主机 / PT / 网心云类应用拿到公网直连能力，ICE 成功率显著提升。</p>
       </div>
       <div class="cap">
-        <div class="idx">04 · UX</div>
-        <h3>体检 · 场景 · 守卫</h3>
-        <p>一键环境体检并给出两档方案（稳/激进）；游戏/下载/P2P 场景模式一键切换；依赖守卫防止其他包悄悄破坏配置。</p>
+        <div class="idx">04 · AI</div>
+        <h3>场景自动识别</h3>
+        <p>域名 + 裸 IP 双链路实时识别游戏 / 视频会议 / 视频 / 下载场景，自动切到合适的优化档，闲时恢复均衡；手动选的档位始终优先。</p>
+      </div>
+      <div class="cap">
+        <div class="idx">05 · QoS</div>
+        <h3>不抢网设备</h3>
+        <p>为跑满上行的后台设备（网心云 / PT / 同步盘类）单独降级让路：前台游戏视频照常满速，后台任务继续跑只是不再抢带宽。设备级仲裁，一键添加。</p>
+      </div>
+      <div class="cap">
+        <div class="idx">06 · UX</div>
+        <h3>体检 · 守卫</h3>
+        <p>一键环境体检并给出两档方案（稳/激进）；依赖守卫防止其他包悄悄破坏配置；专家页可逐核精调 RPS/XPS/IRQ。</p>
       </div>
     </div>
     <div class="master-note">
@@ -353,10 +363,10 @@ html = """<!DOCTYPE html>
     <hr class="rule">
     <p class="lead">从 Releases 下载对应架构的 APK（aarch64 / x86_64 / arm_cortex-a7 / arm_cortex-a9），推到路由器安装：</p>
 <pre><span class="c"># 沙箱/电脑 → 路由器（按架构选包）</span>
-scp -O luci-app-netsteer-1.12.4-aarch64_generic.apk root@<span class="s">192.168.1.1</span>:/tmp/
+scp -O luci-app-netsteer-1.19.3-aarch64_generic.apk root@<span class="s">192.168.1.1</span>:/tmp/
 
 <span class="c"># 路由器上</span>
-apk add --allow-untrusted /tmp/luci-app-netsteer-1.12.4-aarch64_generic.apk
+apk add --allow-untrusted /tmp/luci-app-netsteer-1.19.3-aarch64_generic.apk
 
 <span class="c"># 浏览器打开 LuCI → 服务 → NetSteer</span>
 <span class="c"># 第一次进入会引导「一键体检」，随后按建议启用即可</span></pre>
@@ -371,7 +381,7 @@ apk add --allow-untrusted /tmp/luci-app-netsteer-1.12.4-aarch64_generic.apk
     <a href="https://github.com/pm-parker/netsteer" target="_blank">GitHub</a>
     <a href="https://github.com/pm-parker/netsteer/releases" target="_blank">Releases</a>
     <span>MIT License</span>
-    <span>v1.12.4</span>
+    <span>v1.19.3</span>
   </footer>
 </main>
 

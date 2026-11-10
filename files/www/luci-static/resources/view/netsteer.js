@@ -245,6 +245,20 @@ function p2pStatusMeta(st) {
 	return { label: _('未开启'), cls: ' is-custom' };
 }
 
+/* v1.19.2 统一控件语言: 设备 chip 只有一种胶囊形态 — 建议(＋)/已选(×)靠弱化尾段符号区分,
+ * 建议区统一 ns-suggest-band 容器, 主操作统一 ns-btn-act (消灭 minibtn/裸文本 +× 混用) */
+function chipGlyph(sym) {
+	return E('span', { 'class': 'ns-chip-glyph' }, sym);
+}
+function suggestChip(label, onPick) {
+	return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击加入'),
+		'click': onPick }, [label, chipGlyph('＋')]);
+}
+function selectedChip(ip, onRemove) {
+	return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击移除'),
+		'click': onRemove }, [ip, chipGlyph('×')]);
+}
+
 /* ---- 游戏通道: tc -s 解析 + 状态机 (纯函数层, 单测覆盖) ---- */
 function parseTinStats(text) {
 	/* tc -s qdisc show (cake) → {mode, bandwidth, tins} 或 null
@@ -2275,12 +2289,10 @@ renderSoftirqCard: function(text) {
 			]),
 			E('p', { 'class': 'netsteer-note' }, _('让指定设备的下载类流量走独立通道：P2P 下载、网盘同步不拖累游戏和视频通话，连接成功率也更高。')),
 			E('div', { 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
-				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ip' }, _('设备 IP')),
-				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'flex:1;min-width:150px;min-height:32px' }),
-				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ports' }, _('端口')),
-				E('input', { 'id': 'netsteer-p2p-ports', 'type': 'text', 'value': defPorts, 'size': 12, 'style': 'width:7em;min-height:32px' }),
+				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'class': 'cbi-input-text', 'style': 'flex:2;min-width:150px;min-height:32px', 'placeholder': _('设备的内网 IP，如 192.168.1.100') }),
+				E('input', { 'id': 'netsteer-p2p-ports', 'type': 'text', 'value': defPorts, 'size': 12, 'class': 'cbi-input-text', 'style': 'flex:1;min-width:110px;min-height:32px', 'placeholder': _('如 1024-65535') }),
 				E('button', {
-					'class': 'netsteer-minibtn', 'type': 'button',
+					'class': (st && st.active) ? 'ns-btn-quiet' : 'ns-btn-act', 'type': 'button',
 					'click': ui.createHandlerFn(self, 'p2pToggle', st)
 				}, (st && st.active) ? _('关闭') : _('开启'))
 			]),
@@ -2331,8 +2343,7 @@ renderSoftirqCard: function(text) {
 		var cur = (view._senseExclude || '').split(/[\s,]+/).filter(Boolean);
 		var listEl = E('div', { 'id': 'ns-excl-list', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0' },
 			cur.length ? cur.map(function(ip) {
-				return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击移除'),
-					'click': function() { self.excludeSave(cur.filter(function(x) { return x !== ip; })); } }, ip + ' ×');
+				return selectedChip(ip, function() { self.excludeSave(cur.filter(function(x) { return x !== ip; })); });
 			}) : [E('span', { 'class': 'netsteer-note' }, _('暂无'))]);
 		var inputEl = E('input', { 'type': 'text', 'placeholder': _('输入设备 IP，如 192.168.11.175'), 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px' });
 		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-exclude' }, [
@@ -2345,7 +2356,7 @@ renderSoftirqCard: function(text) {
 			listEl,
 			E('div', { 'style': 'display:flex;gap:8px' }, [
 				inputEl,
-				E('button', { 'class': 'ns-btn-act', 'style': 'color:var(--ok,#0b7f6c)', 'click': function() {
+				E('button', { 'class': 'ns-btn-act', 'click': function() {
 					var v = (inputEl.value || '').trim();
 					if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) {
 						ui.addNotification(null, E('p', {}, _('请输入有效的 IPv4 地址')), 'error');
@@ -2384,15 +2395,14 @@ renderSoftirqCard: function(text) {
 			]),
 			E('p', { 'class': 'netsteer-note' }, _('加入后，这台设备的流量在网络繁忙时自动让路：家人看视频、远程访问文件优先，空闲时它仍可用满带宽。适合下载机、共享盒子等后台设备。')),
 			E('div', { 'id': 'ns-bulk-migrate', 'style': 'display:none;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:rgba(211,84,0,.08);border-radius:6px' }, []),
-			E('div', { 'id': 'ns-bulk-suggest', 'style': 'display:none;gap:8px;align-items:flex-start;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:rgba(90,125,10,.06);border-radius:6px' }, []),
+			E('div', { 'id': 'ns-bulk-suggest', 'class': 'ns-suggest-band' }, []),
 			E('div', { 'id': 'ns-bulk-list', 'style': 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0' },
 				n > 0 ? (st.devices || []).map(function(ip) {
-					return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击移除'),
-						'click': function() { self.bulkOp(['remove', ip]); } }, ip + ' ×');
+					return selectedChip(ip, function() { self.bulkOp(['remove', ip]); });
 				}) : [E('span', { 'class': 'netsteer-note' }, _('暂无设备'))]),
 			E('div', { 'style': 'display:flex;gap:8px' }, [
 				E('input', { 'id': 'netsteer-bulk-ip', 'type': 'text', 'placeholder': _('输入设备 IP，如 192.168.11.178'), 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px' }),
-				E('button', { 'class': 'ns-btn-act', 'style': 'color:var(--ok,#0b7f6c)', 'click': function() {
+				E('button', { 'class': 'ns-btn-act', 'click': function() {
 					var v = ((document.getElementById('netsteer-bulk-ip') || {}).value || '').trim();
 					if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v))
 						return ui.addNotification(null, E('p', {}, _('请输入有效的 IPv4 地址')), 'error');
@@ -2437,7 +2447,7 @@ renderSoftirqCard: function(text) {
 			slot.replaceChildren(
 				E('span', { 'class': 'netsteer-note', 'style': 'flex:1;min-width:0' },
 					_('检测到手工限速规则 (%s)，迁入统一管理后可随插件升级自动维护。').format(m.found.join('、'))),
-				E('button', { 'class': 'ns-btn-act', 'style': 'color:var(--ok,#0b7f6c)', 'click': function() {
+				E('button', { 'class': 'ns-btn-act', 'click': function() {
 					fs.exec('/usr/bin/netsteer-bulk', ['migrate', '--apply']).then(function() {
 						return self.load();
 					}).then(function(values) {
@@ -2456,12 +2466,11 @@ renderSoftirqCard: function(text) {
 			if (!slot || !list || !list.length) return;
 			slot.style.display = 'flex';
 			var chips = list.slice(0, 3).map(function(s) {
-				return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击加入'),
-					'click': function() { self.bulkOp(['add', s.ip]); } },
-					'%s（上行 %s MB / %d 连接）'.format(s.ip, (s.up_mb || 0).toFixed(0), s.conns || 0) + ' ＋');
+				return suggestChip('%s（上行 %s MB / %d 连接）'.format(s.ip, (s.up_mb || 0).toFixed(0), s.conns || 0),
+					function() { self.bulkOp(['add', s.ip]); });
 			});
 			slot.replaceChildren(
-				E('span', { 'class': 'netsteer-note', 'style': 'font-weight:600;white-space:nowrap;margin-top:2px' }, _('发现疑似后台占用：')),
+				E('span', { 'class': 'netsteer-note ns-band-label' }, _('发现疑似后台占用：')),
 				E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0' }, chips)
 			);
 		}).catch(function() {});
@@ -2474,13 +2483,13 @@ renderSoftirqCard: function(text) {
 		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-scene' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('span', { 'class': 'netsteer-card-title' }, _('智能场景识别')),
-				E('span', { 'class': 'netsteer-badge', 'style': 'font-weight:600' }, _('AI 智能识别'))
+				E('span', { 'class': 'netsteer-badge is-tag', 'style': 'font-weight:600' }, _('AI 智能识别'))
 			]),
 			E('div', { 'id': 'ns-sense-body', 'style': 'margin-bottom:10px' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))]),
 			E('p', { 'class': 'netsteer-foot', 'id': 'ns-sense-link-note', 'style': 'margin:.2em 0' },
 				_('检测到看视频 / 打游戏时，自动切换到更合适的模式，闲时恢复均衡；您手动选的档位始终优先。')),
-			E('div', { 'id': 'ns-sense-evwrap', 'style': 'display:none;gap:8px;align-items:flex-start;flex-wrap:wrap;background:rgba(90,125,10,.06);border-radius:6px;padding:8px 10px' }, [
-				E('span', { 'class': 'netsteer-note', 'style': 'font-weight:600;white-space:nowrap;margin-top:2px' }, _('识别到：')),
+			E('div', { 'id': 'ns-sense-evwrap', 'class': 'ns-suggest-band' }, [
+				E('span', { 'class': 'netsteer-note ns-band-label' }, _('识别到：')),
 				E('div', { 'id': 'ns-sense-chips', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0' }, [])
 			]),
 			E('div', { 'style': 'display:flex;gap:8px;align-items:center;margin-top:10px' }, [
@@ -2503,13 +2512,12 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-badge' + meta.cls, 'id': 'netsteer-game-badge' }, _(meta.label))
 			]),
 			E('p', { 'class': 'netsteer-note' }, _('让选定的设备（如游戏主机）在网络繁忙时仍然低延迟——家里有人下载、看视频也不卡。下方实时延迟曲线可验证效果。')),
-			E('div', { 'id': 'ns-game-suggest', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:.4em 0' }, []),
+			E('div', { 'id': 'ns-game-suggest', 'class': 'ns-suggest-band' }, []),
 			E('div', { 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
-				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-game-ip' }, _('设备 IP')),
-				E('input', { 'id': 'netsteer-game-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'flex:1;min-width:180px;min-height:32px', 'placeholder': _('设备的内网 IP，如 192.168.1.100') }),
+				E('input', { 'id': 'netsteer-game-ip', 'type': 'text', 'value': defIp, 'size': 14, 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px;min-height:32px', 'placeholder': _('设备的内网 IP，如 192.168.1.100') }),
 				E('button', {
 					'id': 'netsteer-game-toggle',
-					'class': 'netsteer-minibtn', 'type': 'button',
+					'class': (st && st.enabled) ? 'ns-btn-quiet' : 'ns-btn-act', 'type': 'button',
 					'click': ui.createHandlerFn(self, 'gameToggle', st)
 				}, (st && st.enabled) ? _('关闭加速') : _('开启加速'))
 			]),
@@ -2595,14 +2603,18 @@ renderSoftirqCard: function(text) {
 			var list = [];
 			try { list = JSON.parse(((r && r.stdout) || '').trim()) || []; } catch (e) {}
 			if (!list.length) return;
-			var kids = [E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('疑似游戏设备：'))];
-			list.slice(0, 4).forEach(function(d) {
-				kids.push(E('button', { 'class': 'netsteer-minibtn', 'type': 'button', 'click': function() {
+			var kids = list.slice(0, 4).map(function(d) {
+				return suggestChip('%s · %s'.format(d.name, d.ip), function() {
 					var ip = document.getElementById('netsteer-game-ip');
 					if (ip) ip.value = d.ip;
-				} }, '%s · %s'.format(d.name, d.ip)));
+				});
 			});
-			el2.replaceChildren(E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center' }, kids));
+			el2.className = 'ns-suggest-band';
+			el2.style.display = 'flex';
+			el2.replaceChildren(
+				E('span', { 'class': 'netsteer-note ns-band-label' }, _('疑似游戏设备：')),
+				E('div', { 'style': 'display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0' }, kids)
+			);
 		}).catch(function() {});
 	},
 
@@ -2692,7 +2704,7 @@ renderSoftirqCard: function(text) {
 		if (!el) return;
 		var kids = [];
 		var headline = E('div', { 'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, [
-			E('span', { 'class': 'netsteer-badge' + (meta.cls ? ' ' + meta.cls : ''), 'style': 'font-size:16px;font-weight:600' }, meta.icon + ' ' + meta.name)
+			E('span', { 'class': 'netsteer-badge is-icontag' + (meta.cls ? ' ' + meta.cls : ''), 'style': 'font-size:16px;font-weight:600' }, meta.icon + ' ' + meta.name)
 		]);
 		if (pending)
 			headline.appendChild(E('span', { 'class': 'netsteer-note' }, _('检测到%s流量，确认中…').format(meta.name)));
@@ -2707,7 +2719,7 @@ renderSoftirqCard: function(text) {
 				if (e.length) {
 					var m2 = SENSE_SCENE_META[s] || {};
 					/* 只显示中文场景名 + 命中处数; 平台/协议是内部细节不上 UI */
-					chips.push(E('span', { 'class': 'netsteer-badge', 'style': 'margin:2px' },
+					chips.push(E('span', { 'class': 'netsteer-badge is-icontag', 'style': 'margin:2px' },
 						(m2.icon || '') + ' ' + (m2.name || s) + (e.length > 1 ? ' · ' + e.length + _(' 处') : '')));
 				}
 			});
@@ -2797,7 +2809,7 @@ renderSoftirqCard: function(text) {
 		var chips = [E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('该设备 %d 个连接 · 识别到 %d 个已知平台：').format(sum.total, sum.hit))];
 		if (!cats.length) chips.push(E('span', { 'class': 'netsteer-note', 'style': 'align-self:center' }, _('暂未识别到已知平台')));
 		cats.forEach(function(c) {
-			chips.push(E('span', { 'class': 'netsteer-badge', 'style': 'margin:2px' }, '%s ×%d'.format(c, sum.platforms[c])));
+			chips.push(E('span', { 'class': 'netsteer-badge is-tag', 'style': 'margin:2px' }, '%s ×%d'.format(c, sum.platforms[c])));
 		});
 		var kids = [E('div', { 'style': 'display:flex;gap:4px;flex-wrap:wrap;align-items:center' }, chips)];
 		var srcTag = { name: _('域名'), ip: _('IP 段'), port: _('端口') };
@@ -3031,6 +3043,13 @@ renderSoftirqCard: function(text) {
 			'.netsteer-softirq{margin:.6em 0}',
 			'.netsteer-minibtn{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a)!important;border-radius:var(--r-sm,4px);padding:.2em .7em;font-size:var(--fs-sm,12px);cursor:pointer}',
 			'.ns-btn-act{border:1px solid var(--ok,#0b7f6c);background:var(--s2,#fff);color:var(--ok,#0b7f6c)!important;border-radius:var(--r-sm,4px);padding:.35em 1em;font-size:var(--fs-sm,12px);font-weight:600;cursor:pointer;transition:all .15s}',
+			'.ns-suggest-band{display:none;gap:8px;align-items:flex-start;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:var(--accent-soft,rgba(122,163,0,.08));border-radius:var(--r-sm,6px)}',
+			'.ns-band-label{font-weight:600;white-space:nowrap;margin-top:2px}',
+			'.ns-chip-glyph{margin-left:.55em;opacity:.55;font-weight:400}',
+			'.netsteer-badge.is-icontag::before{display:none}',
+			'.netsteer-badge.is-tag{border-color:var(--line-2,#c1c7ce);background:var(--s3,#eef0f3);color:var(--text-2,#4a515a)}',
+			'.netsteer-badge.is-tag::before{display:none}',
+			'.ns-btn-quiet{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a)!important;border-radius:var(--r-sm,4px);padding:.35em 1em;font-size:var(--fs-sm,12px);font-weight:600;cursor:pointer;transition:all .15s}',
 			'.ns-btn-act:hover{background:var(--ok,#0b7f6c)!important;color:#fff!important}',
 			'.netsteer-minibtn:hover{border-color:var(--accent,#c8f031);color:var(--text-2,#4a515a)!important}',
 			'.netsteer-conc{display:flex;align-items:baseline;gap:.7em;margin:.2em 0 .8em 0}',
@@ -3134,7 +3153,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-root{padding-bottom:96px}',
 			'.netsteer-statusbar{flex-direction:column;align-items:flex-start;gap:6px}',
 			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
-			'.netsteer-minibtn,.ns-btn-act{min-height:36px!important;padding:.45em 1em}',
+			'.netsteer-minibtn,.ns-btn-act,.ns-btn-quiet{min-height:36px!important;padding:.45em 1em}',
 			'.netsteer-badge{max-width:calc(100% - 2em)}',
 			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',
 			'.netsteer-sq-row{grid-template-columns:6.2em 1fr 3.8em;gap:8px}',

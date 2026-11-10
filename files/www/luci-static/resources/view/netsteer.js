@@ -1280,6 +1280,9 @@ return view.extend({
 				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-accent,#c8f031) 0 2px,transparent 2px 6px)' }), E('span', { 'class': 'vt-hint' }, _('vs 基线')) ])
 			]),
 			svg,
+			E('div', { 'class': 'ns-axis-row' }, [
+				E('span', {}, '-7.5m'), E('span', {}, '-3.5m'), E('span', {}, 'now')
+			]),
 			E('div', { 'class': 'vt-hint ns-traffic-foot' }, _('基线建立中 — 约 10 秒后出现第一条曲线'))
 		]);
 	},
@@ -1356,19 +1359,6 @@ return view.extend({
 				ln.setAttribute('data-f', f);
 				grid.appendChild(ln);
 			});
-			var ycap = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-			ycap.setAttribute('x', 636); ycap.setAttribute('text-anchor', 'end');
-			ycap.setAttribute('class', 'ns-axis-y');
-			ycap.setAttribute('data-role', 'peak');
-			grid.appendChild(ycap);
-			[['-7.5m', 4], ['-3.5m', 320], ['now', 632]].forEach(function(pair) {
-				var tx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-				tx.setAttribute('x', pair[1]); tx.setAttribute('y', 128);
-				tx.setAttribute('text-anchor', pair[1] > 600 ? 'end' : (pair[1] < 20 ? 'start' : 'middle'));
-				tx.setAttribute('class', 'ns-axis-x');
-				tx.textContent = pair[0];
-				grid.appendChild(tx);
-			});
 			svg.insertBefore(grid, svg.firstChild);
 		}
 		grid.querySelectorAll('.ns-grid').forEach(function(ln) {
@@ -1376,8 +1366,6 @@ return view.extend({
 			ln.setAttribute('y1', Math.round(H - f * (H - 8) - 2));
 			ln.setAttribute('y2', Math.round(H - f * (H - 8) - 2));
 		});
-		var ycapEl = grid.querySelector('[data-role="peak"]');
-		if (ycapEl) ycapEl.textContent = fmtBps(peak);
 		/* 增益层: vs 关闭基线的差值线 (真实测量, 正=超出基线的吞吐) */
 		var gl = svg.querySelector('.ns-gain-line'), gz = svg.querySelector('.ns-gain-zero');
 		var benchOff = this._benchOff;
@@ -3170,8 +3158,7 @@ renderSoftirqCard: function(text) {
 			'.ns-sw{width:14px;height:3px;border-radius:2px;flex:none}',
 			'.ns-sw-tx{background-image:linear-gradient(90deg,currentColor 55%,transparent 55%);background-size:5px 3px}','.ns-traffic-foot{margin:6px 0 0}',
 			'.ns-grid{stroke:var(--vt-line,#d6dade);stroke-width:1;stroke-dasharray:3 6;opacity:.55}',
-			'.ns-axis-y{font-size:11px;fill:var(--vt-text-3,#5f666f);font-family:var(--vt-mono,monospace);text-anchor:end}',
-			'.ns-axis-x{font-size:10.5px;fill:var(--vt-text-3,#5f666f);opacity:.8}',
+			'.ns-axis-row{display:flex;justify-content:space-between;margin:-4px 2px 0;font-size:10.5px;color:var(--vt-text-3,#5f666f);opacity:.8;font-family:var(--vt-mono,monospace)}',
 			'.vt-tile-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}',
 			'.vt-tile-title{font-size:var(--vt-fs-md,14px);font-weight:640}',
 

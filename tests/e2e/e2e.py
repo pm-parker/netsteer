@@ -116,7 +116,9 @@ with sync_playwright() as p:
 
     # v1.19 D22 不抢网设备: 徽标语义 + 与游戏通道互斥脚注 + 无 JS 错误
     bulk_badge = pg.inner_text("#netsteer-bulk-badge").strip()
-    assert bulk_badge in ("未启用",) or bulk_badge.startswith("已启用"), f"bulk badge 异常: {bulk_badge!r}"
+    assert bulk_badge in ("未开启",) or bulk_badge.startswith("已开启 · "), f"bulk badge 异常: {bulk_badge!r}"
+    excl_badge = pg.inner_text("#netsteer-exclude-badge").strip()
+    assert excl_badge in ("未排除",) or excl_badge.startswith("已排除 · "), f"exclude badge 异常: {excl_badge!r}"
     bulk_foot = pg.inner_text("#netsteer-bulk p.netsteer-foot").strip()
     assert "互斥" in bulk_foot or "优先级模式" in bulk_foot, f"bulk foot 异常: {bulk_foot!r}"
     ok(f"不抢网卡: 徽标={bulk_badge} 脚注语义正确")
@@ -133,14 +135,14 @@ with sync_playwright() as p:
     ok(f"判定下沉: 场景卡消费后端 sense.json (daemon 判定={_want}, ts={_j.get('ts')})")
 
     b0 = pg.inner_text("#netsteer-game-badge").strip()
-    if "优先中" in b0:  # 若初始为开, 先关掉保证起点确定
+    if "已开启" in b0:  # 若初始为开, 先关掉保证起点确定
         pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
         b0 = pg.inner_text("#netsteer-game-badge").strip()
     assert "未开启" in b0, f"unexpected initial badge: {b0}"
     pg.locator("#netsteer-game-ip").fill("192.168.11.123")
     pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
     b1 = pg.inner_text("#netsteer-game-badge").strip()
-    assert "优先中" in b1 and "192.168.11.123" in b1, f"toggle-on failed: {b1}"
+    assert b1 == "已开启", f"toggle-on failed: {b1}"  # v1.19.2 徽章纪律: 纯状态词不带 IP
     ok(f"设备加速: UI 开启生效 ({b1})")
     pg.locator("#netsteer-game-toggle").first.click(); pg.wait_for_timeout(9000)
     b2 = pg.inner_text("#netsteer-game-badge").strip()

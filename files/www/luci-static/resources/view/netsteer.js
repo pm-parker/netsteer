@@ -237,13 +237,12 @@ function p2pValidPort(p) {
 	return n >= 1 && n <= 65535;
 }
 function p2pStatusMeta(st) {
-	/* st = netsteer-p2p status 的 JSON → 徽标文案与样式类 */
+	/* st = netsteer-p2p status 的 JSON → 徽标文案与样式类
+	 * 徽章纪律 (v1.19.2): 徽章只承载状态+规模, 不携带 IP — 对象设备在卡体输入行展示 */
 	if (st && st.active) {
-		var ip = (st.dest_ip || '?').split('.');
-		var short = ip.length > 2 ? '…' + ip.slice(-2).join('.') : (st.dest_ip || '?');
-		return { label: '已开启 · %s'.format(short), cls: '' };
+		return { label: _('已开启'), cls: '' };
 	}
-	return { label: '已关闭', cls: ' is-custom' };
+	return { label: _('未开启'), cls: ' is-custom' };
 }
 
 /* ---- 游戏通道: tc -s 解析 + 状态机 (纯函数层, 单测覆盖) ---- */
@@ -560,7 +559,7 @@ function gameStatusMeta(st) {
 	if (st.enabled && !st.active) return { cls: ' is-warn', label: _('标记缺失'), state: 'missing' };
 	if (st.enabled && st.active && !st.sqm_enabled) return { cls: ' is-warn', label: _('SQM 未运行 · 直通'), state: 'no_sqm' };
 	if (st.enabled && st.active && st.cake_up !== 'diffserv4') return { cls: ' is-warn', label: _('整形未切换'), state: 'degraded' };
-	return { cls: '', label: _('优先中 · %s').format(st.device || '?'), state: 'on' };
+	return { cls: '', label: _('已开启'), state: 'on' };
 }
 
 
@@ -961,7 +960,7 @@ return view.extend({
 		var el = E('div', { 'class': 'vt-tile ns-master', 'id': 'ns-master' }, [
 			E('div', { 'class': 'vt-tile-head' }, [
 				E('span', { 'class': 'vt-tile-title' }, _('智能模式')),
-				E('span', { 'class': 'vt-hint ns-master-state' }, _('读取中…'))
+				E('span', { 'class': 'ns-master-state netsteer-badge is-custom' }, _('读取中…'))
 			]),
 			E('div', { 'class': 'ns-master-body' }, [
 				E('button', { 'type': 'button', 'class': 'ns-toggle', 'id': 'ns-toggle' }, [
@@ -997,9 +996,12 @@ return view.extend({
 		var knob = el.querySelector('.ns-toggle');
 		if (knob) knob.classList.toggle('on', !!on);
 		var stateEl = el.querySelector('.ns-master-state');
-		if (stateEl) stateEl.textContent = on
-			? _('已开启 · %s').format(st.mode.toUpperCase())
-			: _('已关闭 · 基线模式');
+		if (stateEl) {
+			stateEl.textContent = on
+				? _('已开启 · %s').format(st.mode.toUpperCase())
+				: _('未开启 · 基线模式');
+			stateEl.classList.toggle('is-custom', !on);
+		}
 		var gainEl = el.querySelector('#ns-master-gain');
 		if (gainEl) {
 			var off = bench && bench.off, cur = bench && bench.on;
@@ -2272,11 +2274,11 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-badge' + meta.cls, 'id': 'netsteer-p2p-badge' }, _(meta.label))
 			]),
 			E('p', { 'class': 'netsteer-note' }, _('让指定设备的下载类流量走独立通道：P2P 下载、网盘同步不拖累游戏和视频通话，连接成功率也更高。')),
-			E('div', { 'class': 'netsteer-row', 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
+			E('div', { 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
 				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ip' }, _('设备 IP')),
-				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'min-height:32px' }),
+				E('input', { 'id': 'netsteer-p2p-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'flex:1;min-width:150px;min-height:32px' }),
 				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-p2p-ports' }, _('端口')),
-				E('input', { 'id': 'netsteer-p2p-ports', 'type': 'text', 'value': defPorts, 'size': 12, 'style': 'min-height:32px' }),
+				E('input', { 'id': 'netsteer-p2p-ports', 'type': 'text', 'value': defPorts, 'size': 12, 'style': 'width:7em;min-height:32px' }),
 				E('button', {
 					'class': 'netsteer-minibtn', 'type': 'button',
 					'click': ui.createHandlerFn(self, 'p2pToggle', st)
@@ -2331,13 +2333,15 @@ renderSoftirqCard: function(text) {
 			cur.length ? cur.map(function(ip) {
 				return E('span', { 'class': 'netsteer-badge', 'style': 'cursor:pointer', 'title': _('点击移除'),
 					'click': function() { self.excludeSave(cur.filter(function(x) { return x !== ip; })); } }, ip + ' ×');
-			}) : [E('span', { 'class': 'netsteer-note' }, _('暂无。带宽共享盒子、下载机这类对外服务设备会干扰识别，可加入排除。'))]);
+			}) : [E('span', { 'class': 'netsteer-note' }, _('暂无'))]);
 		var inputEl = E('input', { 'type': 'text', 'placeholder': _('输入设备 IP，如 192.168.11.175'), 'class': 'cbi-input-text', 'style': 'flex:1;min-width:180px' });
 		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-exclude' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('span', { 'class': 'netsteer-card-title' }, _('排除设备')),
-				E('span', { 'class': 'netsteer-badge' }, _('识别更准'))
+				E('span', { 'class': 'netsteer-badge' + (cur.length ? '' : ' is-custom'), 'id': 'netsteer-exclude-badge' },
+					cur.length ? _('已排除 · %d 台').format(cur.length) : _('未排除'))
 			]),
+			E('p', { 'class': 'netsteer-note' }, _('已排除的设备不参与场景识别：下载机、共享盒子这类对外服务设备的流量不会干扰判定，识别更准。')),
 			listEl,
 			E('div', { 'style': 'display:flex;gap:8px' }, [
 				inputEl,
@@ -2376,7 +2380,7 @@ renderSoftirqCard: function(text) {
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('span', { 'class': 'netsteer-card-title' }, _('不抢网设备')),
 				E('span', { 'class': 'netsteer-badge' + (n > 0 ? '' : ' is-custom'), 'id': 'netsteer-bulk-badge' },
-					n > 0 ? _('已启用 · %d 台让路中').format(n) : _('未启用'))
+					n > 0 ? _('已开启 · %d 台').format(n) : _('未开启'))
 			]),
 			E('p', { 'class': 'netsteer-note' }, _('加入后，这台设备的流量在网络繁忙时自动让路：家人看视频、远程访问文件优先，空闲时它仍可用满带宽。适合下载机、共享盒子等后台设备。')),
 			E('div', { 'id': 'ns-bulk-migrate', 'style': 'display:none;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding:8px 10px;background:rgba(211,84,0,.08);border-radius:6px' }, []),
@@ -2500,9 +2504,9 @@ renderSoftirqCard: function(text) {
 			]),
 			E('p', { 'class': 'netsteer-note' }, _('让选定的设备（如游戏主机）在网络繁忙时仍然低延迟——家里有人下载、看视频也不卡。下方实时延迟曲线可验证效果。')),
 			E('div', { 'id': 'ns-game-suggest', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:.4em 0' }, []),
-			E('div', { 'class': 'netsteer-row', 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
+			E('div', { 'style': 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:.6em 0' }, [
 				E('label', { 'class': 'netsteer-note', 'for': 'netsteer-game-ip' }, _('设备 IP')),
-				E('input', { 'id': 'netsteer-game-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'min-height:32px', 'placeholder': _('设备的内网 IP，如 192.168.1.100') }),
+				E('input', { 'id': 'netsteer-game-ip', 'type': 'text', 'value': defIp, 'size': 14, 'style': 'flex:1;min-width:180px;min-height:32px', 'placeholder': _('设备的内网 IP，如 192.168.1.100') }),
 				E('button', {
 					'id': 'netsteer-game-toggle',
 					'class': 'netsteer-minibtn', 'type': 'button',

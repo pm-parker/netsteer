@@ -136,10 +136,9 @@ eq(api.p2pValidPort('65535'), true, 'p2p port max');
 eq(api.p2pValidPort('0'), false, 'p2p port reject 0');
 eq(api.p2pValidPort('70000'), false, 'p2p port reject >65535');
 eq(api.p2pValidPort('abc'), false, 'p2p port reject NaN');
-eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启 · …11.175', 'p2p status on label (IP 尾段缩写防徽章爆行)');
-eq(api.p2pStatusMeta({active:1, dest_ip:'10.0.0.5'}).label, '已开启 · …0.5', 'p2p short label');
+eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启', 'p2p on: 徽章不带 IP (v1.19.2 徽章纪律)');
+eq(api.p2pStatusMeta(null).label, '未开启', 'p2p off: 统一措辞');
 eq(api.p2pStatusMeta({active:0}).cls, ' is-custom', 'p2p status off cls');
-eq(api.p2pStatusMeta(null).label, '已关闭', 'p2p status null label');
 
 // ---------- IRQ 亲和 + 对比增量 ----------
 eq(api.parseIrqList('[{"irq":"104","dev":"eth0","affinity":"8","counts":"123"}]').length, 1, 'parseIrqList 1 行');
@@ -374,7 +373,7 @@ eq(api.gameStatusMeta({enabled:1, active:0}).state, 'missing', 'game meta: 标�
 eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:0}).state, 'no_sqm', 'game meta: SQM 停 → 降级');
 eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv3'}).state, 'degraded', 'game meta: 整形未切 → 降级');
 eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv4', device:'192.168.11.101'}).state, 'on', 'game meta: 全链路就绪');
-eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv4', device:'192.168.11.101'}).label, '优先中 · 192.168.11.101', 'game meta: on 徽标文案');
+eq(api.gameStatusMeta({enabled:1, active:1, sqm_enabled:1, cake_up:'diffserv4', device:'192.168.11.101'}).label, '已开启', 'game meta: on 徽标统一措辞 (不带 IP)');
 
 // tabStructure: v1.17.1 三分组 (总览=纯展示 / 智能模式=总开关+场景+能力 / 专家模式)
 const TS = api.tabStructure();

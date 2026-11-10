@@ -43,20 +43,34 @@ function benchFromUci(cfg) {
 
 /* 一条龙: 逐项 uci set → apply → confirm → 跑 apply 脚本 (全程 ~0.2s) */
 function applyNow(pairs) {
+	/* v1.19.1: ubus uci.apply 通道在部分 OpenWrt 构建上恒返 "Invalid argument"
+	 * (空参数也失败, rpcd 重启无效), 而 uci commit 通道正常 → 改走 netsteer-cfg 脚本写配置。
+	 * apply 的作用只是"提交并触发 reload", 本插件的守护进程每轮重读配置, 无需 reload。 */
 	var chain = Promise.resolve();
 	pairs.forEach(function(p) {
-		chain = chain.then(function() {
-			return ubusCall('uci', 'set', { config: 'netsteer', section: p.sec, values: p.values });
-		});
+		chain = chain.then(function() { return cfgSet(p.sec, p.values); });
 	});
 	return chain
-		.then(function() {
-			/* uci apply 在无实际变更时返回 NO_DATA ([5]) — 容忍 (配置已 staged, 直接落盘即可) */
-			return ubusCall('uci', 'apply', { timeout: 90, rollback: true })
-				.then(function() { return ubusCall('uci', 'confirm', {}); })
-				.catch(function() { /* 无变更或 apply 不适用: 跳过确认窗口 */ });
-		})
 		.then(function() { return fs.exec('/usr/bin/netsteer-apply'); });
+}
+
+/* 写 netsteer 配置 (v1.19.1): 走 netsteer-cfg 脚本 (uci set + commit), 立即落盘
+ * 不用 ubus uci.set — 它只 staged 不落盘, 且 uci.apply 通道在这台 25.12 上恒失败。
+ * 多键 = 逐键写 (各键独立 commit, 无跨键原子需求; 值可含空格由脚本处理) */
+function cfgSet(section, values) {
+	var keys = Object.keys(values || {});
+	var chain = Promise.resolve();
+	keys.forEach(function(k) {
+		chain = chain.then(function() {
+			return fs.exec('/usr/bin/netsteer-cfg', ['set', section, k, String(values[k])]).then(function(r) {
+				var out = {};
+				try { out = JSON.parse((r && r.stdout || '').trim()); } catch (e) { out = { ok: false }; }
+				if (!out.ok) throw new Error(out.err || 'netsteer-cfg failed');
+				return out;
+			});
+		});
+	});
+	return chain;
 }
 
 /* ---- 运行时环境 (load 阶段填充; 渲染/事件全部引用这两个全局) ---- */
@@ -895,7 +909,6 @@ return view.extend({
 			IFACES = buildIfaces(meta[1]);
 			/* D14 设备排除列表 (qos 节 sense_exclude): 本地判定回退路径的采样过滤用 */
 			view._senseExclude = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_exclude) || '';
-			view._linked = (meta[1] && meta[1].values && meta[1].values.qos && meta[1].values.qos.sense_linked) || '0';
 			view._curMode = (meta[1] && meta[1].values && meta[1].values.scenario && meta[1].values.scenario.mode) || '';
 			var autotuneDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.autotune_done);
 			var wizardDone = !!(meta[1] && meta[1].values && meta[1].values.global && meta[1].values.global.wizard_done);
@@ -979,6 +992,8 @@ return view.extend({
 	paintMaster: function(el, st, bench) {
 		if (!el || !document.getElementById('ns-master')) return;
 		var on = st && st.mode && st.mode !== 'off';
+		/* 总开关状态供子卡 (自动切换) 判层级用 */
+		view._masterOn = !!on;
 		var knob = el.querySelector('.ns-toggle');
 		if (knob) knob.classList.toggle('on', !!on);
 		var stateEl = el.querySelector('.ns-master-state');
@@ -1839,12 +1854,7 @@ renderSoftirqCard: function(text) {
 
 	markAutotuneDone: function() {
 		/* global section 可能已存在 (apply 用它存 rfs_sock_flow_entries, type=steering) — 不动 .type */
-		return ubusCall('uci', 'set', { config: 'netsteer', section: 'global', values: { autotune_done: '1' } })
-			.catch(function() {
-				return ubusCall('uci', 'add', { config: 'netsteer', type: 'netsteer', name: 'global', values: { autotune_done: '1' } });
-			})
-			.then(function() { return ubusCall('uci', 'commit', { config: 'netsteer' }); })
-			.catch(function() {});
+		return cfgSet('global', { autotune_done: '1' }).catch(function() {});
 	},
 
 	runAutotune: function() {
@@ -2293,12 +2303,12 @@ renderSoftirqCard: function(text) {
 			/* 权威操作 = 脚本 exec (自带首装自愈); uci 记录尽力而为, 失败不阻断 */
 			chain = fs.exec('/usr/bin/netsteer-p2p', ['on', ip.trim(), m[1], m[2]])
 				.then(function() {
-					return ubusCall('uci', 'set', { config: 'netsteer', section: 'p2p', values: { enabled: '1', dest_ip: ip.trim(), port_start: m[1], port_end: m[2] } }).catch(function() {});
+					return cfgSet('p2p', { enabled: '1', dest_ip: ip.trim(), port_start: m[1], port_end: m[2] }).catch(function() {});
 				});
 		} else {
 			chain = fs.exec('/usr/bin/netsteer-p2p', ['off'])
 				.then(function() {
-					return ubusCall('uci', 'set', { config: 'netsteer', section: 'p2p', values: { enabled: '0' } }).catch(function() {});
+					return cfgSet('p2p', { enabled: '0' }).catch(function() {});
 				});
 		}
 		return chain.then(function() { return self.load(); })
@@ -2312,61 +2322,6 @@ renderSoftirqCard: function(text) {
 			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
 	},
 
-	/* v1.18 D14: 自动切换卡 — 开关 + 一句状态 (用户语言, 不暴露档位字母) */
-	renderLinkedCard: function() {
-		var self = this;
-		var linked = (view._linked || '0') === '1';
-		var toggle = E('button', {
-			'class': 'ns-btn-act', 'id': 'ns-linked-toggle',
-			'click': function() {
-				var nv = linked ? '0' : '1';
-				ubusCall('uci', 'set', { config: 'netsteer', section: 'qos', values: { sense_linked: nv } })
-					.then(function() { return ubusCall('uci', 'apply', { rollback: false, timeout: 1000 }); })
-					.then(function() {
-						view._linked = nv;
-						ui.addNotification(null, E('p', {}, nv === '1' ? _('自动切换已开启') : _('自动切换已关闭')), 'info');
-						var c = document.getElementById('netsteer-linked');
-						if (c) c.replaceWith(self.renderLinkedCard());
-					}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
-			}
-		}, linked ? _('已开启') : _('开启'));
-		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-linked' }, [
-			E('div', { 'class': 'netsteer-card-head' }, [
-				E('span', { 'class': 'netsteer-card-title' }, _('自动切换')),
-				toggle
-			]),
-			E('div', { 'id': 'ns-linked-status' }, [E('p', { 'class': 'netsteer-note' }, _('开启后：全家在看视频/打网游时自动切到更合适的模式，闲时自动切回均衡。您手动选的模式不会被改动。'))])
-		]);
-		window.setTimeout(function() { self.paintLinked(); }, 1500);
-		return card;
-	},
-
-	paintLinked: function() {
-		var el = document.getElementById('ns-linked-status');
-		if (!el) return;
-		var linked = (view._linked || '0') === '1';
-		if (!linked) {
-			el.replaceChildren(E('p', { 'class': 'netsteer-note' },
-				_('自动切换未开启。开启后，全家看视频/打网游时自动优化，闲时自动恢复均衡；手动选的 P2P/极速档不会被改动。')));
-			return;
-		}
-		var st = this._senseState || {};
-		var scene = st.scene || 'normal';
-		var names = { gaming: '打游戏', work: '视频会议', streaming: '看视频', download: '大流量下载', normal: '日常浏览' };
-		var sn = names[scene] || '日常浏览';
-		var target = (scene === 'gaming' || scene === 'work') ? _('低延迟优先') : _('均衡');
-		var cur = view._curMode || '';
-		var mnames = { standard: _('均衡'), latency: _('低延迟优先'), steering: _('纯分核加速'), p2p: _('P2P 加速'), throughput: _('极速') };
-		var curName = mnames[cur] || _('均衡');
-		var line;
-		if (cur !== 'standard' && cur !== 'latency' && cur !== '' && cur !== 'off')
-			line = _('当前检测到「%s」，建议「%s」。您手动选的「%s」优先，不自动改动。').format(sn, target, curName);
-		else if (cur === target.replace(/^「|」$/g, '') || sn === '日常浏览')
-			line = _('正在检测: %s · 当前已是合适模式（%s）。').format(sn, curName);
-		else
-			line = _('正在检测: %s → 将自动切到「%s」（当前「%s」）。').format(sn, target, curName);
-		el.replaceChildren(E('p', { 'class': 'netsteer-note' }, line));
-	},
 
 	/* v1.18 D14: 排除设备卡 — 运行下载/共享服务的设备退出场景识别 */
 	renderExcludeCard: function() {
@@ -2403,8 +2358,7 @@ renderSoftirqCard: function(text) {
 		ips.forEach(function(ip) { if (uniq.indexOf(ip) < 0) uniq.push(ip); });
 		view._senseExclude = uniq.join(' ');
 		var self = this;
-		ubusCall('uci', 'set', { config: 'netsteer', section: 'qos', values: { sense_exclude: view._senseExclude } })
-			.then(function() { return ubusCall('uci', 'apply', { rollback: false, timeout: 1000 }); })
+		cfgSet('qos', { sense_exclude: view._senseExclude })
 			.then(function() {
 				/* daemon 每轮采样自动重读排除表, 无需 reload */
 				var card = document.getElementById('netsteer-exclude');
@@ -2519,6 +2473,8 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-badge', 'style': 'font-weight:600' }, _('AI 智能识别'))
 			]),
 			E('div', { 'id': 'ns-sense-body', 'style': 'margin-bottom:10px' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))]),
+			E('p', { 'class': 'netsteer-foot', 'id': 'ns-sense-link-note', 'style': 'margin:.2em 0' },
+				_('检测到看视频 / 打游戏时，自动切换到更合适的模式，闲时恢复均衡；您手动选的档位始终优先。')),
 			E('div', { 'id': 'ns-sense-evwrap', 'style': 'display:none;gap:8px;align-items:flex-start;flex-wrap:wrap;background:rgba(90,125,10,.06);border-radius:6px;padding:8px 10px' }, [
 				E('span', { 'class': 'netsteer-note', 'style': 'font-weight:600;white-space:nowrap;margin-top:2px' }, _('识别到：')),
 				E('div', { 'id': 'ns-sense-chips', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0' }, [])
@@ -2602,12 +2558,12 @@ renderSoftirqCard: function(text) {
 				return ui.showModal(_('IP 无效'), [E('p', { 'class': 'netsteer-note' }, _('请输入游戏主机的 RFC1918 内网地址，例如 192.168.1.100')), E('div', { 'class': 'right' }, [E('button', { 'class': 'btn cbi-button-neutral', 'click': ui.hideModal.bind(ui) }, _('知道了'))])]);
 			chain = fs.exec('/usr/bin/netsteer-qos', ['on', ip])
 				.then(function() {
-					return ubusCall('uci', 'set', { config: 'netsteer', section: 'qos', values: { enabled: '1', device: ip } }).catch(function() {});
+					return cfgSet('qos', { enabled: '1', device: ip }).catch(function() {});
 				});
 		} else {
 			chain = fs.exec('/usr/bin/netsteer-qos', ['off'])
 				.then(function() {
-					return ubusCall('uci', 'set', { config: 'netsteer', section: 'qos', values: { enabled: '0' } }).catch(function() {});
+					return cfgSet('qos', { enabled: '0' }).catch(function() {});
 				});
 		}
 		return chain.then(function() { return self.load(); })
@@ -3117,6 +3073,9 @@ renderSoftirqCard: function(text) {
 			'.netsteer-root .ns-toggle.on{background:var(--vt-accent,#c8f031)!important;border-color:var(--vt-accent-line,var(--vt-accent,#c8f031))!important}',
 			'.netsteer-root .ns-toggle-knob{position:absolute!important;top:3px!important;left:3px!important;width:24px!important;height:24px!important;border-radius:50%!important;background:var(--vt-surface,#fff)!important;box-shadow:0 1px 4px rgba(0,0,0,.25);transition:left .22s;display:block!important}',
 			'.netsteer-root .ns-toggle.on .ns-toggle-knob{left:29px!important}',
+			/* 滑动开关: 禁用态 (总开关关闭时的子开关) — 灰化 + 不可点 */
+			'.netsteer-root .ns-toggle:disabled{opacity:.45!important;cursor:not-allowed!important}',
+			'.netsteer-root .ns-toggle:focus-visible{outline:2px solid var(--vt-accent,#c8f031);outline-offset:2px!important}',
 			'.ns-master-info{min-width:0;flex:1}',
 			'.ns-master-desc{font-size:12.5px;color:var(--vt-text-3,var(--text-3,#5f666f));margin:0 0 4px}',
 			'.ns-master-gain{font-size:13px;font-weight:600;color:var(--vt-text,var(--text,#14171a));margin:0}',
@@ -3242,7 +3201,6 @@ renderSoftirqCard: function(text) {
 		var panelSmart = E('div', { 'class': 'netsteer-tabpanel', 'id': 'netsteer-panel-smart' }, [
 			this.renderMaster(),
 			this.renderSceneCard(),
-			this.renderLinkedCard(),
 			this.renderDeviceCard(values[4 + IFACES.length * 2]),
 			this.renderBulkCard(values[5 + IFACES.length * 2]),
 			this.renderExcludeCard(),

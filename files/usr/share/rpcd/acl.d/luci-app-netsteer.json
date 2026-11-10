@@ -85,6 +85,9 @@
         "/usr/bin/netsteer-bulk": [
           "exec"
         ],
+        "/usr/bin/netsteer-cfg": [
+          "exec"
+        ],
         "/usr/bin/netsteer-feed": [
           "exec"
         ],

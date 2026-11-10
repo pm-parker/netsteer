@@ -1,0 +1,43 @@
+#!/bin/sh
+# netsteer-cfg: netsteer 配置键读写 (绕开 ubus uci.apply 通道)
+#
+# 背景 (2026-11-10 实测): 这台 OpenWrt 25.12 上 ubus 的 uci.apply 方法恒返
+# "Invalid argument" (空参数 {} 也失败, rpcd 重启无效, 改系统配置同样失败),
+# 而 uci 命令行通道完全正常。LuCI 侧凡是把"写配置"寄托在 uci.apply 上的交互
+# 都会直接报错 (netsteer 实测报 "ubus uci.apply 失败: [5]") → 统一改走本脚本。
+#
+# 用法 (k=v 形式直传, 不解析 JSON — busybox sed 对嵌入式引号不可靠):
+#   netsteer-cfg set <section> <key> <value>   写单键并立即 commit (值可含空格)
+#   netsteer-cfg get <section> [key]           读整节 / 单键
+#
+# 只处理 netsteer 自己的配置。守护进程每轮重读配置, 无需 reload。
+# 注意: rpcd exec 环境的 PATH 不含 /sbin → uci 必须用绝对路径。
+
+UCI=/sbin/uci
+[ -x "$UCI" ] || UCI=/usr/sbin/uci
+
+esc() {
+	# JSON 字符串转义 (反斜杠 + 双引号)
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+case "$1" in
+set)
+	[ -n "$2" ] && [ -n "$3" ] || { echo '{"ok":false,"err":"usage: set <section> <key> <value>"}'; exit 2; }
+	if "$UCI" set "netsteer.$2.$3=$4" 2>/dev/null && "$UCI" commit netsteer 2>/dev/null; then
+		echo '{"ok":true}'
+	else
+		echo '{"ok":false,"err":"uci set/commit failed"}'
+		exit 1
+	fi
+	;;
+get)
+	[ -n "$2" ] || { echo '{"ok":false,"err":"usage: get <section> [key]"}'; exit 2; }
+	v=$("$UCI" -q get "netsteer.$2.$3" 2>/dev/null)
+	echo "{\"ok\":true,\"value\":\"$(esc "$v")\"}"
+	;;
+*)
+	echo '{"ok":false,"err":"usage: set|get"}'
+	exit 2
+	;;
+esac

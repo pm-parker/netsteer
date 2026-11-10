@@ -482,7 +482,7 @@ qos_sense_daemon() {
 	top=$(qos_get sense_top); top="${top:-200}"
 	echo $$ > "$SENSE_PID"
 	trap 'rm -f "$SENSE_PID"; exit 0' TERM INT
-	log "sense-daemon: start interval=${iv}s top=$top linked=$(qos_get sense_linked 0)"
+	log "sense-daemon: start interval=${iv}s top=$top linked=$(qos_get sense_linked 1)"
 	while :; do
 		qos_sense "$top" >/dev/null 2>&1
 		qos_sense_link
@@ -499,12 +499,16 @@ scene_mode() {
 }
 
 qos_sense_link() {
-	# D14 联动: 稳定档切换瞬间 (prev 变化) 且 linked=1 → 自动切档
-	# 只在 scenario.mode ∈ {standard, latency, off, 空} 时接管 (用户手选其他档 = 尊重意图)
+	# D14→v1.19.1 联动: 智能模式的一部分, 默认开启 (sense_linked 缺省 1)
+	# 稳定档切换瞬间 (prev 变化) → 自动切档; 只接管 standard↔latency 区间
+	# (用户手选其他档 = 尊重意图); 总开关 off 时不动作 (用户已明确关闭优化)
 	local linked cur target
-	linked=$(qos_get sense_linked 0)
+	linked=$(qos_get sense_linked 1)
 	[ "$linked" = "1" ] || return 0
 	[ -f "$SENSE_STATE" ] || return 0
+	# 总开关关闭 = 用户明确不要优化, 联动不得拉起 (v1.19.1: 随默认开启必须防住)
+	cur=$(uci -q get netsteer.scenario.mode 2>/dev/null)
+	[ "$cur" = "off" ] && return 0
 	local scene cand candn prev old_prev
 	prev=$(sed -n 1p "$SENSE_STATE"); cand=$(sed -n 2p "$SENSE_STATE"); candn=$(sed -n 3p "$SENSE_STATE")
 	old_prev=$(sed -n 4p "$SENSE_STATE" 2>/dev/null)
@@ -512,9 +516,8 @@ qos_sense_link() {
 	[ -n "$prev" ] && [ "$prev" != "$old_prev" ] || return 0
 	echo "$prev" >> "$SENSE_STATE"
 	target=$(scene_mode "$prev")
-	cur=$(uci -q get netsteer.scenario.mode 2>/dev/null)
 	case "$cur" in
-		standard|latency|off|"")
+		standard|latency|"")
 			if [ -n "$target" ] && [ "$target" != "$cur" ]; then
 				log "link: scene=$prev → mode=$target (was $cur)"
 				/usr/bin/netsteer-mode "$target" >/dev/null 2>&1

@@ -224,7 +224,11 @@ function p2pValidPort(p) {
 }
 function p2pStatusMeta(st) {
 	/* st = netsteer-p2p status 的 JSON → 徽标文案与样式类 */
-	if (st && st.active) return { label: '已开启 · %s'.format(st.dest_ip || '?'), cls: '' };
+	if (st && st.active) {
+		var ip = (st.dest_ip || '?').split('.');
+		var short = ip.length > 2 ? '…' + ip.slice(-2).join('.') : (st.dest_ip || '?');
+		return { label: '已开启 · %s'.format(short), cls: '' };
+	}
 	return { label: '已关闭', cls: ' is-custom' };
 }
 
@@ -2309,7 +2313,7 @@ renderSoftirqCard: function(text) {
 		var self = this;
 		var linked = (view._linked || '0') === '1';
 		var toggle = E('button', {
-			'class': 'btn cbi-button-' + (linked ? 'neutral' : 'positive'), 'id': 'ns-linked-toggle', 'style': 'padding:2px 10px',
+			'class': 'ns-btn-act', 'id': 'ns-linked-toggle',
 			'click': function() {
 				var nv = linked ? '0' : '1';
 				ubusCall('uci', 'set', { config: 'netsteer', section: 'qos', values: { sense_linked: nv } })
@@ -2378,7 +2382,7 @@ renderSoftirqCard: function(text) {
 			listEl,
 			E('div', { 'style': 'display:flex;gap:8px' }, [
 				inputEl,
-				E('button', { 'class': 'btn cbi-button-positive', 'click': function() {
+				E('button', { 'class': 'ns-btn-act', 'style': 'color:var(--ok,#0b7f6c)', 'click': function() {
 					var v = (inputEl.value || '').trim();
 					if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) {
 						ui.addNotification(null, E('p', {}, _('请输入有效的 IPv4 地址')), 'error');
@@ -2415,7 +2419,7 @@ renderSoftirqCard: function(text) {
 				E('span', { 'class': 'netsteer-badge', 'style': 'font-weight:600' }, _('AI 智能识别'))
 			]),
 			E('div', { 'id': 'ns-sense-body', 'style': 'margin-bottom:10px' }, [E('p', { 'class': 'netsteer-note' }, _('正在观察网络连接…'))]),
-			E('div', { 'id': 'ns-sense-evwrap', 'style': 'display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;background:rgba(90,125,10,.06);border-radius:6px;padding:8px 10px' }, [
+			E('div', { 'id': 'ns-sense-evwrap', 'style': 'display:none;gap:8px;align-items:flex-start;flex-wrap:wrap;background:rgba(90,125,10,.06);border-radius:6px;padding:8px 10px' }, [
 				E('span', { 'class': 'netsteer-note', 'style': 'font-weight:600;white-space:nowrap;margin-top:2px' }, _('识别到：')),
 				E('div', { 'id': 'ns-sense-chips', 'style': 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0' }, [])
 			]),
@@ -2649,6 +2653,8 @@ renderSoftirqCard: function(text) {
 			});
 		}
 		if (chipsEl) chipsEl.replaceChildren.apply(chipsEl, chips.length ? chips : [E('span', { 'class': 'netsteer-note' }, _('暂无已知平台流量'))]);
+		var evwrapEl = document.getElementById('ns-sense-evwrap');
+		if (evwrapEl) evwrapEl.style.display = 'flex';
 
 		/* 依据句: 仅在需要时补一句 (chips 已表意时不重复) */
 		var whyTxt = '';
@@ -2709,8 +2715,8 @@ renderSoftirqCard: function(text) {
 			el.replaceChildren(
 				E('span', { 'class': 'netsteer-note' }, _('%s%s').format(v, integ === false ? _(' (本地有改动)') : '')),
 				E('button', {
-					'class': 'btn cbi-button cbi-button-apply', 'id': 'ns-feed-btn',
-					'style': 'margin-left:8px;font-size:12px;padding:2px 10px',
+					'class': 'ns-btn-act', 'id': 'ns-feed-btn',
+					'style': 'margin-left:8px',
 					'click': L.bind(self.feedCheck, self)
 				}, _('更新识别库'))
 			);
@@ -2916,7 +2922,7 @@ renderSoftirqCard: function(text) {
 		var css = E('style', { 'type': 'text/css' }, [
 			/* 卡片 (首页 Overview 同款: s1 面 + line 描边 + r 圆角 + 极浅阴影) */
 			'.netsteer-card{background:var(--s1,#f8f9fa);border:1px solid var(--line,#d6dade);border-radius:var(--r,6px);padding:var(--sp-4,16px);box-shadow:0 1px 2px rgba(0,0,0,.05)}',
-			'.netsteer-card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2,8px);margin-bottom:var(--sp-3,12px)}',
+			'.netsteer-card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2,8px);margin-bottom:var(--sp-3,12px);flex-wrap:wrap}',
 			'.netsteer-card-title{font-size:var(--fs-md,14px);font-weight:600;color:var(--text,#14171a)}',
 			'.netsteer-note{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);font-weight:400}',
 			'.netsteer-foot{color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);margin-top:var(--sp-2,8px)}',
@@ -2930,7 +2936,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-help-pop p{margin:.1em 0}',
 
 			/* 徽标 (accent-soft 底, 不再大色块) */
-			'.netsteer-badge{display:inline-flex;align-items:center;gap:.4em;padding:.22em .85em;border-radius:999px;border:1px solid var(--accent,#c8f031);background:var(--accent-soft,rgba(122,163,0,.13));color:var(--text,#14171a);font-size:var(--fs-sm,12px);font-weight:600}',
+			'.netsteer-badge{display:inline-flex;align-items:center;gap:.4em;padding:.22em .85em;border-radius:999px;border:1px solid var(--accent,#c8f031);background:var(--accent-soft,rgba(122,163,0,.13));color:var(--text,#14171a);font-size:var(--fs-sm,12px);font-weight:600;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}',
 			'.netsteer-badge.is-custom{border-color:var(--line-2,#c1c7ce);background:var(--s3,#eef0f3);color:var(--text-2,#4a515a)}',
 			'.netsteer-badge.is-warn{border-color:#d8a531;background:rgba(216,165,49,.13);color:#8a6a10}',
 			'.netsteer-badge::before{content:"";width:.5em;height:.5em;border-radius:50%;background:var(--accent,#c8f031)}',
@@ -2955,7 +2961,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:var(--sp-3,12px);margin:.6em 0 1.2em 0}',
 			'.netsteer-row{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2,8px);margin:.5em 0}',
 			'.netsteer-rowlabel{display:flex;flex-direction:column;gap:.15em;font-size:var(--fs-sm,12px);color:var(--text-2,#4a515a)}',
-			'.netsteer-mask{font-style:normal;font-family:var(--mono,ui-monospace,monospace);font-size:.92em;color:var(--text-3,#5f666f)}',
+			'.netsteer-mask{font-style:normal;font-family:var(--mono,ui-monospace,monospace);font-size:var(--fs-sm,12px);color:var(--text-3,#5f666f)}',
 			'.netsteer-chips{display:flex;flex-wrap:wrap;gap:.3em}',
 			'.netsteer-chip{min-width:2.3em;padding:.28em .5em;border-radius:999px;border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-3,#5f666f);cursor:pointer;font-size:var(--fs-sm,12px);font-family:var(--mono,ui-monospace,monospace);transition:all .15s}',
 			'.netsteer-chip:hover{border-color:var(--accent,#c8f031)}',
@@ -2963,8 +2969,10 @@ renderSoftirqCard: function(text) {
 
 			/* 软中断分布 (Memory 卡同款) */
 			'.netsteer-softirq{margin:.6em 0}',
-			'.netsteer-minibtn{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a);border-radius:var(--r-sm,4px);padding:.2em .7em;font-size:var(--fs-sm,12px);cursor:pointer}',
-			'.netsteer-minibtn:hover{border-color:var(--accent,#c8f031);color:var(--text-2,#4a515a)}',
+			'.netsteer-minibtn{border:1px solid var(--line-2,#c1c7ce);background:var(--s2,#fff);color:var(--text-2,#4a515a)!important;border-radius:var(--r-sm,4px);padding:.2em .7em;font-size:var(--fs-sm,12px);cursor:pointer}',
+			'.ns-btn-act{border:1px solid var(--ok,#0b7f6c);background:var(--s2,#fff);color:var(--ok,#0b7f6c)!important;border-radius:var(--r-sm,4px);padding:.35em 1em;font-size:var(--fs-sm,12px);font-weight:600;cursor:pointer;transition:all .15s}',
+			'.ns-btn-act:hover{background:var(--ok,#0b7f6c)!important;color:#fff!important}',
+			'.netsteer-minibtn:hover{border-color:var(--accent,#c8f031);color:var(--text-2,#4a515a)!important}',
 			'.netsteer-conc{display:flex;align-items:baseline;gap:.7em;margin:.2em 0 .8em 0}',
 			'.netsteer-root .vt-health{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))!important}',
 			'.netsteer-big{font-size:26px;font-weight:700;font-family:var(--mono,ui-monospace,monospace);color:var(--text,#14171a);line-height:1}',
@@ -3056,13 +3064,15 @@ renderSoftirqCard: function(text) {
 			'.netsteer-tab:hover{color:var(--text,#14171a)}',
 			'.netsteer-tab.on{color:var(--text,#14171a);border-bottom-color:var(--vt-accent-line,var(--vt-accent,#c8f031))}',
 			'.netsteer-tabpanel{padding-top:6px}',
-			'#netsteer-panel-smart>.netsteer-card+.netsteer-card,#netsteer-panel-pro>.netsteer-card+.netsteer-card{margin-top:14px}',
+			'#netsteer-panel-smart>.netsteer-card+.netsteer-card,#netsteer-panel-pro>.netsteer-card+.netsteer-card{margin-top:16px}',
 
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
 			'@media (max-width: 640px){',
 			'.netsteer-root{padding-bottom:96px}',
 			'.netsteer-statusbar{flex-direction:column;align-items:flex-start;gap:6px}',
 			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
+			'.netsteer-minibtn,.ns-btn-act{min-height:36px!important;padding:.45em 1em}',
+			'.netsteer-badge{max-width:calc(100% - 2em)}',
 			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',
 			'.netsteer-sq-row{grid-template-columns:6.2em 1fr 3.8em;gap:8px}',
 			'.netsteer-lede{font-size:13px;line-height:1.55}',

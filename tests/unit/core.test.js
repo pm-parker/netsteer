@@ -136,7 +136,8 @@ eq(api.p2pValidPort('65535'), true, 'p2p port max');
 eq(api.p2pValidPort('0'), false, 'p2p port reject 0');
 eq(api.p2pValidPort('70000'), false, 'p2p port reject >65535');
 eq(api.p2pValidPort('abc'), false, 'p2p port reject NaN');
-eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启 · 192.168.11.175', 'p2p status on label');
+eq(api.p2pStatusMeta({active:1, dest_ip:'192.168.11.175'}).label, '已开启 · …11.175', 'p2p status on label (IP 尾段缩写防徽章爆行)');
+eq(api.p2pStatusMeta({active:1, dest_ip:'10.0.0.5'}).label, '已开启 · …0.5', 'p2p short label');
 eq(api.p2pStatusMeta({active:0}).cls, ' is-custom', 'p2p status off cls');
 eq(api.p2pStatusMeta(null).label, '已关闭', 'p2p status null label');
 

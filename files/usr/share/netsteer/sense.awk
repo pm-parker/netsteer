@@ -58,7 +58,9 @@ function parse_cidr(line,   s, tab, cat, cidr, n, a, k, v) {
 	n = split(cidr, a, "/"); cbits = a[2] + 0
 	if (cbits < 8 || cbits > 32) return 0
 	if (split(a[1], v, ".") != 4) return 0
+	cbase = 0                      # 每条记录独立累加 (不清零会跨记录继续乘 256)
 	for (k = 1; k <= 4; k++) { if (v[k] + 0 > 255) return 0; cbase = cbase * 256 + v[k] }
+	ccat = cat                     # 调用方读 ccat; cat 是局部变量, 必须显式导出
 	return 1
 }
 function parse_ports(line,   s, tab, cat, spec, a) {
@@ -70,6 +72,7 @@ function parse_ports(line,   s, tab, cat, spec, a) {
 	split(spec, a, "-"); plo = a[1] + 0
 	split(a[2], a, "/"); phi = a[1] + 0; pproto = a[2]
 	if (plo < 1 || phi > 65535 || plo > phi) return 0
+	pcat = cat                     # 同上: 调用方读 pcat, cat 是局部变量
 	return 1
 }
 

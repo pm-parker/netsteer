@@ -466,7 +466,7 @@ qos_sense() {
 		cand="$scene"; candn=1
 	fi
 	if [ "$candn" -ge 2 ]; then prev="$scene"; fi
-	printf "%s\n%s\n%s\n" "$prev" "$cand" "$candn" > "$SENSE_STATE"
+	printf "%s\n%s\n%s\n" "$prev" "$cand" "$candn" > "$SENSE_STATE.tmp" && mv "$SENSE_STATE.tmp" "$SENSE_STATE"	# 原子写: 前端轮询不会读到半截文件
 	ts=$(date +%s)
 	iv=$(qos_get sense_interval); iv="${iv:-30}"
 	printf '{"scene":"%s","cand":"%s","confirmed":%d,"ts":%d,"interval":%d,"verdict":%s}\n' \

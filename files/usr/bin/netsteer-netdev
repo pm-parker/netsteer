@@ -1,13 +1,52 @@
 #!/bin/sh
 # NetSteer netdev 采样 (总览吞吐曲线数据源; 读 /proc/net/dev 输出累计字节, 无 sleep)
-# 输出: {"ts":ms,"rows":[{"dev":"eth0","rx":N,"tx":N},...]}
-awk 'NR>2 {
-	dev=$1; sub(/:.*/, "", dev); sub(/^[ \t]+/, "", dev)
-	if (dev == "") next
+# 输出: {"ts":s,"rows":[{"dev":"wan","role":"wan","rx":N,"tx":N},...]}
+# role: wan = WAN 承载口 (pppoe 时为 pppoe-wan)
+#       uplink = WAN 底层物理口 (承载口为虚拟口时才有意义)
+#       lan = 其它物理口 / virt = 其它虚拟口 (pppoe/wg/br-* 等)
+# 前端按 role 取数 — 不再假设 eth0/eth1 命名 (DSA 设备上是 wan/lan1/...)
+
+# ---- WAN 角色判定 (从准到宽) ----
+# 1) ubus: l3_device = 承载口 (pppoe 时即 pppoe-wan), device = 底层物理口
+# 2) uci network.wan.device  3) 默认路由口  4) pppoe-wan 兜底
+wan=''; uplink=''
+st=$(ubus call network.interface.wan status 2>/dev/null)
+if [ -n "$st" ]; then
+	wan=$(printf '%s' "$st" | sed -n 's/.*"l3_device": *"\([^"]*\)".*/\1/p')
+	uplink=$(printf '%s' "$st" | sed -n 's/.*"device": *"\([^"]*\)".*/\1/p')
+fi
+if [ -z "$wan" ]; then
+	wan=$(uci -q get network.wan.device 2>/dev/null)
+fi
+if [ -z "$wan" ]; then
+	wan=$(ip -4 route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+fi
+if [ -z "$uplink" ]; then
+	uplink="$wan"
+fi
+
+# ---- 物理口集合 (sysfs 有 device/ 链接; DSA 命名同样识别) ----
+phys=''
+for d in /sys/class/net/*; do
+	n=${d##*/}
+	[ "$n" = 'lo' ] && continue
+	[ -e "$d/device" ] && phys="$phys$n "
+done
+
+awk -v wan="$wan" -v uplink="$uplink" -v phys="$phys" '
+BEGIN { np = split(phys, pa, " "); for (i = 1; i <= np; i++) isphys[pa[i]] = 1 }
+NR > 2 {
+	dev = $1; sub(/:.*/, "", dev); sub(/^[ \t]+/, "", dev)
+	if (dev == "" || dev == "lo") next
+	if (dev == wan) role = "wan"
+	else if (dev == uplink) role = "uplink"
+	else if (dev in isphys) role = "lan"
+	else if (dev ~ /^(pppoe|wg|tun|tap|veth|br-|bond|docker|virbr)/) role = "virt"
+	else next
 	split($0, a, ":")
-	n=split(a[2], v, /[ \t]+/)
-	rx=v[2]; tx=v[10]   # v[1] 为前导空串
-	printf "%s{\"dev\":\"%s\",\"rx\":%s,\"tx\":%s}", (c++?",":""), dev, rx, tx
+	n = split(a[2], v, /[ \t]+/)
+	rx = v[2]; tx = v[10]   # v[1] 为前导空串
+	printf "%s{\"dev\":\"%s\",\"role\":\"%s\",\"rx\":%s,\"tx\":%s}", (c++ ? "," : ""), dev, role, rx, tx
 }' /proc/net/dev 2>/dev/null | {
 	ROW=$(cat)
 	echo "{\"ts\":$(date +%s),\"rows\":[$ROW]}"

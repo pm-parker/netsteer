@@ -37,7 +37,9 @@ jobs:
       - name: Build .apk (${{ matrix.arch }})
         run: |
           V="${GITHUB_REF_NAME#v}"
-          case "$V" in [0-9]*) ;; *) V="0.0.0_alpha";; esac
+          # 仅接受纯版本号 (v1.2.3 → 1.2.3); PR 事件的 "N/merge" 等 ref 一律回退 alpha
+          # (旧守卫 [0-9]* 会放行 "1/merge", 斜杠混入 sed 表达式导致构建崩溃)
+          case "$V" in [0-9]*.[0-9]*.[0-9]*) ;; *) V="0.0.0_alpha";; esac
           rm -rf dist          # never ship stale packages from the working tree
           ./scripts/build-apk.sh "$V" ${{ matrix.arch }}
       - name: Verify package integrity (apk verify)

@@ -19,9 +19,19 @@ eq "$(scene '')" "normal" "sense: 空输入 normal"
 # 2. 心跳: steam 域名 2KB → 不判游戏 (32KB 保活线)
 eq "$(scene '2048\tudp\t192.168.11.50\t185.25.180.7\t3074\t1024\tstore.steampowered.com')" "normal" "sense: 域名 2KB 心跳不判场景"
 
-# 3. 对局: steam 域名双向 1MB light → gaming
-eq "$(scene '1048576\tudp\t192.168.11.50\t155.133.0.10\t27000\t1048576\tsteam.155.133.0.10.valve.net')" "normal" "sense: 未收录子域+IP 段命中 light → gaming"
+# 3. 对局: 域名未收录, 走 IP 段链 → gaming
+eq "$(scene '1048576\tudp\t192.168.11.50\t155.133.0.10\t27000\t1048576\tsteam.155.133.0.10.valve.net')" "gaming" "sense: 未收录子域+IP 段命中 light → gaming"
 # (域名不在表内时走 IP 段链: 155.133.0.0/16 是 steam)
+# 裸 IP 直连 (无域名/无 SNI — P2P 与游戏直连的核心场景) 同样必须命中
+eq "$(scene '1048576\tudp\t192.168.11.50\t155.133.0.10\t27000\t1048576\t')" "gaming" "sense: 裸 IP 直连命中 steam 段 → gaming"
+# 非游戏 IP 不得被误判 (段表越界/精度丢失会在这里暴露)
+eq "$(scene '1048576\tudp\t192.168.11.50\t8.8.8.8\t27000\t1048576\t')" "normal" "sense: 非游戏 IP 不误判"
+# ★ 非首条规则 (185.25.180.0/22 = gameips.txt 第 3 条): cbase 不清零会让后续条目 base 溢出失准
+eq "$(scene '1048576\tudp\t192.168.11.50\t185.25.181.5\t27000\t1048576\t')" "gaming" "sense: 非首条 IP 段规则命中"
+# 端口链: 无域名 + 非游戏 IP + PSN 端口 3480/tcp → gaming (端口表独立生效)
+eq "$(scene '1048576\ttcp\t192.168.11.50\t8.8.8.8\t3480\t1048576\t')" "gaming" "sense: 端口链 3480/tcp → gaming"
+# 端口链协议不符: 3480/udp 不在表内 → normal
+eq "$(scene '1048576\tudp\t192.168.11.50\t8.8.8.8\t3480\t1048576\t')" "normal" "sense: 端口链协议不匹配不误判"
 
 # 4. STUN: udp 3478 双向 768KB → work
 eq "$(scene '393216\tudp\t192.168.11.60\t74.125.250.129\t3478\t393216\t')" "work" "sense: STUN 768KB → work"

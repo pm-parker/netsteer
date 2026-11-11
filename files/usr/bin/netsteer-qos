@@ -544,6 +544,11 @@ qos_sense_status() {
 	if [ -f "$SENSE_JSON" ]; then cat "$SENSE_JSON"; else echo "{}"; fi
 }
 
+# v1.22.1: 写操作前自动快照 (只读分支跳过; auto 同 label 5min 去重)
+case "$1" in
+	on|off|device|reapply) /usr/bin/netsteer-snapshot auto "qos-$1" >/dev/null 2>&1 ;;
+esac
+
 case "$1" in
 on)      shift; qos_on "$@";;
 off)     qos_off;;

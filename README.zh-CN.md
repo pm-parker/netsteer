@@ -100,6 +100,7 @@ NetSteer 是整合层，不发明新机制——每一项都调内核既有能�
 - **增益测量**：`netsteer-bench` 8 秒窗口实测 ping 时延 + 网口吞吐采样，基线持久化到 uci；总开关切换时后台自动跑，页面对比显示
 - **负载延迟探测**：`netsteer-bloat` 测空闲延迟 vs 8 流 CDN 下载下的负载延迟（含实测负载 Mbps），verdict 落 uci；总览页手动触发。诚实边界：千兆线路上本探测验证整形健康度与容量下界（本机负载 ~200Mbps）——满载 bufferbloat 需外部负载源（flent 式），详见脚本头部说明
 - **过热保护**：`netsteer-check` 每分钟采样最热温区写入 `/tmp/netsteer/health.json`；≥85°C 记日志告警（10 分钟防刷屏），≥95°C 自动降档 steering 并落事故日志（不自动恢复——UI 会提示何时手动恢复）
+- **快照与回滚**：档位/总开关/向导/设备列表每次变更前自动快照 netsteer+sqm+分载配置到 `/etc/netsteer/snapshots/`（保留 20 份，同标签 5 分钟去重）；`netsteer-snapshot restore` 恢复 uci **并重放 nft 规则层**（P2P 直通、游戏通道——规则不在 uci 里）；回滚前自动另存 pre-restore 快照（回滚本身可回滚）。持久变更时间线 `/etc/netsteer/history.log`（重启不丢；/tmp 版会丢）
 - **netsteer-apply** 从 UCI 配置声明式写 sysfs，记录已应用状态，开机幂等执行
 - **netsteer-check**（cron 每分钟）对账运行态与配置，自动修复漂移并存证到 `/etc/netsteer/incidents/`
 

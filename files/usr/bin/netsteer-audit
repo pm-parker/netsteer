@@ -98,6 +98,7 @@ for s in $(uci -q show firewall 2>/dev/null | grep -oE '^firewall\.@zone\[[0-9]+
 done
 echo "  \"mtu_fix\":$MTUFIX,"
 echo "  \"bloat\": $(cat /tmp/netsteer/bloat.json 2>/dev/null || echo null),"
+echo "  \"snapshots\": {\"count\":$(ls -1 /etc/netsteer/snapshots 2>/dev/null | wc -l), \"latest\":\"$(ls -1 /etc/netsteer/snapshots 2>/dev/null | sort -r | head -1)\"},"
 echo "  \"p2p\": {\"active\":$P2P_ACTIVE, \"ip\":\"$P2P_IP\"},"
 echo "  \"uplink_sample_kbps\":$SAMPLE_KBPS,"
 echo "  \"static_leases\":\"$lease_ips\","

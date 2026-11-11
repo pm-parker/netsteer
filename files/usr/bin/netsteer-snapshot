@@ -1,0 +1,121 @@
+#!/bin/sh
+# netsteer-snapshot: 配置快照/回滚 + 持久变更审计 (v1.22.1)
+# 用法:
+#   netsteer-snapshot save <label>          手动存快照
+#   netsteer-snapshot auto <label>          变更通道自动存 (同 label 5 分钟去重, 防连点/自愈刷屏)
+#   netsteer-snapshot list                  快照清单 JSON
+#   netsteer-snapshot history [n]           持久变更时间线最近 n 条 (默认 8)
+#   netsteer-snapshot restore <id|latest>   回滚 (uci 恢复 → apply → sqm/fw4 联动)
+# 快照内容: netsteer + sqm 全量 uci export, firewall offloading 字段, 当前 mode
+# 存储: /etc/netsteer/snapshots/<ts>-<label>/  (持久层, 保留最近 20 份)
+# 持久 history: /etc/netsteer/history.log (重启不丢; /tmp 版重启即失是 v1.22.1 前的盲区)
+# 安全: restore 前自动存 pre-restore 快照 (回滚本身可回滚); 恢复失败时 /etc/config/*.pre-restore 兜底
+
+SNAP_DIR=/etc/netsteer/snapshots
+PHIST=/etc/netsteer/history.log
+UCI=$(command -v /sbin/uci || command -v /usr/sbin/uci || echo uci)
+KEEP=20
+DEDUP=300   # auto 同 label 去重秒数
+
+mkdir -p "$SNAP_DIR"
+
+ph() { # 持久 history (滚动: 超 2000 行留尾部 800)
+	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$PHIST"
+	[ "$(wc -l < "$PHIST" 2>/dev/null)" -gt 2000 ] && tail -800 "$PHIST" > "$PHIST.tmp" && mv "$PHIST.tmp" "$PHIST"
+}
+
+do_save() { # $1=label → 输出快照 id
+	local label ts id dir
+	label=$(printf '%s' "${1:-manual}" | tr -c 'a-zA-Z0-9._-' '-' | cut -c1-24)
+	ts=$(date +%Y%m%d-%H%M%S)
+	id="${ts}-${label}"
+	dir="$SNAP_DIR/$id"
+	mkdir -p "$dir"
+	"$UCI" -q export netsteer > "$dir/netsteer.uci" 2>/dev/null
+	"$UCI" -q export sqm > "$dir/sqm.uci" 2>/dev/null
+	"$UCI" -q get firewall.@defaults[0].flow_offloading > "$dir/offloading" 2>/dev/null || echo "0" > "$dir/offloading"
+	echo "$("$UCI" -q get netsteer.scenario.mode 2>/dev/null || echo unknown)" > "$dir/mode"
+	date +%s > "$dir/ts"
+	# 保留最近 KEEP 份 (按名字排序即时间序)
+	ls -1 "$SNAP_DIR" 2>/dev/null | sort -r | tail -n +$((KEEP + 1)) | while read -r old; do
+		rm -rf "$SNAP_DIR/$old"
+	done
+	echo "$id"
+}
+
+case "${1:-list}" in
+save)
+	id=$(do_save "$2")
+	ph "snapshot save $id"
+	echo "{\"saved\":\"$id\"}"
+	;;
+auto)
+	label="${2:-auto}"
+	# 去重: 同 label 且 5 分钟内已存 → 跳过
+	last=$(ls -1 "$SNAP_DIR" 2>/dev/null | grep -- "-$label\$" | sort -r | head -1)
+	if [ -n "$last" ]; then
+		lastts=$(cat "$SNAP_DIR/$last/ts" 2>/dev/null || echo 0)
+		now=$(date +%s)
+		[ $((now - lastts)) -lt $DEDUP ] 2>/dev/null && { echo "{\"skipped\":\"$last\"}"; exit 0; }
+	fi
+	id=$(do_save "$label")
+	ph "snapshot auto $id"
+	echo "{\"saved\":\"$id\"}"
+	;;
+list)
+	echo -n "{\"snapshots\":["
+	first=1
+	for d in $(ls -1 "$SNAP_DIR" 2>/dev/null | sort -r | head -20); do
+		m=$(cat "$SNAP_DIR/$d/mode" 2>/dev/null)
+		[ $first -eq 1 ] && first=0 || echo -n ","
+		echo -n "{\"id\":\"$d\",\"mode\":\"$m\"}"
+	done
+	echo "]}"
+	;;
+history)
+	n="${2:-8}"
+	tail -"$n" "$PHIST" 2>/dev/null
+	;;
+restore)
+	TARGET="${2:-latest}"
+	if [ "$TARGET" = "latest" ]; then
+		TARGET=$(ls -1 "$SNAP_DIR" 2>/dev/null | sort -r | head -1)
+	fi
+	dir="$SNAP_DIR/$TARGET"
+	if [ ! -f "$dir/netsteer.uci" ]; then
+		echo "{\"error\":\"snapshot not found: $TARGET\"}"
+		exit 1
+	fi
+	# 回滚前快照 (回滚本身可回滚)
+	pre=$(do_save "pre-restore")
+	# 兜底备份 (uci import 失败时手工恢复用)
+	cp /etc/config/netsteer /etc/config/netsteer.pre-restore 2>/dev/null
+	cp /etc/config/sqm /etc/config/sqm.pre-restore 2>/dev/null
+	# 恢复 netsteer + sqm 全量
+	"$UCI" -q import netsteer < "$dir/netsteer.uci" && "$UCI" -q commit netsteer || {
+		echo "{\"error\":\"netsteer import failed, 兜底: /etc/config/netsteer.pre-restore\"}"
+		exit 1
+	}
+	"$UCI" -q import sqm < "$dir/sqm.uci" && "$UCI" -q commit sqm || {
+		echo "{\"error\":\"sqm import failed, 兜底: /etc/config/sqm.pre-restore\"}" >&2
+	}
+	# firewall offloading 单字段 (不整包恢复 firewall — 太危险)
+	off=$(cat "$dir/offloading" 2>/dev/null)
+	[ -n "$off" ] && "$UCI" -q set firewall.@defaults[0].flow_offloading="$off" && "$UCI" -q commit firewall
+	fw4 reload >/dev/null 2>&1
+	/etc/init.d/sqm restart >/dev/null 2>&1
+	# 运行态重对齐 (sysfs/分核/IRQ 从恢复后的 uci 重写)
+	/usr/bin/netsteer-apply >/dev/null 2>&1
+	# nft 规则层不在 uci 里, 按恢复后的状态重放: p2p 直通 + game 通道 (reapply 幂等, enabled=0 时 no-op)
+	rmode=$(cat "$dir/mode" 2>/dev/null)
+	[ "$rmode" = "p2p" ] && /usr/bin/netsteer-p2p on "$("$UCI" -q get netsteer.p2p.dest_ip 2>/dev/null)" >/dev/null 2>&1
+	/usr/bin/netsteer-qos reapply >/dev/null 2>&1
+	ph "snapshot restore $TARGET (pre=$pre)"
+	logger -t netsteer-snapshot "已回滚到 $TARGET (回滚前状态存为 $pre)"
+	echo "{\"restored\":\"$TARGET\",\"pre_restore\":\"$pre\",\"mode\":\"$(cat "$dir/mode" 2>/dev/null)\"}"
+	;;
+*)
+	echo "usage: netsteer-snapshot save|auto|list|history|restore" >&2
+	exit 2
+	;;
+esac

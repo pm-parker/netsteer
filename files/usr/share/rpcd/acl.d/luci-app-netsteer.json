@@ -82,6 +82,9 @@
         "/usr/bin/netsteer-bloat": [
           "exec"
         ],
+        "/usr/bin/netsteer-snapshot": [
+          "exec"
+        ],
         "/usr/bin/netsteer-qos": [
           "exec"
         ],

@@ -207,6 +207,11 @@ bulk_migrate() { # 输出 JSON {found:[ip],files:[path]}; --apply 把 found 迁�
 	echo "{\"found\":$jf,\"files\":$jj}"
 }
 
+# v1.22.1: 设备列表写操作前自动快照
+case "$1" in
+	add|remove|off|reapply) /usr/bin/netsteer-snapshot auto "bulk-$1" >/dev/null 2>&1 ;;
+esac
+
 case "$1" in
 add)     shift; bulk_add "$@";;
 remove)  shift; bulk_remove "$@";;

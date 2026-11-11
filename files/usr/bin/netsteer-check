@@ -62,7 +62,11 @@ done < "$STATE_TXT"
 cur=$(echo "$cur" | sed 's/^ //')
 
 last=$(tail -1 "$HIST" 2>/dev/null | cut -d' ' -f3-)
-[ "$cur" != "$last" ] && echo "$now $cur" >> "$HIST"
+# v1.22.1: 变更双写 — /tmp 版 (重启即失) + /etc 持久版 (审计时间线; 仅 state 变化时写, 不伤 flash)
+if [ "$cur" != "$last" ]; then
+	echo "$now $cur" >> "$HIST"
+	echo "$now $cur" >> /etc/netsteer/history.log 2>/dev/null
+fi
 # 轮转: 超 3000 行留尾部 1000
 [ "$(wc -l < "$HIST" 2>/dev/null)" -gt 3000 ] && tail -1000 "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
 

@@ -150,6 +150,12 @@ apply_off() { # 停用全部 netsteer 优化, 回到系统默认 (供 A/B 基线
 	echo "$acts"
 }
 
+# v1.22.1: 档位变更前自动快照 (auto 5min 去重; 只读分支跳过) — 快照动作本身即持久审计记录
+case "${1:-}" in
+	list|status|"") ;;
+	*) /usr/bin/netsteer-snapshot auto "mode-${1:-}" >/dev/null 2>&1 ;;
+esac
+
 case "${1:-}" in
 	off)
 		ACTS=$(apply_off)

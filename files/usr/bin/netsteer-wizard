@@ -110,6 +110,11 @@ wizard_done() {
 	uci -q commit netsteer
 }
 
+# v1.22.1: 向导应用前自动快照 (会连写 sqm/netsteer/firewall 多处)
+case "$1" in
+	apply) /usr/bin/netsteer-snapshot auto "wizard-apply" >/dev/null 2>&1 ;;
+esac
+
 case "$1" in
 probe)
 	probe

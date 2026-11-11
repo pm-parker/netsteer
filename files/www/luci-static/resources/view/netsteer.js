@@ -2680,6 +2680,68 @@ renderSoftirqCard: function(text) {
 		]);
 	},
 
+	renderSnapshotCard: function() {
+		/* 专家调教: 快照与回滚 (v1.22.1 — 所有配置变更可退) */
+		var self = this;
+		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-snapcard' }, [
+			E('div', { 'class': 'netsteer-card-head' }, [
+				E('span', { 'class': 'netsteer-card-title' }, _('快照与回滚')),
+				E('span', { 'class': 'netsteer-note', 'id': 'ns-snap-info' }, _('读取中…'))
+			]),
+			E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0 .4em' },
+				_('档位 / 开关 / 向导 / 设备列表每次变更前自动存快照（保留 20 份）。配置改坏时一键回到之前的状态；回滚本身也会先存一份，可以再回滚。')),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn cbi-button-neutral', 'type': 'button', 'id': 'ns-snap-refresh',
+					'click': ui.createHandlerFn(this, 'snapRefresh') }, _('刷新')),
+				E('button', { 'class': 'btn cbi-button-negative', 'type': 'button', 'id': 'ns-snap-restore',
+					'style': 'margin-left:8px',
+					'click': ui.createHandlerFn(this, 'snapRestore') }, _('回滚到最近快照'))
+			]),
+			E('div', { 'id': 'ns-snap-history', 'style': 'margin-top:8px' }, [])
+		]);
+		window.setTimeout(function() { self.snapRefresh(); }, 300);
+		return card;
+	},
+
+	snapRefresh: function() {
+		/* 快照清单 + 持久变更时间线 (audit 已带 snapshots 计数; 时间线走 snapshot history) */
+		var info = document.getElementById('ns-snap-info');
+		var his = document.getElementById('ns-snap-history');
+		fs.exec('/usr/bin/netsteer-audit', []).then(function(r) {
+			var a = null; try { a = JSON.parse((r.stdout || '').trim()); } catch (_e) {}
+			var sn = a && a.snapshots || { count: 0, latest: '' };
+			if (info) info.textContent = sn.count + ' 份 · 最近: ' + (sn.latest || '—');
+		}).catch(function() {});
+		fs.exec('/usr/bin/netsteer-snapshot', ['history', '6']).then(function(r) {
+			var lines = ((r && r.stdout) || '').trim().split('\n').filter(Boolean);
+			if (his) his.replaceChildren(E('div', { 'class': 'netsteer-note' },
+				lines.length ? lines.join('\n') : _('暂无变更记录')));
+			if (his) his.style.whiteSpace = 'pre-line';
+		}).catch(function() {});
+	},
+
+	snapRestore: function() {
+		/* 回滚到最近快照 (restore 内部自动先存 pre-restore) */
+		var self = this;
+		return ui.showModal(_('确认回滚'), [
+			E('p', { 'class': 'netsteer-note' }, _('将把 netsteer / 智能队列 / 硬件分载配置恢复到最近一次快照，网络会瞬断 1-2 秒。回滚前的当前状态会自动另存一份。')),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn cbi-button-neutral', 'click': ui.hideModal.bind(ui) }, _('取消')),
+				E('button', { 'class': 'btn cbi-button-negative important', 'id': 'ns-snap-go',
+					'click': function() {
+						ui.hideModal();
+						fs.exec('/usr/bin/netsteer-snapshot', ['restore', 'latest']).then(function(r) {
+							var o = null; try { o = JSON.parse((r.stdout || '').trim()); } catch (_e) {}
+							ui.addNotification(null, E('p', {}, o && o.restored
+								? _('已回滚到 %s (回滚前存为 %s)').format(o.restored, o.pre_restore)
+								: _('回滚结果未知, 请刷新页面查看')), o && o.restored ? 'info' : 'warn');
+							window.setTimeout(function() { self.snapRefresh(); }, 500);
+						}).catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
+					} }, _('执行回滚'))
+			])
+		]);
+	},
+
 	gameDnsEnToggle: function(btn, _ev) {
 		/* dnsmasq 查询日志开关 (仅 dnsmasq_off/dnsmasq 观测面出现; 重启 dnsmasq ~1s) */
 		var self = this;
@@ -3332,7 +3394,8 @@ renderSoftirqCard: function(text) {
 			this.renderSoftirqCard(values[1 + IFACES.length * 2] || ''),
 			E('div', { 'id': 'netsteer-irq-card-slot' }, [ this.renderIrqCard('') ]),
 			this.renderAuditCard(),
-			this.renderTinsCard(values[4 + IFACES.length * 2])
+			this.renderTinsCard(values[4 + IFACES.length * 2]),
+			this.renderSnapshotCard()
 		]);
 				/* IRQ 列表异步填入 (不阻塞首屏) */
 		var self2 = this;

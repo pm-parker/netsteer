@@ -167,6 +167,11 @@ with sync_playwright() as p:
     foot = pg.inner_text("#ns-version-foot")
     assert foot.startswith("NetSteer v") and foot != "NetSteer vundefined", f"version foot bad: {foot!r}"
     ok(f"页脚版本行: {foot[:40]}")
+
+    # v1.22.1: 快照与回滚卡 (专家页) + 快照命令在位
+    assert pg.locator("#netsteer-snapcard").count() == 1, "快照卡缺失"
+    assert pg.locator("#ns-snap-restore").count() == 1, "回滚按钮缺失"
+    ok("快照与回滚: 卡片+回滚按钮在位 (专家页)")
     m.close(); ctx.close(); b.close()
 
 # v1.20: netsteer-doctor 一键诊断 (反馈闭环) + sense-daemon 防重 (soak 泄漏修复)

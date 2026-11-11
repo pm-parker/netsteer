@@ -26,5 +26,16 @@ boot() {
 	start
 }
 
-restart() { start; }
+restart() { stop; start; }
 reload() { start; }
+
+stop() {
+	# v1.20: 真正停 daemon。旧版无 stop(), restart=start() 导致:
+	# 1) 升级后旧 daemon 永生 (一直跑旧代码); 2) 泄漏的旧 daemon 无法经服务脚本回收。
+	if [ -f /tmp/netsteer/sense.pid ]; then
+		local dp
+		dp=$(cat /tmp/netsteer/sense.pid 2>/dev/null)
+		[ -n "$dp" ] && kill "$dp" 2>/dev/null
+		rm -f /tmp/netsteer/sense.pid
+	fi
+}

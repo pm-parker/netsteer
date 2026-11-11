@@ -169,4 +169,21 @@ with sync_playwright() as p:
     ok(f"页脚版本行: {foot[:40]}")
     m.close(); ctx.close(); b.close()
 
+# v1.20: netsteer-doctor 一键诊断 (反馈闭环) + sense-daemon 防重 (soak 泄漏修复)
+import subprocess as _sp2
+def _rsh(cmd):
+    return _sp2.run(["ssh", "-i", "/home/abc/.ssh/openwrt_lazycat", "-o", "BatchMode=yes",
+                     "root@192.168.11.1", cmd], capture_output=True, text=True, timeout=90)
+_doc = _rsh("/usr/bin/netsteer-doctor")
+assert _doc.returncode in (0, 1, 2) and "VERDICT:" in _doc.stdout, f"doctor 输出异常 rc={_doc.returncode}"
+for _seg in ("[1] 版本", "[3] 依赖组件", "[6] 观测面", "[7] 场景引擎", "[9] 转向状态", "[10] 配置与日志尾"):
+    assert _seg in _doc.stdout, f"doctor 缺段: {_seg}"
+ok(f"netsteer-doctor: 十段输出+VERDICT ({_doc.stdout.strip().splitlines()[-1]})")
+_n0 = _rsh("ps w | grep -c '[s]ense-daemon'").stdout.strip()
+_dup = _rsh("/usr/bin/netsteer-qos sense-daemon; echo rc=$?")
+_n1 = _rsh("ps w | grep -c '[s]ense-daemon'").stdout.strip()
+assert _dup.stdout.strip().endswith("rc=0") and _n0 == "1" and _n1 == "1", \
+    f"防重失效: before={_n0} after={_n1} rc={_dup.stdout!r}"
+ok("sense-daemon 防重: 直调秒退 rc=0, 进程数恒 1 (v1.20 泄漏修复)")
+
 print(f"ALL GREEN ({len(PASS)} checks)")

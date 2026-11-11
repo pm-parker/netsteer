@@ -48,7 +48,8 @@ find "$PKGROOT" -name '*.js' -o -name '*.json' | xargs chmod 644
 cat > "$WORK/post-install" <<'EOF'
 #!/bin/sh
 /etc/init.d/netsteer enable
-/etc/init.d/netsteer start 2>/dev/null || true
+# v1.20: restart 而非 start — 升级时先停旧 daemon 再拉新 (旧 daemon 永生 bug 的安装侧修复)
+/etc/init.d/netsteer restart 2>/dev/null || /etc/init.d/netsteer start 2>/dev/null || true
 rm -f /tmp/luci-indexcache* 2>/dev/null
 /etc/init.d/rpcd reload 2>/dev/null || /etc/init.d/rpcd restart 2>/dev/null || true
 exit 0

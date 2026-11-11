@@ -476,12 +476,25 @@ qos_sense() {
 }
 
 qos_sense_daemon() {
+	# 防重 (v1.20, soak 实测泄漏修复): 已有活 daemon 直接退出。
+	# pid 文件 + cmdline 双校验: pid 存活且命令行含 sense-daemon 才算占用 (防 pid 复用误判)。
+	# 旧版无此校验, 升级/重装链路任何绕过 init.d guard 的直调都会再起一个 daemon 并覆盖 pid 文件。
+	if [ -f "$SENSE_PID" ]; then
+		local dp
+		dp=$(cat "$SENSE_PID" 2>/dev/null)
+		if [ -n "$dp" ] && [ -d "/proc/$dp" ] && grep -q "sense-daemon" "/proc/$dp/cmdline" 2>/dev/null; then
+			log "sense-daemon: already running pid=$dp, skip"
+			exit 0
+		fi
+	fi
 	# 常驻: 固定低频轮询 (默认 30s), uci netsteer.sense.interval/top 可覆盖
 	local iv top
 	iv=$(qos_get sense_interval); iv="${iv:-30}"
 	top=$(qos_get sense_top); top="${top:-200}"
 	echo $$ > "$SENSE_PID"
-	trap 'rm -f "$SENSE_PID"; exit 0' TERM INT
+	# v1.20: trap 删除前校验属主 — 升级/重启窗口内旧 daemon 退出时会把新 daemon 的 pid 文件误删 (实测竞态)
+	# (busybox sh 在 sleep 结束后才处理信号, kill 到 trap 执行最长滞后一个 interval)
+	trap 'p=$(cat "$SENSE_PID" 2>/dev/null); [ "$p" = "$$" ] && rm -f "$SENSE_PID"; exit 0' TERM INT
 	log "sense-daemon: start interval=${iv}s top=$top linked=$(qos_get sense_linked 1)"
 	while :; do
 		qos_sense "$top" >/dev/null 2>&1

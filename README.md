@@ -111,6 +111,16 @@ NetSteer is an integration layer — it invents no new mechanisms, it drives exi
 
 Everything is reversible: the master toggle restores stock behavior; the `System default` preset restores kernel defaults.
 
+## Troubleshooting & feedback
+
+One command collects everything needed to debug your setup — SSH to the router and run:
+
+```sh
+netsteer-doctor
+```
+
+It prints ten sections (package version, environment, SQM state, offload flags, observation channel, scene engine, acceleration tunnels, steering state, config, recent logs) and a final `VERDICT` line with known-boundary warnings (missing deps, flow-offload counter freeze, daemon leaks, degraded DNS observation). Paste the full output when [opening an issue](https://github.com/pm-parker/netsteer/issues) — the issue template asks for exactly this.
+
 ## Honest limits
 
 - Gain percentages are measured on your box; idle networks show small deltas (honestly reported as "parity") — cake's payoff shows under upstream congestion

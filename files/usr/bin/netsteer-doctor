@@ -1,0 +1,97 @@
+#!/bin/sh
+# netsteer-doctor: 一键诊断 (v1.20) — 报障时全量贴输出到 GitHub issue
+# 输出分段 [1]-[10] + VERDICT; 退出码 0=OK 1=WARN 2=FAIL
+# 判定只针对已知边界: 依赖缺失/SQM 未启用/分载冻结计数/daemon 泄漏/未初始化/观测面降级
+LOG_TAG=netsteer-doctor
+WARN=0; FAIL=0
+warn() { echo "  [WARN] $1"; WARN=$((WARN+1)); }
+fail() { echo "  [FAIL] $1"; FAIL=$((FAIL+1)); }
+sect() { echo; echo "[$1] $2"; }
+
+# JSON 助手 (busybox 无 jq): 数值字段 (兼容带/不带引号两种序列化) 与字符串字段
+jnum() { grep -o "\"$1\": *\"*[0-9-]*\"*" | head -1 | grep -o '[0-9-]*' | head -1; }
+jstr() { grep -o "\"$1\":\"[^\"]*\"" | head -1 | cut -d: -f2- | tr -d '"'; }
+
+AUDIT=$(/usr/bin/netsteer-audit 2>/dev/null)
+SENSE=$(/usr/bin/netsteer-qos sense-status 2>/dev/null)
+ENVV=$(/usr/bin/netsteer-qos env 2>/dev/null)
+
+echo "== NetSteer Doctor $(date '+%Y-%m-%d %H:%M:%S') =="
+
+sect 1 "版本"
+_ver=$(apk list -I 2>/dev/null | grep luci-app-netsteer | head -1)
+echo "  包: ${_ver:-未通过包管理器安装 (scp 直推? 版本账面不可信)}"
+[ -n "$_ver" ] || warn "apk 账面无记录 — scp 直推开发版, 升级/卸载链路不受包管理"
+/etc/init.d/netsteer enabled >/dev/null 2>&1 && echo "  开机自启: 是" || warn "开机自启未启用"
+
+sect 2 "环境"
+. /etc/openwrt_release 2>/dev/null
+echo "  系统: ${DISTRIB_DESCRIPTION:-unknown} / $(uname -m) / kernel $(uname -r)"
+echo "  CPU: $(grep -c ^processor /proc/cpuinfo) 核 / 内存: $(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%dMB 可用 %dMB", t/1024, a/1024}' /proc/meminfo)"
+echo "  在线: $(cut -d. -f1 /proc/uptime | awk '{printf "%d天%d时", $1/86400, $1%86400/3600}')"
+
+sect 3 "依赖组件"
+# 计数范围限定在 deps 行内 (v1.20 修正: 全文搜 *:0 会把 offload 段的 flow:0 误计为缺依赖)
+_deps_txt=$(echo "$AUDIT" | grep '"deps"')
+echo "$_deps_txt" | grep -o '"[a-z_]*": *0' | tr -d '" :' | while read -r z; do echo "  [WARN] 缺失: $z"; done
+_deps0=$(echo "$_deps_txt" | grep -o '"[a-z_]*": *0' | wc -l | tr -d ' ')
+WARN=$((WARN+_deps0))
+[ "$_deps0" -eq 0 ] && echo "  全部在位"
+
+sect 4 "SQM 整形"
+_sqm_en=$(echo "$AUDIT" | jnum enabled)
+_cake=$(echo "$AUDIT" | jnum cake_running)
+if [ "$_sqm_en" = "1" ]; then
+	echo "  已启用: $(echo "$AUDIT" | jstr script) / $(echo "$AUDIT" | jstr qdisc) / 下行 $(echo "$AUDIT" | jnum download) kbps / 上行 $(echo "$AUDIT" | jnum upload) kbps"
+	[ "$_cake" = "1" ] || warn "SQM 已启用但 cake 未在运行"
+else
+	warn "SQM 未启用 — 整形与场景档位均不生效"
+fi
+
+sect 5 "硬件分载"
+_flow=$(echo "$AUDIT" | grep -o '"flow": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+_hw=$(echo "$AUDIT" | grep -o '"hw": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+echo "  flow offloading=${_flow:-?} / hw offload=${_hw:-?}"
+[ "${_flow:-0}" = "1" ] && warn "软件分载开启 — conntrack 字节计数会冻结, 场景识别体积证据失真"
+
+sect 6 "观测面"
+echo "  代理内核: $(echo "$ENVV" | jstr proxy_core | grep . || echo 无)"
+echo "  DNS 观测通道: $(echo "$ENVV" | jstr dns_observer | grep . || echo 无)"
+echo "  探测目标: $(echo "$ENVV" | jstr probe_target | grep . || echo 无)"
+_dob=$(echo "$ENVV" | jstr dns_observer)
+[ "$_dob" = "dnsmasq" ] && ! uci -q get dhcp.@dnsmasq[0].logqueries | grep -q 1 && warn "观测通道=dnsmasq 但 query 日志未开 — 域名证据缺失, 识别降级"
+
+sect 7 "场景引擎"
+_nd=$(ps w 2>/dev/null | grep -c '[s]ense-daemon')
+_sc=$(echo "$SENSE" | grep -o '"scene":"[a-z]*"' | head -1 | cut -d'"' -f4)
+echo "  当前判定: ${_sc:-无数据} / daemon 进程数: $_nd / 轮询: $(echo "$SENSE" | jnum interval)s"
+[ "$_nd" -eq 0 ] && warn "sense-daemon 未运行 — 场景卡无数据"
+[ "$_nd" -gt 1 ] && warn "sense-daemon 存在 $_nd 个进程 (疑似泄漏, /etc/init.d/netsteer restart 可回收)"
+
+sect 8 "加速通道"
+_gip=$(uci -q get netsteer.game.ip); _gen=$(uci -q get netsteer.game.enabled)
+echo "  游戏通道: enabled=${_gen:-0} ip=${_gip:-未设置}"
+[ "$_gen" = "1" ] && [ -z "$_gip" ] && warn "游戏通道开启但未设 IP"
+_bulk=$(uci -q get netsteer.qos.bulk_devices 2>/dev/null)
+echo "  不抢网设备: ${_bulk:-无}"
+_p2p=$(echo "$AUDIT" | jnum active)
+echo "  P2P 直通: active=${_p2p:-0} $(echo "$AUDIT" | jstr ip | grep .)"
+
+sect 9 "转向状态"
+if [ -s /tmp/netsteer/state.txt ]; then
+	echo "  接口条目: $(grep -c '^netsteer' /tmp/netsteer/state.txt)"
+else
+	fail "state.txt 不存在 — netsteer-apply 从未成功运行"
+fi
+[ -s /tmp/netsteer/history.log ] && echo "  最近调整: $(tail -2 /tmp/netsteer/history.log | tr '\n' ' | ')"
+
+sect 10 "配置与日志尾"
+echo "--- uci ---"
+uci show netsteer 2>/dev/null | sed 's/^/  /'
+echo "--- logread (netsteer, 排除 cron 自报) ---"
+logread 2>/dev/null | grep netsteer | grep -v 'crond.*netsteer-check' | tail -12 | sed 's/^/  /'
+
+echo
+if [ "$FAIL" -gt 0 ]; then echo "VERDICT: FAIL ($FAIL 项失败, $WARN 项警告)"; exit 2
+elif [ "$WARN" -gt 0 ]; then echo "VERDICT: WARN ($WARN 项警告, 无失败)"; exit 1
+else echo "VERDICT: OK (无警告无失败)"; exit 0; fi

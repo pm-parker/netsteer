@@ -259,7 +259,7 @@ html = """<!DOCTYPE html>
 <div class="nav-scrim" id="scrim"></div>
 <main id="top">
 
-  <p class="crumb">Product updates <span style="margin:0 8px;color:#D1D5DB">/</span> <b>2026 年 11 月 · v1.19.3</b></p>
+  <p class="crumb">Product updates <span style="margin:0 8px;color:#D1D5DB">/</span> <b>2026 年 11 月 · v1.20.0</b></p>
 
   <h1>Net<span class="accent">Steer</span><span class="suffix">for OpenWrt</span></h1>
   <p class="tagline">一个总开关，两种网络体验 —— OpenWrt 的整合网络加速方案</p>
@@ -363,10 +363,10 @@ html = """<!DOCTYPE html>
     <hr class="rule">
     <p class="lead">从 Releases 下载对应架构的 APK（aarch64 / x86_64 / arm_cortex-a7 / arm_cortex-a9），推到路由器安装：</p>
 <pre><span class="c"># 沙箱/电脑 → 路由器（按架构选包）</span>
-scp -O luci-app-netsteer-1.19.3-aarch64_generic.apk root@<span class="s">192.168.1.1</span>:/tmp/
+scp -O luci-app-netsteer-1.20.0-aarch64_generic.apk root@<span class="s">192.168.1.1</span>:/tmp/
 
 <span class="c"># 路由器上</span>
-apk add --allow-untrusted /tmp/luci-app-netsteer-1.19.3-aarch64_generic.apk
+apk add --allow-untrusted /tmp/luci-app-netsteer-1.20.0-aarch64_generic.apk
 
 <span class="c"># 浏览器打开 LuCI → 服务 → NetSteer</span>
 <span class="c"># 第一次进入会引导「一键体检」，随后按建议启用即可</span></pre>
@@ -381,7 +381,7 @@ apk add --allow-untrusted /tmp/luci-app-netsteer-1.19.3-aarch64_generic.apk
     <a href="https://github.com/pm-parker/netsteer" target="_blank">GitHub</a>
     <a href="https://github.com/pm-parker/netsteer/releases" target="_blank">Releases</a>
     <span>MIT License</span>
-    <span>v1.19.3</span>
+    <span>v1.20.0</span>
   </footer>
 </main>
 

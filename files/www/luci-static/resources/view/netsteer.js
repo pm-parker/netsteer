@@ -325,6 +325,22 @@ function classifyDomain(q, map) {
 }
 
 
+function leaseSuggestions(leasesText) {
+	/* /tmp/dhcp.leases 文本 → 疑似游戏设备 [{ip,name}] (纯函数; 主机名启发式) */
+	var res = [ /ps[45]\b/, /playstation/, /xbox/, /switch/, /nintendo/, /steam/, /\bdeck\b/, /geforce/, /\brog\b/, /\bally\b/, /legion/, /console/, /victory/ ];
+	var out = [];
+	if (!leasesText) return out;
+	String(leasesText).split(/\r?\n/).forEach(function(line) {
+		var f = line.replace(/^\s+/, '').split(/\s+/);
+		if (f.length < 4) return;
+		var h = f[3], ip = f[2];
+		if (!ip || !h || h === '*') return;
+		var low = h.toLowerCase();
+		for (var i = 0; i < res.length; i++)
+			if (res[i].test(low)) { out.push({ ip: ip, name: h }); break; }
+	});
+	return out;
+}
 function buildIpMap(text) {
 	/* gameips.txt → [{base:int, bits, cat}] (纯函数; 容错: 注释/空行/坏 CIDR/IPv6 跳过) */
 	var out = [];
@@ -632,6 +648,16 @@ function deltaSoftirq(baseText, curText) {
 	};
 }
 
+/* ---- v2 引擎: 数据采样 / 路径粒子 / 时序曲线 (风格与机制移植自主题仪表盘) ---- */
+function netdevParse(txt) {
+	/* /proc/net/dev → {iface: {rx_bps, tx_bps}} 需两次采样求差, 本函数只解析累计值 */
+	var out = {};
+	(txt || '').split('\n').forEach(function(line) {
+		var m = line.match(/^\s*([\w.@-]+):\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)/);
+		if (m) out[m[1]] = { rx: +m[2], tx: +m[3] };
+	});
+	return out;
+}
 function netdevPick(nd, preferL3) {
 	/* 从 netsteer-netdev rows 选 WAN 口: preferL3 时优先 role=wan (L3 承载口), 否则 wan/uplink */
 	if (!nd || !nd.rows) return null;
@@ -658,6 +684,10 @@ function netdevDelta(prev, cur, dtMs) {
 		out[k] = { rx_bps: dr * 8 / s, tx_bps: dt * 8 / s };
 	});
 	return out;
+}
+function speedTier(bps) { /* 粒子速度三档 (与主题 wires.js 同档位): 0 慢 1 中 2 快 */
+	if (bps == null) return 0;
+	return bps > 100e6 ? 2 : bps > 5e6 ? 1 : 0;
 }
 function wiresPathH(x1, y1, x2, y2) {
 	/* 水平贝塞尔 (与主题 wires.curve 同形): 两节点同高时的 S 型连线 */
@@ -923,6 +953,14 @@ function verdictToRes(v) {
 }
 
 
+/* v1.18 D20 设备分级 (与 netsteer-wizard tier_of 同构): T0 弱设备只推零依赖档 */
+function tierFrom(ncpu, memMb, x86) {
+	ncpu = parseInt(ncpu, 10) || 1;
+	memMb = parseInt(memMb, 10) || 0;
+	if (ncpu <= 2 || memMb <= 256) return 'T0';
+	if ((x86 && ncpu >= 4) || ncpu >= 8) return 'T2';
+	return 'T1';
+}
 return view.extend({
 	/* 本页所有改动即时生效, 无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
 	addFooter: function() {

@@ -7,7 +7,8 @@
     "perf": "warn"
   },
   "rules": {
-    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }],
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_|^(leaseSuggestions|netdevParse|speedTier|tierFrom)$", "caughtErrorsIgnorePattern": "^_",
+      "vars": "all", "ignoreRestSiblings": true }],
     "no-unused-expressions": "warn",
     "no-underscore-dangle": "off"
   },

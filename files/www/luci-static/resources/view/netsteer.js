@@ -1532,7 +1532,6 @@ return view.extend({
 	/* 缓冲膨胀测量: 后台起 netsteer-bloat, 轮询 audit 刷新 (测量窗 ~20s) */
 	runBloat: function(ev) {
 		var btn = ev && ev.target;
-		var self = this;
 		if (btn) { btn.disabled = true; btn.textContent = _('测量中…'); }
 		var t0 = Math.floor(Date.now() / 1000) - 5;
 		fs.exec('/usr/bin/netsteer-bloat', ['bg']).then(function() {

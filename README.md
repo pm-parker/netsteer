@@ -4,6 +4,8 @@
 
 [![CI](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml/badge.svg)](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+> **[dnsworker.com](https://dnsworker.com)** — free in-browser **[bufferbloat test](https://dnsworker.com/)** + OpenWrt acceleration guides. See your loaded latency, then fix it with NetSteer in one toggle. Also in [Deutsch](https://dnsworker.com/de/) / [Русский](https://dnsworker.com/ru/) / [Türkçe](https://dnsworker.com/tr/) / [Español](https://dnsworker.com/es/).
+
 **The cFosSpeed for OpenWrt: smart queue shaping, multi-core load spreading, IRQ affinity and P2P passthrough — integrated into one package with measured A/B gain comparison.**
 
 One master toggle, two worlds: off, it restores stock behavior and automatically benchmarks the baseline; on, cake shaping + all-core spreading + P2P passthrough take effect and the page shows the real measured gain versus that baseline — latency ↓9% (5.7 → 5.2 ms, an 8-second on-device measurement), not a marketing number.

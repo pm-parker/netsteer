@@ -4,6 +4,8 @@
 
 [![CI](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml/badge.svg)](https://github.com/pm-parker/netsteer/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+> **[dnsworker.com](https://dnsworker.com/netsteer/)** —— 官方网站：免费在线 **[Bufferbloat 测试](https://dnsworker.com/)**（满载延迟检测）+ OpenWrt 加速指南，支持英/德/俄/土/西五种语言；测出你的满载延迟，再用 NetSteer 一键修复。
+
 **OpenWrt 界的 cFosSpeed：把智能队列整形、多核负载分摊、中断亲和、P2P 直通整合成一个带实测增益对比的加速方案。**
 
 一个总开关，两种世界：关闭时它是系统原生行为并自动测量基线；开启后 cake 整形 + 全核分摊 + P2P 直通全部生效，页面实时显示与基线对比的真实增益——延迟 ↓9%（5.7 → 5.2 ms，本机 8 秒实测），不是营销数字。

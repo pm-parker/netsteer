@@ -22,6 +22,11 @@ html = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NetSteer · OpenWrt 的整合网络加速方案</title>
+<meta name="description" content="NetSteer：OpenWrt 整合网络加速应用 —— SQM 满载延迟整形、RPS 全核收包、Fullcone NAT 直通、AI 场景识别，一键开启。">
+<link rel="canonical" href="https://dnsworker.com/netsteer/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="NetSteer · OpenWrt 的整合网络加速方案">
+<meta property="og:url" content="https://dnsworker.com/netsteer/">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   :root {

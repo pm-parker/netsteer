@@ -1,0 +1,100 @@
+#!/bin/sh
+# netsteer-bloat: 负载下延迟探测 (v1.22) — 空闲延迟 vs 负载下延迟 + 负载规模实测
+# 用法:
+#   netsteer-bloat [load_seconds]   前台测量, 默认负载窗 12s
+#   netsteer-bloat bg               脱会话后台测量 (供 LuCI 按钮调用, 不占 rpcd 管道)
+#   netsteer-bloat read             汇总最近结果 JSON (供前端一次拉取)
+# 原理: 空闲 ping 采样 → 并发 CDN 下载产生下行负载 + 同窗 ping 采样 → 差值 + 负载规模
+# 判定: 负载不足(<50Mbps) → weak (结果仅参考); bloat<10 ok | <30 light | <100 mid | ≥100 heavy
+# 输出: /tmp/netsteer/bloat.json + uci netsteer.bloat.* (前端 uci 通道读, 避开 rpcd exec 并发)
+# 边界 (R5C+千兆线路实测): CDN 单流恒限 ~24Mbps, 并发边际递减, 本机负载上限 ~200Mbps,
+#   经 mihomo 的 LAN 负载上限 ~500Mbps — 满载千兆排队膨胀在本机测不出; 本探测定位为
+#   "整形健康分级 + 线路容量下界验证", 非严格意义满载 bufferbloat。文档需如实说明。
+# 设计纪律: 手动触发, 不进 cron (持续烧带宽不可接受); 单实例锁防连点
+
+DIR=/tmp/netsteer
+TARGET=223.5.5.5
+LOCK=$DIR/.bloat.lock
+mkdir -p "$DIR"
+
+# 候选负载源: 与 wizard 同源 (国内大文件 CDN, 单端点失败不影响整体)
+LOAD_URLS="https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe https://dl.360safe.com/setup.exe"
+
+avg_ping() { # $1=count $2=interval(整数秒, busybox ping 拒绝小数) $3=deadline → 平均 ms
+	ping -c "$1" -i "$2" -w "$3" "$TARGET" 2>/dev/null \
+		| grep -oE 'time=[0-9.]+' | cut -d= -f2 \
+		| awk '{s+=$1; n++} END {if (n > 0) printf "%d", s / n}'
+}
+
+# WAN 口 (默认路由 dev) — rx 字节差算负载实测速率
+WAN_IF=$(ip route show default 2>/dev/null | grep -oE 'dev [a-z0-9_-]+' | head -1 | cut -d' ' -f2)
+rx_now() { cat "/sys/class/net/$WAN_IF/statistics/rx_bytes" 2>/dev/null || echo 0; }
+
+case "${1:-run}" in
+bg)
+	[ -e "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null && exit 0  # 单实例
+	setsid sh -c "echo \$\$ > $LOCK; /usr/bin/netsteer-bloat 12 >/dev/null 2>&1; rm -f $LOCK" </dev/null >/dev/null 2>&1 &
+	exit 0
+	;;
+read)
+	B=""
+	[ -f "$DIR/bloat.json" ] && B=$(cat "$DIR/bloat.json")
+	RUNNING=""
+	[ -e "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null && RUNNING=1
+	echo "{\"bloat\":${B:-null},\"running\":${RUNNING:-null}}"
+	exit 0
+	;;
+esac
+
+SEC="${1:-12}"
+case "$SEC" in ''|*[!0-9]*) SEC=12 ;; esac
+[ "$SEC" -lt 8 ] && SEC=8
+[ "$SEC" -gt 30 ] && SEC=30
+
+# ---- 空闲基线 ----
+IDLE=$(avg_ping 5 1 6)
+
+# ---- 负载窗: 并发下载 + 同窗 ping + 负载规模实测 ----
+# 每源 4 流 (单流被 CDN 恒限 ~24Mbps, 2 流 ~48Mbps 会误触 weak 阈值 — 实测)
+R0=$(rx_now)
+for u in $LOAD_URLS; do
+	i=0
+	while [ $i -lt 4 ]; do
+		( curl -sL --max-time "$SEC" -o /dev/null "$u" 2>/dev/null ) &
+		i=$((i + 1))
+	done
+done
+LOAD=$(avg_ping "$SEC" 1 $((SEC + 2)))
+wait
+R1=$(rx_now)
+LOAD_MBPS=$(( (R1 - R0) * 8 / SEC / 1000000 ))   # 负载窗内 WAN 下行平均 Mbps
+
+# ---- 判定 ----
+[ -z "$IDLE" ] && [ -z "$LOAD" ] && {
+	echo '{"error":"ping 全失败, 无法测量"}'; exit 1
+}
+[ -z "$LOAD" ] && LOAD=$IDLE
+[ -z "$IDLE" ] && IDLE=$LOAD
+BLOAT=$((LOAD - IDLE))
+[ "$BLOAT" -lt 0 ] && BLOAT=0   # 抖动可致轻微负差, 钳 0
+
+if [ "$LOAD_MBPS" -lt 50 ]; then V=weak      # 负载未拉起, 差值不可信 (实测教训: 43Mbps 假阴性)
+elif [ "$BLOAT" -lt 10 ]; then V=ok
+elif [ "$BLOAT" -lt 30 ]; then V=light
+elif [ "$BLOAT" -lt 100 ]; then V=mid
+else V=heavy
+fi
+
+TS=$(date +%s)
+OUT="{\"idle_ms\":$IDLE,\"loaded_ms\":$LOAD,\"bloat_ms\":$BLOAT,\"verdict\":\"$V\",\"load_mbps\":$LOAD_MBPS,\"window_s\":$SEC,\"ts\":$TS}"
+echo "$OUT" > "$DIR/bloat.json"
+uci -q set netsteer.bloat=measure
+uci -q set netsteer.bloat.idle_ms="$IDLE"
+uci -q set netsteer.bloat.loaded_ms="$LOAD"
+uci -q set netsteer.bloat.bloat_ms="$BLOAT"
+uci -q set netsteer.bloat.load_mbps="$LOAD_MBPS"
+uci -q set netsteer.bloat.verdict="$V"
+uci -q set netsteer.bloat.ts="$TS"
+uci -q commit netsteer
+logger -t netsteer-bloat "bloat=${BLOAT}ms ($V) load=${LOAD_MBPS}Mbps: idle=${IDLE}ms loaded=${LOAD}ms"
+echo "$OUT"

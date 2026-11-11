@@ -79,6 +79,9 @@
         "/usr/bin/netsteer-bench": [
           "exec"
         ],
+        "/usr/bin/netsteer-bloat": [
+          "exec"
+        ],
         "/usr/bin/netsteer-qos": [
           "exec"
         ],

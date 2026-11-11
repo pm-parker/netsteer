@@ -12,7 +12,7 @@ const SRC = fs.readFileSync(
 );
 
 // pull top-level "function name(...) { ... }" declarations for the pure logic functions
-const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isDlDomain', 'isWorkDomain', 'senseClassify', 'senseDebounce', 'buildGainText', 'verdictToRes', 'tierFrom'];
+const WANT = ['cpuRange', 'fullMask', 'parseCpuRange', 'parseSoftirq', 'maskLabel', 'maskToCpus', 'cpusToMask', 'getPresets', 'matchPreset', 'p2pValidIp', 'p2pValidPort', 'p2pStatusMeta', 'auditConflicts', 'modeDefs', 'buildPlan', 'depsMissing', 'installHint', 'modeScore', 'modeWhy', 'depLabels', 'tabStructure', 'parseIrqList', 'irqMaskOfCpu', 'deltaSoftirq', 'netdevParse', 'netdevDelta', 'speedTier', 'wiresPathH', 'wiresResample', 'seriesPush', 'niceCeil', 'seriesStatsMax', 'fmtBps', 'benchFromUci', 'parseTinStats', 'gameStatusMeta', 'buildDomainMap', 'classifyDomain', 'leaseSuggestions', 'dnsSummary', 'buildIpMap', 'classifyIp', 'buildPortMap', 'classifyPort', 'isConnHeavy', 'isDlDomain', 'isWorkDomain', 'senseClassify', 'senseDebounce', 'buildGainText', 'verdictToRes', 'tierFrom', 'bloatMeta', 'tempMeta'];
 let extracted = '';
 for (const name of WANT) {
   const m = new RegExp('function ' + name + '\\s*\\(', 'g').exec(SRC);
@@ -45,7 +45,7 @@ const api = eval(
   'var _ = function(s) { return s; };' +   /* stub LuCI i18n */
   'String.prototype.format = function() { var s = String(this), args = arguments, i = 0; return s.replace(/%[sd]/g, function() { return String(args[i++]); }); };' +
   extracted +
-  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isDlDomain, isWorkDomain, senseClassify, senseDebounce, buildGainText, verdictToRes, tierFrom,' +
+  '; ({ cpuRange, fullMask, parseCpuRange, parseSoftirq, maskLabel, maskToCpus, cpusToMask, getPresets, matchPreset, p2pValidIp, p2pValidPort, p2pStatusMeta, auditConflicts, modeDefs, buildPlan, depsMissing, installHint, modeScore, modeWhy, depLabels, tabStructure, parseIrqList, irqMaskOfCpu, deltaSoftirq, netdevParse, netdevDelta, speedTier, wiresPathH, wiresResample, seriesPush, niceCeil, seriesStatsMax, fmtBps, benchFromUci, parseTinStats, gameStatusMeta, buildDomainMap, classifyDomain, leaseSuggestions, dnsSummary, buildIpMap, classifyIp, buildPortMap, classifyPort, isConnHeavy, isDlDomain, isWorkDomain, senseClassify, senseDebounce, buildGainText, verdictToRes, tierFrom, bloatMeta, tempMeta,' +
   '  setEnv: function(n, i) { NCPU = n; IFACES = i; } })'
 );
 
@@ -666,6 +666,28 @@ eq(new Set(uniqCards).size, uniqCards.length, 'tabs: 卡片归类唯一');
   eq(api.tierFrom(4, 4096, 1), 'T2', 'tierFrom: x86 4 核 → T2');
   eq(api.tierFrom(4, 1024, 0), 'T1', 'tierFrom: ARM 4 核不是 T2');
   eq(api.tierFrom(null, null, 0), 'T0', 'tierFrom: 无效输入兜底 T0');
+
+  // v1.22 bloatMeta (缓冲膨胀 verdict → 展示元数据)
+  eq(api.bloatMeta('ok', 5).name, '稳定', 'bloatMeta: ok → 稳定');
+  eq(api.bloatMeta('ok', 5).cls, 'ns-good', 'bloatMeta: ok → 绿');
+  eq(api.bloatMeta('light', 15).cls, 'ns-good', 'bloatMeta: light → 绿');
+  eq(api.bloatMeta('mid', 50).cls, '', 'bloatMeta: mid → 无色');
+  eq(api.bloatMeta('heavy', 150).cls, 'ns-bad', 'bloatMeta: heavy → 红');
+  eq(api.bloatMeta('weak', 3).name, '负载不足', 'bloatMeta: weak → 负载不足');
+  eq(api.bloatMeta('weak', 3).cls, '', 'bloatMeta: weak → 无色');
+  eq(api.bloatMeta('bogus', 5).cls, 'ns-good', 'bloatMeta: 未知 verdict 兜底 ok');
+  eq(api.bloatMeta(null, null).name, '—', 'bloatMeta: 未测量 → —');
+  eq(api.bloatMeta(null, null).hint.indexOf('未测') >= 0, true, 'bloatMeta: 未测提示');
+
+  // v1.22 tempMeta (温度 milli°C → 展示元数据)
+  eq(api.tempMeta(-1).txt, '—', 'tempMeta: 无传感器 → —');
+  eq(api.tempMeta(48000).txt, '48°C', 'tempMeta: 48°C 正常显示');
+  eq(api.tempMeta(48000).cls, 'ns-good', 'tempMeta: 48°C 绿');
+  eq(api.tempMeta(86000).txt, '86°C', 'tempMeta: 86°C 偏热显示');
+  eq(api.tempMeta(86000).cls, '', 'tempMeta: 86°C 无色');
+  eq(api.tempMeta(96000).cls, 'ns-bad', 'tempMeta: 96°C 红');
+  eq(api.tempMeta(96000).hint.indexOf('过热') >= 0, true, 'tempMeta: 96°C 过热提示');
+  eq(api.tempMeta(null).txt, '—', 'tempMeta: null → —');
 }
 
 console.log(`PASS=${pass} FAIL=${fail}`);

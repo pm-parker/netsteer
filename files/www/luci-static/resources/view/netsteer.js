@@ -223,6 +223,29 @@ function legend() {
 	}));
 }
 
+/* ---- 负载下延迟探测 (v1.22): verdict → 展示元数据 (纯函数层, 单测覆盖) ---- */
+function bloatMeta(verdict, bloatMs) {
+	var m = {
+		ok:    { name: _('稳定'),     hint: _('负载下延迟几乎不涨 — 整形配置良好'), cls: 'ns-good' },
+		light: { name: _('轻度'),     hint: _('负载下延迟轻微上涨 — 可接受'), cls: 'ns-good' },
+		mid:   { name: _('中度'),     hint: _('负载下延迟明显上涨 — 建议开启或收紧智能队列'), cls: '' },
+		heavy: { name: _('重度'),     hint: _('负载下延迟暴涨 — 队列未整形或整形值过高, 建议立即处理'), cls: 'ns-bad' },
+		weak:  { name: _('负载不足'), hint: _('本次负载未拉起 — 结果仅供参考, 建议重测'), cls: '' }
+	};
+	var out = m[verdict] || m.ok;
+	if (bloatMs == null) out = { name: '—', hint: _('未测 — 点击「测膨胀」开始 (约 20s, 会占用带宽)'), cls: '' };
+	return out;
+}
+
+/* 温度 (milli°C) → 展示元数据 (纯函数层) */
+function tempMeta(milli) {
+	if (milli == null || milli < 0) return { txt: '—', cls: '', hint: _('无温度传感器') };
+	var c = Math.round(milli / 1000);
+	if (c >= 95) return { txt: c + '°C', cls: 'ns-bad', hint: _('过热 — 已自动降档保护') };
+	if (c >= 85) return { txt: c + '°C', cls: '', hint: _('偏热 — 建议检查散热') };
+	return { txt: c + '°C', cls: 'ns-good', hint: _('正常') };
+}
+
 /* ---- P2P 直通 (Fullcone 等效): 纯函数层 ---- */
 function p2pValidIp(ip) {
 	var m = (/^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/).exec(ip || '');
@@ -1448,9 +1471,10 @@ return view.extend({
 		if (foot) foot.textContent = _('峰值 ↓%s · ↑%s · 量程 %s').format(fmtBps(pk(st.rx)), fmtBps(pk(st.tx)), fmtBps(peak));
 	},
 
-	/* health 卡: 三格 (软中断集中度 / 整形 / 转发链路) */
+	/* health 卡: 三格 (软中断集中度 / 整形 / 转发链路) + v1.22 温度 / 缓冲膨胀 */
 	renderHealth: function(a) {
 		var d = (a && a.deps) || {}, sq = (a && a.sqm) || {}, o = (a && a.offload) || {}, pp = (a && a.p2p) || {};
+		var h = (a && a.health) || {};
 		var card = function(title, val, cls, hint) {
 			return E('div', { 'class': 'vt-dcard ns-hc ' + (cls || '') }, [
 				E('span', { 'class': 'vt-dcard-label' }, title),
@@ -1470,6 +1494,9 @@ return view.extend({
 		var smeta = SENSE_SCENE_META[sst.scene] || SENSE_SCENE_META.normal;
 		var sceneValEl = E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-scene-tile-value' }, [nsIcon(smeta.icon, 20), ' ' + smeta.name]);
 		var sceneSubEl = E('span', { 'class': 'vt-dcard-sub', 'id': 'ns-scene-tile-sub' }, _('AI 智能识别'));
+		var bl = a && a.bloat || null;
+		var bm = bloatMeta(bl && bl.verdict, bl ? bl.bloat_ms : null);
+		var tm = tempMeta(h.temp_milli != null ? h.temp_milli : -1);
 		return E('div', { 'class': 'vt-health ns-health' }, [
 			E('div', { 'class': 'vt-dcard ns-hc ns-good' }, [
 				E('span', { 'class': 'vt-dcard-label' }, _('当前场景')),
@@ -1480,8 +1507,58 @@ return view.extend({
 				a && a.softirq_conc != null && a.softirq_conc > (a.softirq_warn || 45) ? 'ns-bad' : 'ns-good',
 				a && a.softirq_conc != null ? (a.softirq_conc > (a.softirq_warn || 45) ? _('单核偏热 — 建议调 IRQ') : _('分布均衡')) : _('采样中')),
 			card(_('智能队列'), sqmVal, sq.cake_running ? 'ns-good' : '', d.sqm_scripts ? _('SQM 引擎') : _('可补装解锁')),
-			card(_('转发链路'), fwd.length ? fwd.join(' · ') : _('标准转发'), 'ns-good', _('流量分载 · P2P · 分核'))
+			card(_('转发链路'), fwd.length ? fwd.join(' · ') : _('标准转发'), 'ns-good', _('流量分载 · P2P · 分核')),
+			E('div', { 'class': 'vt-dcard ns-hc ' + tm.cls }, [
+				E('span', { 'class': 'vt-dcard-label' }, _('设备温度')),
+				E('b', { 'class': 'vt-dcard-value vt-tn' }, tm.txt),
+				E('span', { 'class': 'vt-dcard-sub' }, tm.hint)
+			]),
+			E('div', { 'class': 'vt-dcard ns-hc ' + bm.cls }, [
+				E('span', { 'class': 'vt-dcard-label' }, _('缓冲膨胀')),
+				E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-bloat-value' },
+					bl ? bm.name + ' +' + bl.bloat_ms + 'ms' + (bl.load_mbps != null ? ' @' + bl.load_mbps + 'Mbps' : '') : bm.name),
+				E('span', { 'class': 'vt-dcard-sub' }, [
+					E('span', { 'id': 'ns-bloat-hint' }, bm.hint),
+					E('button', {
+						'class': 'netsteer-minibtn', 'type': 'button',
+						'style': 'margin-left:8px', 'id': 'ns-bloat-run',
+						'click': ui.createHandlerFn(this, 'runBloat')
+					}, bl ? _('重测') : _('测膨胀'))
+				])
+			])
 		]);
+	},
+
+	/* 缓冲膨胀测量: 后台起 netsteer-bloat, 轮询 audit 刷新 (测量窗 ~20s) */
+	runBloat: function(ev) {
+		var btn = ev && ev.target;
+		var self = this;
+		if (btn) { btn.disabled = true; btn.textContent = _('测量中…'); }
+		var t0 = Math.floor(Date.now() / 1000) - 5;
+		fs.exec('/usr/bin/netsteer-bloat', ['bg']).then(function() {
+			var tries = 0;
+			var timer = window.setInterval(function() {
+				tries++;
+				fs.exec('/usr/bin/netsteer-audit', []).then(function(r) {
+					var a = null; try { a = JSON.parse((r.stdout || '').trim()); } catch (_e) {}
+					var bl = a && a.bloat;
+					if (bl && bl.ts >= t0) {
+						window.clearInterval(timer);
+						if (btn) { btn.disabled = false; btn.textContent = _('重测'); }
+						var vEl = document.getElementById('ns-bloat-value');
+						var hEl = document.getElementById('ns-bloat-hint');
+						var bm = bloatMeta(bl.verdict, bl.bloat_ms);
+						if (vEl) vEl.textContent = bm.name + ' +' + bl.bloat_ms + 'ms';
+						if (hEl) hEl.textContent = bm.hint;
+						var card = vEl && vEl.closest && vEl.closest('.ns-hc');
+						if (card) { card.classList.remove('ns-bad'); if (bm.cls === 'ns-bad') card.classList.add('ns-bad'); }
+					}
+				}).catch(function() {});
+				if (tries > 8) { window.clearInterval(timer); if (btn) { btn.disabled = false; btn.textContent = _('测膨胀'); } }
+			}, 5000);
+		}).catch(function(_err) {
+			if (btn) { btn.disabled = false; btn.textContent = _('测膨胀'); }
+		});
 	},
 
 

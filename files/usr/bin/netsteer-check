@@ -6,6 +6,41 @@ STATE_DIR=/tmp/netsteer
 HIST=$STATE_DIR/history.log
 STATE_TXT=$STATE_DIR/state.txt
 mkdir -p "$STATE_DIR"
+
+# ---- 温度监测 (v1.22): 任何设备都跑, 不依赖 apply 状态 ----
+# 数值落 /tmp/netsteer/health.json (内存盘, 每分钟写不伤 flash); 仅跨阈值事件写 uci/log
+# 85°C: 告警 (10min 防刷屏); 95°C: 自动降档 steering 过热保护 (宁漏勿误: 回落不自动升档, UI 提示)
+TMAX=0
+for z in /sys/class/thermal/thermal_zone*/temp; do
+	[ -r "$z" ] || continue
+	t=$(cat "$z" 2>/dev/null)
+	case "$t" in ''|*[!0-9]*) continue ;; esac
+	[ "$t" -gt "$TMAX" ] && TMAX=$t
+done
+NOW_TS=$(date +%s)
+printf '{"temp_milli":%d,"ts":%d}\n' "$TMAX" "$NOW_TS" > "$STATE_DIR/health.json"
+
+if [ "$TMAX" -ge 95000 ]; then
+	CURMODE=$(uci -q get netsteer.scenario.mode 2>/dev/null)
+	if [ -n "$CURMODE" ] && [ "$CURMODE" != "steering" ] && [ "$CURMODE" != "off" ]; then
+		/usr/bin/netsteer-mode steering >/dev/null 2>&1
+		INC_DIR=/etc/netsteer/incidents
+		mkdir -p "$INC_DIR"
+		{ echo "== $(date '+%m-%d %H:%M:%S') 过热降档: ${TMAX} (milli°C) → steering"; tail -30 "$HIST" 2>/dev/null; } > "$INC_DIR/thermal-$(date '+%m%d-%H%M%S').log"
+		logger -t netsteer "过热保护: ${TMAX} (milli°C), 已自动降档 steering (温度回落后请在 UI 手动恢复)"
+	fi
+fi
+
+if [ "$TMAX" -ge 85000 ]; then
+	[ -r "$STATE_DIR/.therm_alert" ] && LAST=$(cat "$STATE_DIR/.therm_alert" 2>/dev/null) || LAST=0
+	if [ $((NOW_TS - LAST)) -ge 600 ] 2>/dev/null; then
+		logger -t netsteer "温度告警: ${TMAX} (milli°C) ≥85°C, 建议检查散热"
+		echo "$NOW_TS" > "$STATE_DIR/.therm_alert"
+	fi
+else
+	[ -e "$STATE_DIR/.therm_alert" ] && rm -f "$STATE_DIR/.therm_alert"
+fi
+
 [ -s "$STATE_TXT" ] || exit 0   # apply 未跑过, 无从比对
 
 now=$(date "+%m-%d %H:%M")

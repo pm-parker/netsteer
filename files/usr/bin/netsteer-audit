@@ -90,6 +90,14 @@ echo "  \"deps\": {\"sqm_scripts\":$DEP_SQM_SCRIPTS, \"sqm_luci\":$DEP_SQM_LUCI,
 echo "  \"softirq_conc\":$RX_CONC, \"softirq_warn\":$RX_WARN,"
 echo "  \"sqm\": {\"enabled\":$SQM_ENABLED, \"section_type\":\"$SECTION_TYPE\", \"script\":\"$SQM_SCRIPT\", \"qdisc\":\"$SQM_QDISC\", \"download\":\"$SQM_DL\", \"upload\":\"$SQM_UL\", \"cake_running\":$CAKE_RUNNING, \"drop\":$CAKE_DROP, \"overlimit\":$CAKE_OVER},"
 echo "  \"offload\": {\"flow\":$FLOW_OFF, \"hw\":$FLOW_HW},"
+echo "  \"health\": $(cat /tmp/netsteer/health.json 2>/dev/null || echo '{"temp_milli":-1,"ts":0}'),"
+# mtu_fix: uci show 解析 (for z in firewall.@zone[*] 会被 shell glob 吞掉 — 实测坑)
+MTUFIX=0
+for s in $(uci -q show firewall 2>/dev/null | grep -oE '^firewall\.@zone\[[0-9]+\]' | sort -u); do
+	[ "$(uci -q get ${s}.name 2>/dev/null)" = "wan" ] && [ "$(uci -q get ${s}.mtu_fix 2>/dev/null)" = "1" ] && MTUFIX=1
+done
+echo "  \"mtu_fix\":$MTUFIX,"
+echo "  \"bloat\": $(cat /tmp/netsteer/bloat.json 2>/dev/null || echo null),"
 echo "  \"p2p\": {\"active\":$P2P_ACTIVE, \"ip\":\"$P2P_IP\"},"
 echo "  \"uplink_sample_kbps\":$SAMPLE_KBPS,"
 echo "  \"static_leases\":\"$lease_ips\","

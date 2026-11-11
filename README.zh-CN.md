@@ -98,6 +98,8 @@ NetSteer 是整合层，不发明新机制——每一项都调内核既有能�
 - **IRQ 亲和**（`/proc/irq/*/smp_affinity`）：网卡中断钉在较闲的核上，多接口错开
 - **P2P 直通**：fw4/nftables 规则做 UDP 全端口 DNAT（Fullcone 等效）
 - **增益测量**：`netsteer-bench` 8 秒窗口实测 ping 时延 + 网口吞吐采样，基线持久化到 uci；总开关切换时后台自动跑，页面对比显示
+- **负载延迟探测**：`netsteer-bloat` 测空闲延迟 vs 8 流 CDN 下载下的负载延迟（含实测负载 Mbps），verdict 落 uci；总览页手动触发。诚实边界：千兆线路上本探测验证整形健康度与容量下界（本机负载 ~200Mbps）——满载 bufferbloat 需外部负载源（flent 式），详见脚本头部说明
+- **过热保护**：`netsteer-check` 每分钟采样最热温区写入 `/tmp/netsteer/health.json`；≥85°C 记日志告警（10 分钟防刷屏），≥95°C 自动降档 steering 并落事故日志（不自动恢复——UI 会提示何时手动恢复）
 - **netsteer-apply** 从 UCI 配置声明式写 sysfs，记录已应用状态，开机幂等执行
 - **netsteer-check**（cron 每分钟）对账运行态与配置，自动修复漂移并存证到 `/etc/netsteer/incidents/`
 

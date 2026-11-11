@@ -186,4 +186,15 @@ assert _dup.stdout.strip().endswith("rc=0") and _n0 == "1" and _n1 == "1", \
     f"防重失效: before={_n0} after={_n1} rc={_dup.stdout!r}"
 ok("sense-daemon 防重: 直调秒退 rc=0, 进程数恒 1 (v1.20 泄漏修复)")
 
+# v1.21: 场景注入 e2e (真实流量 → 观测面 → 引擎判定) — 需要双 pod 环境, 无 pod 时跳过
+if "--inject" in sys.argv:
+    _inj = _sp2.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "inject_test.py")],
+                    capture_output=True, text=True, timeout=900)
+    assert _inj.returncode == 0, f"注入 e2e 失败 rc={_inj.returncode}: {_inj.stdout[-500:]}"
+    for _l in _inj.stdout.splitlines():
+        if _l.startswith("PASS:"):
+            ok(_l[5:].strip())
+else:
+    print("SKIP: 场景注入 e2e (需 --inject 参数 + 双 pod 环境)")
+
 print(f"ALL GREEN ({len(PASS)} checks)")

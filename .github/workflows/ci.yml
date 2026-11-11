@@ -20,6 +20,15 @@ jobs:
         run: sh tests/unit/feed.test.sh
       - name: JS syntax check
         run: node --check files/www/luci-static/resources/view/netsteer.js
+      - name: JS lint (oxlint — unused 归零门禁)
+        run: |
+          npx -y oxlint@latest files/www/luci-static/resources/view/netsteer.js
+          # 门禁: 未使用声明必须归零 (warning 级规则); 其余 warning (block-scoped-var/no-shadow) 不阻断
+          if npx -y oxlint@latest files/www/luci-static/resources/view/netsteer.js 2>&1 \
+               | grep -qE "no-unused-vars|no-unused-expressions"; then
+            echo "::error::unused 声明未清零"
+            exit 1
+          fi
       - name: Shell syntax check
         run: |
           for f in files/usr/bin/netsteer-* files/etc/init.d/netsteer files/etc/hotplug.d/iface/99-netsteer; do

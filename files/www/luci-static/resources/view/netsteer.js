@@ -64,7 +64,7 @@ function cfgSet(section, values) {
 		chain = chain.then(function() {
 			return fs.exec('/usr/bin/netsteer-cfg', ['set', section, k, String(values[k])]).then(function(r) {
 				var out = {};
-				try { out = JSON.parse((r && r.stdout || '').trim()); } catch (e) { out = { ok: false }; }
+				try { out = JSON.parse((r && r.stdout || '').trim()); } catch (_e) { out = { ok: false }; }
 				if (!out.ok) throw new Error(out.err || 'netsteer-cfg failed');
 				return out;
 			});
@@ -324,22 +324,6 @@ function classifyDomain(q, map) {
 	}
 }
 
-function leaseSuggestions(leasesText) {
-	/* /tmp/dhcp.leases 文本 → 疑似游戏设备 [{ip,name}] (纯函数; 主机名启发式) */
-	var res = [ /ps[45]\b/, /playstation/, /xbox/, /switch/, /nintendo/, /steam/, /\bdeck\b/, /geforce/, /\brog\b/, /\bally\b/, /legion/, /console/, /victory/ ];
-	var out = [];
-	if (!leasesText) return out;
-	String(leasesText).split(/\r?\n/).forEach(function(line) {
-		var f = line.replace(/^\s+/, '').split(/\s+/);
-		if (f.length < 4) return;
-		var h = f[3], ip = f[2];
-		if (!ip || !h || h === '*') return;
-		var low = h.toLowerCase();
-		for (var i = 0; i < res.length; i++)
-			if (res[i].test(low)) { out.push({ ip: ip, name: h }); break; }
-	});
-	return out;
-}
 
 function buildIpMap(text) {
 	/* gameips.txt → [{base:int, bits, cat}] (纯函数; 容错: 注释/空行/坏 CIDR/IPv6 跳过) */
@@ -620,7 +604,7 @@ function parseIrqList(txt) {
 		return a.filter(function(x) { return x && x.irq && x.dev; })
 			.map(function(x) { return { irq: String(x.irq), dev: String(x.dev),
 				affinity: String(x.affinity || '0'), counts: +x.counts || 0 }; });
-	} catch (e) { return []; }
+	} catch (_e) { return []; }
 }
 function irqMaskOfCpu(cpu) { /* cpu index → hex mask string */ return (1 << cpu).toString(16); }
 function deltaSoftirq(baseText, curText) {
@@ -648,16 +632,6 @@ function deltaSoftirq(baseText, curText) {
 	};
 }
 
-/* ---- v2 引擎: 数据采样 / 路径粒子 / 时序曲线 (风格与机制移植自主题仪表盘) ---- */
-function netdevParse(txt) {
-	/* /proc/net/dev → {iface: {rx_bps, tx_bps}} 需两次采样求差, 本函数只解析累计值 */
-	var out = {};
-	(txt || '').split('\n').forEach(function(line) {
-		var m = line.match(/^\s*([\w.@-]+):\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)/);
-		if (m) out[m[1]] = { rx: +m[2], tx: +m[3] };
-	});
-	return out;
-}
 function netdevPick(nd, preferL3) {
 	/* 从 netsteer-netdev rows 选 WAN 口: preferL3 时优先 role=wan (L3 承载口), 否则 wan/uplink */
 	if (!nd || !nd.rows) return null;
@@ -684,10 +658,6 @@ function netdevDelta(prev, cur, dtMs) {
 		out[k] = { rx_bps: dr * 8 / s, tx_bps: dt * 8 / s };
 	});
 	return out;
-}
-function speedTier(bps) { /* 粒子速度三档 (与主题 wires.js 同档位): 0 慢 1 中 2 快 */
-	if (bps == null) return 0;
-	return bps > 100e6 ? 2 : bps > 5e6 ? 1 : 0;
 }
 function wiresPathH(x1, y1, x2, y2) {
 	/* 水平贝塞尔 (与主题 wires.curve 同形): 两节点同高时的 S 型连线 */
@@ -880,7 +850,7 @@ function buildPlan(a) {
 	var now = [], full = [];
 	defs.forEach(function(m) {
 		var miss = depsMissing(m, a);
-		miss.length ? full.push(m) : now.push(m);
+		if (miss.length) full.push(m); else now.push(m);
 	});
 	now.sort(function(x, y) { return modeScore(x, a) - modeScore(y, a); });
 	full.sort(function(x, y) { return modeScore(x, a) - modeScore(y, a); });
@@ -952,14 +922,6 @@ function verdictToRes(v) {
 	};
 }
 
-/* v1.18 D20 设备分级 (与 netsteer-wizard tier_of 同构): T0 弱设备只推零依赖档 */
-function tierFrom(ncpu, memMb, x86) {
-	ncpu = parseInt(ncpu, 10) || 1;
-	memMb = parseInt(memMb, 10) || 0;
-	if (ncpu <= 2 || memMb <= 256) return 'T0';
-	if ((x86 && ncpu >= 4) || ncpu >= 8) return 'T2';
-	return 'T1';
-}
 
 return view.extend({
 	/* 本页所有改动即时生效, 无 Save&Apply 概念; 覆盖基类方法干掉自动 footer 按钮组 */
@@ -975,7 +937,7 @@ return view.extend({
 			ubusCall('uci', 'get', { config: 'netsteer' }).catch(function() { return null; }),
 			/* netdev role 表: uci 通道失败时兜底还原 IFACES (DSA 命名兼容) */
 			fs.exec('/usr/bin/netsteer-netdev', []).then(function(r) {
-				try { return JSON.parse((r && r.stdout) || '{}'); } catch (e) { return null; }
+				try { return JSON.parse((r && r.stdout) || '{}'); } catch (_e) { return null; }
 			}).catch(function() { return null; })
 		]).then(function(meta) {
 			var cpuTxt = (meta[0] && meta[0].data) ? meta[0].data : meta[0];
@@ -995,15 +957,15 @@ return view.extend({
 			tasks.push(L.resolveDefault(fs.read('/tmp/netsteer/state.json'), null));
 			/* P2P 直通状态: 独立脚本输出 JSON (脚本不在时静默降级为关) */
 			tasks.push(fs.exec('/usr/bin/netsteer-p2p', ['status']).then(function(r) {
-				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
+				try { return JSON.parse((r && r.stdout || '').trim()); } catch (_e) { return null; }
 			}).catch(function() { return null; }));
 			/* 游戏通道状态 (脚本不在 = 老版本包 → 静默) */
 			tasks.push(fs.exec('/usr/bin/netsteer-qos', ['status']).then(function(r) {
-				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
+				try { return JSON.parse((r && r.stdout || '').trim()); } catch (_e) { return null; }
 			}).catch(function() { return null; }));
 			/* 不抢网设备状态 (v1.19 D22, 脚本不在 = 老版本包 → 静默) */
 			tasks.push(fs.exec('/usr/bin/netsteer-bulk', ['status']).then(function(r) {
-				try { return JSON.parse((r && r.stdout || '').trim()); } catch (e) { return null; }
+				try { return JSON.parse((r && r.stdout || '').trim()); } catch (_e) { return null; }
 			}).catch(function() { return null; }));
 			return Promise.all(tasks);
 		});
@@ -1050,7 +1012,7 @@ return view.extend({
 		var selfM = this;
 		/* 状态 + 基线一次拉齐 (bench 基线走 uci 通道, 稳定秒回) */
 		Promise.all([
-			fs.exec('/usr/bin/netsteer-mode', ['status']).then(function(r) { try { return JSON.parse((r.stdout || '').trim()); } catch (e) { return { mode: null, prev: 'p2p' }; } }),
+			fs.exec('/usr/bin/netsteer-mode', ['status']).then(function(r) { try { return JSON.parse((r.stdout || '').trim()); } catch (_e) { return { mode: null, prev: 'p2p' }; } }),
 			selfM.uciNetsteer().then(function(c) { return benchFromUci(c); }).catch(function() { return null; })
 		]).then(function(res) { selfM.paintMaster(el, res[0], res[1]); });
 		el.querySelector('#ns-toggle').addEventListener('click', function() { selfM.confirmToggle(el); });
@@ -1122,10 +1084,10 @@ return view.extend({
 		if (gainEl) gainEl.textContent = '';
 		var t0 = Math.floor(Date.now() / 1000) - 5;
 		fs.exec('/usr/bin/netsteer-mode', ['status']).then(function(r0) {
-			var st0 = null; try { st0 = JSON.parse((r0.stdout || '').trim()); } catch (e) {}
+			var st0 = null; try { st0 = JSON.parse((r0.stdout || '').trim()); } catch (_e) {}
 			var prev = (st0 && st0.prev) || 'p2p';
 			return fs.exec('/usr/bin/netsteer-mode', turnOn ? [prev] : ['off']);
-		}).then(function(r1) {
+		}).then(function(_r1) {
 			/* 基线测量由 netsteer-mode 后台 spawn (不占 rpcd exec 通道) */
 			if (stateEl) stateEl.textContent = _('测量基线中（约 20 秒）…');
 			/* 轮询读结果: 新 bench 文件落盘即刷新增益 */
@@ -1138,7 +1100,7 @@ return view.extend({
 					if (b && side && side.ts >= t0) {
 						window.clearInterval(timer);
 						fs.exec('/usr/bin/netsteer-mode', ['status']).then(function(r3) {
-							var st = null; try { st = JSON.parse((r3.stdout || '').trim()); } catch (e) {}
+							var st = null; try { st = JSON.parse((r3.stdout || '').trim()); } catch (_e) {}
 							selfA.paintMaster(el, st, b);
 						});
 					}
@@ -1225,7 +1187,7 @@ return view.extend({
 				try {
 					var anim = dot.animate(frames, { duration: TRIP, iterations: Infinity, easing: 'linear' });
 					if (!self.reducedMotion()) anim.play();
-				} catch (e) {}
+				} catch (_e) {}
 			});
 			svg.appendChild(lane);
 		});
@@ -1260,7 +1222,7 @@ return view.extend({
 					try {
 						a.playbackRate = 1050 / period;
 						if (a.playState === 'paused' && !self.reducedMotion()) a.play();
-					} catch (e) {}
+					} catch (_e) {}
 				});
 			});
 	},
@@ -1319,7 +1281,7 @@ return view.extend({
 		var self = this;
 		return fs.exec('/usr/bin/netsteer-netdev', []).then(function(res) {
 			var d = null;
-			try { d = JSON.parse((res && res.stdout) || '{}'); } catch (e) {}
+			try { d = JSON.parse((res && res.stdout) || '{}'); } catch (_e) {}
 			if (!d || !d.rows) return;
 			var cur = {}, i;
 			for (i = 0; i < d.rows.length; i++)
@@ -1422,7 +1384,7 @@ return view.extend({
 			/* 差值序列: y = y0 - (rx - base)/peak*(H-8), clamp */
 			var gsegs = [];
 			var curG = null;
-			st.rx.forEach(function(p, idx) {
+			st.rx.forEach(function(p, _idx) {
 				if (p[1] == null) { curG = null; return; }
 				var span2 = st.rx[st.rx.length-1][0] - st.rx[0][0] || 1;
 				var x = (p[0] - st.rx[0][0]) / span2 * W;
@@ -1464,7 +1426,7 @@ return view.extend({
 		var fwd = [];
 		if (o.flow) fwd.push(_('分载开'));
 		if (pp.active) fwd.push(_('P2P 直通'));
-		var mode = 'steering';
+		var _mode = 'steering';
 		/* 四格首格 = 当前场景 (AI 识别; paintSense 实时刷新 #ns-scene-tile-value) */
 		var sst = this._senseState || { scene: 'normal' };
 		var smeta = SENSE_SCENE_META[sst.scene] || SENSE_SCENE_META.normal;
@@ -1504,7 +1466,7 @@ return view.extend({
 		}
 		list.forEach(function(it) {
 			var chips = cpuRange().map(function(cpu) {
-				var m = irqMaskOfCpu(cpu);
+				var _m = irqMaskOfCpu(cpu);
 				var on = ((parseInt(it.affinity, 16) >> cpu) & 1) === 1;
 				return E('button', {
 					'class': 'netsteer-chip' + (on ? ' on' : ''),
@@ -1540,7 +1502,7 @@ return view.extend({
 		});
 	},
 
-	applyIrqMask: function(irq, ev) {
+	applyIrqMask: function(irq, _ev) {
 		var self = this;
 		var row = document.getElementById('netsteer-irq-row-' + irq);
 		var mask = 0;
@@ -1556,7 +1518,7 @@ return view.extend({
 		if (res) { res.style.color = '#2471a3'; res.textContent = _('应用中…'); }
 		return fs.exec('/usr/bin/netsteer-irq', ['set', irq, hex]).then(function(r) {
 			var out = {};
-			try { out = JSON.parse(((r && r.stdout) || '').trim()); } catch (e) {}
+			try { out = JSON.parse(((r && r.stdout) || '').trim()); } catch (_e) {}
 			/* 先 reload 拿新卡, 再往新卡的反馈位写结果 (旧节点已被替换) */
 			return self.reloadIrqCard().then(function() {
 				var r2 = document.getElementById('netsteer-irq-res-' + irq);
@@ -1641,7 +1603,7 @@ renderSoftirqCard: function(text) {
 	},
 
 	/* ---- 对比模式: 基线快照 → 增量分布 (验证调整效果的呈现方式) ---- */
-	toggleSoftirqDelta: function(ev) {
+	toggleSoftirqDelta: function(_ev) {
 		var self = this;
 		var btn = document.getElementById('netsteer-irq-delta-btn');
 		if (!this._softirqBaseline) {
@@ -1824,7 +1786,7 @@ renderSoftirqCard: function(text) {
 			var m = {};
 			IFACES.forEach(function(it, i) { m[it.sec] = res[i]; });
 			var irq = null;
-			try { irq = JSON.parse(stateTxt || ''); } catch (e) { irq = null; }
+			try { irq = JSON.parse(stateTxt || ''); } catch (_e) { irq = null; }
 			var cur = matchPreset(m, irq);
 			var PRESETS = getPresets();
 			el.textContent = _('当前：%s').format(cur ? PRESETS[cur].label : '自定义组合');
@@ -2051,7 +2013,7 @@ renderSoftirqCard: function(text) {
 		foot.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
 		fs.exec('/usr/bin/netsteer-wizard', ['probe']).then(function(r) {
 			var j = null;
-			try { j = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			try { j = JSON.parse((r && r.stdout || '').trim()); } catch (_e) {}
 			if (!j || !j.tier) {
 				body.replaceChildren(E('p', { 'class': 'netsteer-note', 'style': 'color:#c0392b' },
 					_('检测失败。可稍后重试，或在专家模式手动选择运行方式。')));
@@ -2174,13 +2136,13 @@ renderSoftirqCard: function(text) {
 		]);
 	},
 
-	runAudit: function(ev) {
+	runAudit: function(_ev) {
 		var self = this;
 		var btn = document.getElementById('netsteer-audit-btn');
 		if (btn) { btn.disabled = true; btn.textContent = _('检测中…'); }
 		return fs.exec('/usr/bin/netsteer-audit', []).then(function(r) {
 			var a = null;
-			try { a = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			try { a = JSON.parse((r && r.stdout || '').trim()); } catch (_e) {}
 			return self.renderAuditResult(a);
 		}).catch(function(e) {
 			ui.addNotification(null, E('p', {}, _('体检失败: %s').format(String(e))), 'error');
@@ -2300,7 +2262,7 @@ renderSoftirqCard: function(text) {
 		return E('div', { 'class': 'netsteer-card', 'id': 'netsteer-audit' }, kids);
 	},
 
-	applyModeConfirm: function(mode, audit, ev) {
+	applyModeConfirm: function(mode, audit, _ev) {
 		var self = this;
 		var m = null;
 		modeDefs().forEach(function(x) { if (x.id === mode) m = x; });
@@ -2339,7 +2301,7 @@ renderSoftirqCard: function(text) {
 		var meta = p2pStatusMeta(st);
 		var defIp = (st && st.dest_ip && st.dest_ip !== '-') ? st.dest_ip : ((st && st.uci_ip) || '192.168.11.175');
 		var defPorts = (st && st.ports && st.ports !== '-') ? String(st.ports) : '1024-65535';
-		var ps = defPorts.split('-');
+		var _ps = defPorts.split('-');
 		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-p2p' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('span', { 'class': 'netsteer-card-title' }, _('P2P 直通 (Fullcone 等效)')),
@@ -2359,7 +2321,7 @@ renderSoftirqCard: function(text) {
 		return card;
 	},
 
-	p2pToggle: function(st, ev) {
+	p2pToggle: function(st, _ev) {
 		/* 开→关 / 关→开; 开时读输入框并前端校验 (shell 端再校验一道) */
 		var self = this;
 		var turningOn = !(st && st.active);
@@ -2498,7 +2460,7 @@ renderSoftirqCard: function(text) {
 		/* ① 存量手工规则迁移提示 (nftables.d 里发现 CS1 标记 → 建议迁入统一管理) */
 		fs.exec('/usr/bin/netsteer-bulk', ['migrate']).then(function(r) {
 			var m = null;
-			try { m = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			try { m = JSON.parse((r && r.stdout || '').trim()); } catch (_e) {}
 			var slot = document.getElementById('ns-bulk-migrate');
 			if (!slot || !m || !m.found || !m.found.length) return;
 			slot.style.display = 'flex';
@@ -2519,7 +2481,7 @@ renderSoftirqCard: function(text) {
 		/* ② 判定建议: 持续吃上行的设备 (qos suggest 采样聚合) */
 		fs.exec('/usr/bin/netsteer-qos', ['suggest']).then(function(r) {
 			var list = null;
-			try { list = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			try { list = JSON.parse((r && r.stdout || '').trim()); } catch (_e) {}
 			var slot = document.getElementById('ns-bulk-suggest');
 			if (!slot || !list || !list.length) return;
 			slot.style.display = 'flex';
@@ -2604,7 +2566,7 @@ renderSoftirqCard: function(text) {
 		]);
 	},
 
-	gameDnsEnToggle: function(btn, ev) {
+	gameDnsEnToggle: function(btn, _ev) {
 		/* dnsmasq 查询日志开关 (仅 dnsmasq_off/dnsmasq 观测面出现; 重启 dnsmasq ~1s) */
 		var self = this;
 		return fs.exec('/usr/bin/netsteer-qos', ['dns-en', btn])
@@ -2618,7 +2580,7 @@ renderSoftirqCard: function(text) {
 			.catch(function(e) { ui.showModal(_('出错'), E('p', {}, String(e))); });
 	},
 
-	gameToggle: function(st, ev) {
+	gameToggle: function(st, _ev) {
 		var self = this;
 		var turningOn = !(st && st.enabled);
 		var chain;
@@ -2659,7 +2621,7 @@ renderSoftirqCard: function(text) {
 			var el2 = document.getElementById('ns-game-suggest');
 			if (!el2) return;
 			var list = [];
-			try { list = JSON.parse(((r && r.stdout) || '').trim()) || []; } catch (e) {}
+			try { list = JSON.parse(((r && r.stdout) || '').trim()) || []; } catch (_e) {}
 			if (!list.length) return;
 			var kids = list.slice(0, 4).map(function(d) {
 				return suggestChip('%s · %s'.format(d.name, d.ip), function() {
@@ -2709,7 +2671,7 @@ renderSoftirqCard: function(text) {
 		var self = this;
 		fs.read('/tmp/netsteer/sense.json').then(function(txt) {
 			var j = null;
-			try { j = JSON.parse(txt); } catch (e) {}
+			try { j = JSON.parse(txt); } catch (_e) {}
 			var age = j && j.ts ? Math.floor(Date.now() / 1000) - j.ts : Infinity;
 			if (j && j.verdict && age <= ((j.interval || 30) * 3 + 10)) {
 				/* 后端已防抖: 直接信任 scene 稳定档, 不做本地二次防抖 (避免双重 4 窗拖慢切档) */
@@ -2735,7 +2697,7 @@ renderSoftirqCard: function(text) {
 			self._senseState = senseDebounce(self._senseState, res.scene, Math.floor(Date.now() / 1000));
 			self.paintSense(res);
 		}).catch(function(e) {
-			try { console.error('netsteer-sense:', e); } catch (e2) {}
+			try { console.error('netsteer-sense:', e); } catch (_e2) {}
 			var el = document.getElementById('ns-sense-body');
 			if (el) el.replaceChildren(E('p', { 'class': 'netsteer-note' }, _('场景感知异常: ') + e));
 		});
@@ -2796,14 +2758,14 @@ renderSoftirqCard: function(text) {
 		el.replaceChildren(E('div', {}, kids));
 	},
 
-	feedCheck: function(ev) {
+	feedCheck: function(_ev) {
 		/* 数据源: 检查更新 → 有更新则确认后应用 (D11) */
 		var self = this;
 		var btn = document.getElementById('ns-feed-btn');
 		if (btn) btn.disabled = true;
 		fs.exec('/usr/bin/netsteer-feed', ['check']).then(function(r) {
 			var out = null;
-			try { out = JSON.parse((r.stdout || '').trim()); } catch (e) {}
+			try { out = JSON.parse((r.stdout || '').trim()); } catch (_e) {}
 			btn.disabled = false;
 			if (!out || out.error) {
 				alert(_('数据源不可达: %s').format(out && out.detail || 'network'));
@@ -2819,7 +2781,7 @@ renderSoftirqCard: function(text) {
 				return;
 			fs.exec('/usr/bin/netsteer-feed', ['update']).then(function(r2) {
 				var u = null;
-				try { u = JSON.parse((r2.stdout || '').trim()); } catch (e) {}
+				try { u = JSON.parse((r2.stdout || '').trim()); } catch (_e) {}
 				alert(u && u.count > 0
 					? _('已更新 %d 个数据文件 → 版本 %s%s').format(u.count, u.version || '-', u.failed ? _('\n部分失败: ') + u.failed : '')
 					: (u && u.failed ? _('更新失败: %s (已保留现有数据集)').format(u.failed) : _('无变更'))); 
@@ -2836,7 +2798,7 @@ renderSoftirqCard: function(text) {
 		var self = this;
 		fs.exec('/usr/bin/netsteer-feed', ['status']).then(function(r) {
 			var s = null;
-			try { s = JSON.parse((r.stdout || '').trim()); } catch (e) {}
+			try { s = JSON.parse((r.stdout || '').trim()); } catch (_e) {}
 			var raw = (s && s.installed_version) || self._dataVersion || '';
 			/* 2026.11.08-24bdaf → 2026-11-08 (只给用户看日期, 哈希是内部细节) */
 			var mv = raw.match(/^(\d{4})\.(\d{2})\.(\d{2})/);
@@ -2888,7 +2850,7 @@ renderSoftirqCard: function(text) {
 		if (pts.length < 2) return null;
 		var vmax = Math.max(50, Math.max.apply(null, pts.map(function(p) { return p.v; })) * 1.15);
 		var t0 = pts[0].t, t1 = pts[pts.length - 1].t, span = Math.max(t1 - t0, 1);
-		var d = pts.map(function(p, i) {
+		var d = pts.map(function(p, _i) {
 			var x = (p.t - t0) / span * W;
 			var y = H - (p.v / vmax) * (H - 6) - 2;
 			return x.toFixed(1) + ',' + y.toFixed(1);
@@ -2907,7 +2869,7 @@ renderSoftirqCard: function(text) {
 			fs.exec('/usr/bin/netsteer-qos', ['dnslog', '200']).catch(function() { return null; })
 		]).then(function(res) {
 			var pr = null;
-			try { pr = JSON.parse(((res[1] && res[1].stdout) || '').trim()); } catch (e) {}
+			try { pr = JSON.parse(((res[1] && res[1].stdout) || '').trim()); } catch (_e) {}
 			if (pr && pr.latency_ms != null) {
 				if (!self._gameLat) self._gameLat = [];
 				seriesPush(self._gameLat, { t: Date.now(), v: pr.latency_ms }, 300000, 150);
@@ -2918,7 +2880,7 @@ renderSoftirqCard: function(text) {
 			var dn = parseTinStats((parts[1] || '').replace(/^[^\n]*\n/, ''));
 			self.paintGame(up, dn, pr);
 			var recs = [];
-			try { recs = JSON.parse(((res[2] && res[2].stdout) || '').trim()) || []; } catch (e) {}
+			try { recs = JSON.parse(((res[2] && res[2].stdout) || '').trim()) || []; } catch (_e) {}
 			self.loadGameDomains().then(function(map) {
 				self.paintGameDns(dnsSummary(recs, map, self._gameDevice, self._ipmap, self._pmap));
 			});
@@ -3046,7 +3008,7 @@ renderSoftirqCard: function(text) {
 		var masks = {};
 		IFACES.forEach(function(it, i) { masks[it.sec] = ((values[1 + i * 2] || '0') + '').trim(); });
 		var state = null;
-		try { state = JSON.parse(values[2 + IFACES.length * 2] || ''); } catch (e) { state = null; }
+		try { state = JSON.parse(values[2 + IFACES.length * 2] || ''); } catch (_e) { state = null; }
 		var cur = matchPreset(masks, state);
 		var curLabel = cur ? PRESETS[cur].label : _('自定义组合');
 
@@ -3275,7 +3237,7 @@ renderSoftirqCard: function(text) {
 		var selfOv = this;
 		fs.exec('/usr/bin/netsteer-audit', []).then(function(r) {
 			var a = null;
-			try { a = JSON.parse((r && r.stdout || '').trim()); } catch (e) {}
+			try { a = JSON.parse((r && r.stdout || '').trim()); } catch (_e) {}
 						var slot = document.getElementById('ns-health-slot');
 			if (slot) slot.replaceChildren(selfOv.renderHealth(a));
 		});
@@ -3299,7 +3261,7 @@ renderSoftirqCard: function(text) {
 				'type': 'button',
 				'role': 'tab',
 				'data-tab': t.id,
-				'click': function(ev) {
+				'click': function(_ev) {
 					TABS.forEach(function(x) { PANELS[x.id].style.display = x.id === t.id ? '' : 'none'; });
 					document.querySelectorAll('.netsteer-tab').forEach(function(el) { el.classList.toggle('on', el.getAttribute('data-tab') === t.id); });
 					history.replaceState(null, '', '#tab-' + t.id);
@@ -3340,7 +3302,7 @@ renderSoftirqCard: function(text) {
 		menu.addEventListener('click', function(ev) {
 			var b = ev.target.closest ? ev.target.closest('.netsteer-tab') : null;
 			if (!b) return;
-			var tid = b.getAttribute('data-tab');
+			var _tid = b.getAttribute('data-tab');
 		});
 
 		/* 首次使用: v1.18 向导优先 (分级+校准+推荐模式); 老升级用户走原测速询问 */

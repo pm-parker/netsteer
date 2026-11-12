@@ -1253,16 +1253,32 @@ return view.extend({
 			svg.setAttribute('width', Math.round(wb.width));
 			svg.setAttribute('height', Math.round(wb.height));
 			while (svg.firstChild) svg.removeChild(svg.firstChild);
+			var vertical = window.matchMedia('(max-width: 640px)').matches;
 			var rel = function(r) {
-				return { x1: r.left - wb.left, x2: r.right - wb.left, cy: r.top - wb.top + r.height / 2 };
+				return {
+					x1: r.left - wb.left, x2: r.right - wb.left,
+					y1: r.top - wb.top, y2: r.bottom - wb.top,
+					cy: r.top - wb.top + r.height / 2, cx: r.left - wb.left + r.width / 2
+				};
 			};
 			var reduced = self.reducedMotion();
 			[['wan', cards[0], cards[1], gaps[0], false], ['lan', cards[1], cards[2], gaps[1], true]].forEach(function(seg) {
 				var lane = seg[0], A = rel(seg[1].getBoundingClientRect()),
 					B = rel(seg[2].getBoundingClientRect()), isLan = seg[4];
-				var y1 = A.cy, y2 = B.cy;
-				if (isLan) { y1 = A.cy - 11; y2 = B.cy + 11; }   /* LAN 侧轻微上扬弧线 (参考稿语义) */
-				var pts = wiresPathH(A.x2 + 2, y1, B.x1 - 2, y2);
+				var pts;
+				if (vertical) {
+					/* 窄屏纵向: 卡片竖排, 竖直连线带轻微摆弧 (LAN 摆 7px) */
+					var vy1 = A.y2 + 2, vy2 = B.y1 - 2, vcx = (A.cx + B.cx) / 2, swing = isLan ? 7 : 0;
+					pts = [];
+					for (var vi = 0, STEPS = 22; vi <= STEPS; vi++) {
+						var vt = vi / STEPS;
+						pts.push([vcx + swing * Math.sin(Math.PI * vt), vy1 + (vy2 - vy1) * vt]);
+					}
+				} else {
+					var y1 = A.cy, y2 = B.cy;
+					if (isLan) { y1 = A.cy - 11; y2 = B.cy + 11; }   /* LAN 侧轻微上扬弧线 (参考稿语义) */
+					pts = wiresPathH(A.x2 + 2, y1, B.x1 - 2, y2);
+				}
 				var d = 'M' + pts.map(function(q) { return q[0].toFixed(1) + ' ' + q[1].toFixed(1); }).join('L');
 				svg.appendChild(mk('path', { d: d, 'class': isLan ? 'ns-wline ns-wline-lan' : 'ns-wline ns-wline-wan' }));
 				var rs = wiresResample(pts, 15);
@@ -1270,7 +1286,7 @@ return view.extend({
 				var TRIP = Math.max(600, rs.len / 32 * 1050);
 				laneG.setAttribute('data-trip', String(Math.round(TRIP)));
 				rs.pts.forEach(function(q, k) {
-					var dot = mk('circle', { cx: 0, cy: 0, r: 2.2, 'class': 'ns-dot' });
+					var dot = mk('circle', { cx: 0, cy: 0, r: 2.4, 'class': 'ns-dot' });
 					laneG.appendChild(dot);
 					var frames = rs.pts.slice(k).concat(rs.pts.slice(0, k + 1)).map(function(w) {
 						return { transform: 'translate(' + w[0].toFixed(1) + 'px,' + w[1].toFixed(1) + 'px)' };
@@ -3458,25 +3474,25 @@ renderSoftirqCard: function(text) {
 			'.ns-wires-lines{position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none}',
 			'.ns-w2-row{position:relative;display:flex;align-items:stretch;gap:0}',
 			'.ns-wnode{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:11px 13px;background:var(--vt-surface,var(--s1,#fff));border:1px solid var(--vt-line,var(--line,#d6dade));border-radius:10px;min-width:0;box-shadow:0 1px 2px rgba(10,14,18,.04)}',
-			'.ns-wnode-hub{border:1px solid var(--vt-accent-line,var(--vt-accent,#c8f031));background:var(--vt-surface,var(--s1,#fff));box-shadow:0 0 0 3px rgba(150,190,20,.10),0 1px 2px rgba(10,14,18,.05)}',
+			'.ns-wnode-hub{border:1px solid var(--vt-ok,#0b7f6c);background:var(--vt-surface,var(--s1,#fff));box-shadow:0 0 0 3px rgba(11,127,108,.10),0 1px 2px rgba(10,14,18,.05)}',
 			'.ns-wchip{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:9px;background:linear-gradient(180deg,var(--vt-surface,var(--s1,#fff)),var(--vt-s2,#f1f3f5));border:1px solid rgba(10,14,18,.07);box-shadow:inset 0 1px 0 rgba(255,255,255,.6)}',
-			'.ns-wchip-hub{background:linear-gradient(180deg,var(--vt-accent,#c8f031),var(--vt-accent,#c8f031));border-color:rgba(0,0,0,.08);box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}',
+			'.ns-wchip-hub{background:linear-gradient(180deg,var(--vt-ok,#0b7f6c),var(--vt-ok,#0b7f6c));border-color:rgba(0,0,0,.10);box-shadow:inset 0 1px 0 rgba(255,255,255,.22)}',
 			'.ns-wchip-p{fill:none;stroke:var(--vt-text-2,var(--text-2,#4a515a));stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}',
-			'.ns-wchip-hub .ns-wchip-p{stroke:var(--vt-accent-ink,#14171a)}',
+			'.ns-wchip-hub .ns-wchip-p{stroke:#fff}',
 			'.ns-wnode .ns-wchip + .ns-wnode-t{margin-left:0}',
 			'.ns-wnode-hub{flex:0 0 auto}',
 			'.ns-wnode-t{font-size:13px;font-weight:650;color:var(--vt-text,var(--text,#14171a));white-space:nowrap}',
 			'.ns-wnode-s{align-self:flex-start;font-size:10px;font-weight:600;line-height:1.5;color:var(--vt-text-3,var(--text-3,#5f666f));background:var(--vt-s2,#f1f3f5);border:1px solid rgba(10,14,18,.05);border-radius:5px;padding:0 5px;white-space:nowrap}',
 			'.ns-wnode > span:nth-child(2),.ns-wnode > span:nth-child(3){display:flex;flex-direction:column}',
 			'.ns-wgap{flex:1 1 0;min-width:56px;display:flex;align-items:flex-start;justify-content:center;padding-top:9px}',
-			'.ns-wrate{font-size:11.5px;font-weight:650;color:var(--vt-text-2,var(--text-2,#4a515a));font-family:var(--vt-mono,var(--mono,ui-monospace,monospace));font-variant-numeric:tabular-nums;letter-spacing:-.01em;transition:color .3s;background:rgba(255,255,255,.82);border:1px solid rgba(10,14,18,.06);border-radius:999px;padding:2px 8px;box-shadow:0 1px 2px rgba(10,14,18,.05)}',
+			'.ns-wrate{font-size:11.5px;font-weight:650;color:var(--vt-text-2,var(--text-2,#4a515a));font-family:var(--vt-mono,var(--mono,ui-monospace,monospace));font-variant-numeric:tabular-nums;letter-spacing:-.01em;transition:color .3s;background:rgba(255,255,255,.82);border:1px solid rgba(10,14,18,.06);border-radius:999px;padding:2px 8px;box-shadow:0 1px 2px rgba(10,14,18,.05);max-width:100%;white-space:nowrap}',
 			'.ns-wrate.ns-busy{color:var(--vt-accent-text,var(--vt-accent,#c8f031))}',
 			'.ns-wline{fill:none}',
 			'.ns-wline-wan{stroke:var(--ns-wan-gray,#aeb5c0);stroke-width:1.6;stroke-dasharray:4 4}',
-			'.ns-wline-lan{stroke:var(--vt-accent,var(--accent,#c8f031));stroke-width:2}',
-			'.ns-dot{fill:var(--vt-accent,var(--accent,#c8f031));opacity:.8}',
-			'.ns-leaf{fill:var(--vt-accent,var(--accent,#c8f031));opacity:.4}',
-			'@media (max-width: 640px){.ns-wnode{padding:9px 10px;gap:7px}.ns-wchip{width:30px;height:30px;border-radius:8px}.ns-wnode-t{font-size:12px}.ns-wnode-s{font-size:9.5px}.ns-wrate{font-size:10.5px}.ns-wgap{min-width:44px;padding-top:4px}.ns-wires2{background-size:12px 12px}}',
+			'.ns-wline-lan{stroke:var(--vt-ok,#0b7f6c);stroke-width:2}',
+			'.ns-dot{fill:var(--vt-ok,#0b7f6c);opacity:.9}',
+			'.ns-leaf{fill:var(--vt-ok,#0b7f6c);opacity:.42}',
+			'@media (max-width: 640px){.ns-wnode{padding:9px 12px;gap:8px}.ns-wchip{width:30px;height:30px;border-radius:8px}.ns-wnode-t{font-size:12px}.ns-wnode-s{font-size:9.5px}.ns-w2-row{flex-direction:column;align-items:stretch}.ns-wnode{width:100%}.ns-wgap{min-height:30px;min-width:0;padding:0;align-items:center}.ns-wrate{font-size:10.5px;padding:1px 7px}.ns-wires2{background-size:12px 12px}}',
 			'.ns-wires-foot{margin:4px 0 0}',
 			'.ns-health{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin:10px 0}',
 			'.ns-hc .vt-dcard-value{font-size:var(--vt-fs-xl,20px);font-weight:680;letter-spacing:-.015em}',

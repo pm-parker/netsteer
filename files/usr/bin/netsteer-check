@@ -51,14 +51,18 @@ if [ -d "$FH" ]; then
 		_ov=$(sed -n "s/.* v=\([^ ]*\) .*/\1/p" "$FH/$_lat/manifest.tsv" 2>/dev/null)
 		_nv=$(sed -n "s/.* v=\([^ ]*\) .*/\1/p" "$FD/manifest.tsv" 2>/dev/null)
 		_need=0
-		if [ -n "$_ov" ] && [ -n "$_nv" ]; then
-			if [ "$_ov" \> "$_nv" ]; then _need=1
-			elif [ "$_ov" = "$_nv" ] && ! cmp -s "$FH/$_lat/gamedomains.txt" "$FD/gamedomains.txt" 2>/dev/null; then _need=1
-			fi
+		# v1.22.13 修复: 版本比较只用日期段数值序 (hash 尾缀随机, 字符串序会把旧版判成新版 —
+		# 实锤事故: ebea1c>c8ff2a 字母序成立 → 装机后包内新数据集被回滚成旧快照)
+		_ovd=$(printf '%s' "$_ov" | sed 's/-.*//')
+		_nvd=$(printf '%s' "$_nv" | sed 's/-.*//')
+		if [ -n "$_ovd" ] && [ -n "$_nvd" ]; then
+			_cmp=$(printf '%s\n%s\n' "$_ovd" "$_nvd" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)
+			[ "$_cmp" = "$_nvd" ] && [ "$_ovd" != "$_nvd" ] && _need=1
+			# 同日期: 保守不恢复 (快照与包内同日谁新不可判定, 升级场景包内是官方发布版, 回滚旧快照几乎必错)
 		fi
 		if [ "$_need" = "1" ]; then
-			for _f in manifest.tsv gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt; do
-				[ -f "$FH/$_lat/$_f" ] && cp -f "$FH/$_lat/$_f" "$FD/$_f" 2>/dev/null
+			for _f in "$FH/$_lat"/*.txt; do
+				[ -f "$_f" ] && cp -f "$_f" "$FD/${_f##*/}" 2>/dev/null
 			done
 			logger -t netsteer-feed "升级保护: 数据集恢复用户版 $_ov (包内 $_nv)"
 			echo "$(date '+%m-%d %H:%M:%S') feed 升级覆盖已恢复用户数据 (版本 $_ov)" >> /etc/netsteer/history.log 2>/dev/null

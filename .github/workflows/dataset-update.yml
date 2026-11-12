@@ -46,6 +46,15 @@ jobs:
             echo "version=$VER" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Purge jsdelivr CDN cache (消除 @main 12h 缓存窗 — purge 传播 ~30s)
+        if: always()
+        run: |
+          for f in manifest.tsv gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt confdomains.txt downloadtrackers.txt; do
+            curl -sm 15 "https://purge.jsdelivr.net/gh/pm-parker/netsteer@main/data/$f" > /dev/null || true
+          done
+          sleep 30
+          echo "CDN 现版本: $(curl -sm 15 https://cdn.jsdelivr.net/gh/pm-parker/netsteer@main/data/manifest.tsv | head -1)"
+
       - name: Create pull request
         if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v6
@@ -62,7 +71,7 @@ jobs:
             - 保留段: 手工补充域名 + AS 共识大段 + gameports/downloadports/streamdomains (不自动采集)
             - manifest 版本: ${{ steps.diff.outputs.version }} (日期+内容 hash, 独立版本线)
 
-            合并即发布: jsdelivr CDN 刷新后路由器每日 auto check 自动拉取 (防降级保护生效)。
+            合并后刷新: 本 workflow 每次运行结束都会 purge jsdelivr CDN; 纯自动 PR 合并后等下次周跑(或手动 dispatch)完成缓存刷新, 路由器 auto check 自动拉取 (防降级保护兜底)。
             请人工过目 diff (重点: 类别映射、异常大增删)。
           commit-message: |
             data: 上游数据集自动更新 ${{ steps.diff.outputs.version }}

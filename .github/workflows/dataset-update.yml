@@ -1,0 +1,71 @@
+name: dataset-update
+
+# 数据集周采集 — 与插件版本完全解耦:
+#   只改 data/*.txt + manifest (版本=日期+内容hash, 独立版本线), 不 bump NS_VERSION, 不打 tag
+# 链路: cache-domains 上游 + Valve SDR API → collect-datasets.py → gen-manifest.py
+#   → 有 diff 时开 PR (人工过目) → 合并即发布 (jsdelivr CDN 自动刷新 → 路由器每日 auto check 拉取)
+on:
+  schedule:
+    - cron: '0 19 * * 1'   # 每周一 19:00 UTC = 北京周二 03:00
+  workflow_dispatch: {}     # 支持手动触发
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dataset-update
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Collect upstream datasets
+        run: python3 scripts/collect-datasets.py
+
+      - name: Regenerate manifest (dataset version line, independent of plugin version)
+        run: python3 scripts/gen-manifest.py
+
+      - name: Detect changes
+        id: diff
+        run: |
+          git config user.name "netsteer-dataset-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if git diff --quiet -- data/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            VER=$(head -1 data/manifest.tsv | sed -n 's/.* v=\([^ ]*\) .*/\1/p')
+            echo "version=$VER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: dataset/auto-update
+          delete-branch: true
+          title: 'data: 上游数据集自动更新 ${{ steps.diff.outputs.version }}'
+          body: |
+            本 PR 由每周定时采集自动生成 (dataset-update workflow), 与插件版本号无关。
+
+            - 采集源: uklans/cache-domains (MIT) + Valve 官方 SDR API
+            - 自动段: gamedomains 上游域名 (通配行已转裸后缀) + gameips SDR 中继 /24
+            - 保留段: 手工补充域名 + AS 共识大段 + gameports/downloadports/streamdomains (不自动采集)
+            - manifest 版本: ${{ steps.diff.outputs.version }} (日期+内容 hash, 独立版本线)
+
+            合并即发布: jsdelivr CDN 刷新后路由器每日 auto check 自动拉取 (防降级保护生效)。
+            请人工过目 diff (重点: 类别映射、异常大增删)。
+          commit-message: |
+            data: 上游数据集自动更新 ${{ steps.diff.outputs.version }}
+
+            由 dataset-update workflow 生成 — cache-domains + Valve SDR 周采集。
+            数据集独立版本线, 不 bump 插件版本号。

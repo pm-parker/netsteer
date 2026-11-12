@@ -1,11 +1,50 @@
 # NetSteer 游戏平台域名数据集 (L1 DNS 分类)
 # 派生自 uklans/cache-domains (MIT License) https://github.com/uklans/cache-domains
-# + 手工补充裸后缀 (上游已移除通配行的平台)
-# 策划日期 2026-11-08; 格式: <类别>\t<域名后缀>; 匹配=查询名等于后缀或以其结尾
-# 共 158 个唯一后缀 (cache-domains 源 123 行)
+# 自动采集: 2026-11-12 (上游 27 个 service 域名 + 手工补充 40 条)
+# 格式: <类别>\t<域名后缀>; 匹配=查询名等于后缀或以其结尾
+# 共 172 个后缀 (上游 132 + 手工 40)
 
-# steam
-steam	lancache.steamcontent.com
+# arenanet
+arenanet	assetcdn.101.arenanetworks.com
+arenanet	assetcdn.102.arenanetworks.com
+arenanet	assetcdn.103.arenanetworks.com
+
+# blizzard
+blizzard	blizzard.vo.llnwd.net
+blizzard	blzddist1-a.akamaihd.net
+blizzard	blzddist2-a.akamaihd.net
+blizzard	blzddist3-a.akamaihd.net
+blizzard	cdn.blizzard.com
+blizzard	dist.blizzard.com
+blizzard	dist.blizzard.com.edgesuite.net
+blizzard	edge.blizzard.top.comcast.net
+blizzard	level3.blizzard.com
+blizzard	nydus.battle.net
+
+# blur
+blur	blur-updates.lanparty.fyi
+
+# bsg
+bsg	cdn-11.eft-store.com
+bsg	cl-453343cd.gcdn.co
+
+# cityofheroes
+cityofheroes	cdn-eu1.homecomingservers.com
+cityofheroes	cdn-na1.homecomingservers.com
+cityofheroes	cdn-na2.homecomingservers.com
+cityofheroes	cdn-na3.homecomingservers.com
+
+# cod
+cod	cod-assets.cdn.callofduty.com
+cod	cod-assets.cdn.callofduty.com.edgesuite.net
+
+# daybreak
+daybreak	pls.patch.daybreakgames.com
+
+# ea
+ea	cdn-patch.swtor.com
+ea	lvlt.cdn.ea.com
+ea	origin-a.akamaihd.net
 
 # epic
 epic	cdn.unrealengine.com
@@ -24,39 +63,44 @@ epic	egs-cloudfront-chunks.epicgamescdn.com
 epic	epicgames-download1.akamaized.net
 epic	fastly-download.epicgames.com
 
-# riot
-riot	dyn.riotcdn.net
-riot	l3cdn.riotgames.com
-riot	riotgamespatcher-a.akamaihd.net
-riot	riotgamespatcher-a.akamaihd.net.edgesuite.net
-riot	worldwide.l3cdn.riotgames.com
+# frontier
+frontier	cdn.zaonce.net
 
-# blizzard
-blizzard	cdn.blizzard.com
-blizzard	blizzard.vo.llnwd.net
-blizzard	blzddist1-a.akamaihd.net
-blizzard	blzddist2-a.akamaihd.net
-blizzard	blzddist3-a.akamaihd.net
-blizzard	dist.blizzard.com
-blizzard	dist.blizzard.com.edgesuite.net
-blizzard	edge.blizzard.top.comcast.net
-blizzard	level3.blizzard.com
-blizzard	nydus.battle.net
+# neverwinter
+neverwinter	level3.nwhttppatch.crypticstudios.com
 
-# ea
-ea	cdn-patch.swtor.com
-ea	lvlt.cdn.ea.com
-ea	origin-a.akamaihd.net
+# nexusmods
+nexusmods	filedelivery.nexusmods.com
 
-# ubisoft
-ubisoft	cdn.ubi.com
+# nintendo
+nintendo	ccs.cdn.wup.shop.nintendo.net.edgesuite.net
+nintendo	cdn.c.shop.nintendowifi.net
+nintendo	cdn.shop.wii.com
+nintendo	cdn.t.shop.nintendowifi.net
+nintendo	ctr.shop.nintendo.net
+nintendo	ecs-lp1.hac.shop.nintendo.net
+nintendo	geisha-wup.cdn.nintendo.net
+nintendo	geisha-wup.cdn.nintendo.net.edgekey.net
+nintendo	hac.lp1.d4c.nintendo.net
+nintendo	hac.lp1.eshop.nintendo.net
+nintendo	hac.p01.d4c.nintendo.net
+nintendo	hac.p01.eshop.nintendo.net
+nintendo	idbe-wup.cdn.nintendo.net
+nintendo	idbe-wup.cdn.nintendo.net.edgekey.net
+nintendo	kanzashi-wup.cdn.nintendo.net
+nintendo	samurai-wup.cdn.nintendo.net
+nintendo	wup.eshop.nintendo.net
+nintendo	wup.shop.nintendo.net
+
+# pathofexile
+pathofexile	patchcdn.pathofexile.com
 
 # psn
+psn	gs-sec.ww.np.dl.playstation.net
 psn	gs2-ww-prod.psn.akadns.net
 psn	gs2.sonycoment.loris-e.llnwd.net
 psn	gs2.ww.prod.dl.playstation.net
 psn	gs2.ww.prod.dl.playstation.net.edgesuite.net
-psn	gs-sec.ww.np.dl.playstation.net
 psn	gst.prod.dl.playstation.net
 psn	playstation4.sony.akadns.net
 psn	psnobj.prod.dl.playstation.net
@@ -66,51 +110,39 @@ psn	tmdb.np.dl.playstation.net
 psn	uef.np.dl.playstation.net
 psn	vulcan.dl.playstation.net
 
-# xbox
-xbox	assets1.xboxlive.com
-xbox	assets1.xboxlive.com.nsatc.net
-xbox	assets2.xboxlive.com
-xbox	d1.xboxlive.com
-xbox	xbox-mbr.xboxlive.com
-xbox	xvcf1.xboxlive.com
-xbox	xvcf2.xboxlive.com
-xbox	assets1.xboxlive.com.edgesuite.net
-xbox	download.xbox.com
-xbox	download.xbox.com.edgesuite.net
+# renegadex
+renegadex	patches.totemarts.games
+renegadex	patches.totemarts.services
 
-# nintendo
-nintendo	hac.p01.d4c.nintendo.net
-nintendo	hac.p01.eshop.nintendo.net
-nintendo	hac.lp1.d4c.nintendo.net
-nintendo	hac.lp1.eshop.nintendo.net
-nintendo	ecs-lp1.hac.shop.nintendo.net
-nintendo	wup.eshop.nintendo.net
-nintendo	wup.shop.nintendo.net
-nintendo	ccs.cdn.wup.shop.nintendo.net.edgesuite.net
-nintendo	geisha-wup.cdn.nintendo.net
-nintendo	geisha-wup.cdn.nintendo.net.edgekey.net
-nintendo	idbe-wup.cdn.nintendo.net
-nintendo	idbe-wup.cdn.nintendo.net.edgekey.net
-nintendo	samurai-wup.cdn.nintendo.net
-nintendo	kanzashi-wup.cdn.nintendo.net
-nintendo	ctr.shop.nintendo.net
-nintendo	cdn.c.shop.nintendowifi.net
-nintendo	cdn.t.shop.nintendowifi.net
-nintendo	cdn.shop.wii.com
+# riot
+riot	dyn.riotcdn.net
+riot	l3cdn.riotgames.com
+riot	riotgamespatcher-a.akamaihd.net
+riot	riotgamespatcher-a.akamaihd.net.edgesuite.net
+riot	worldwide.l3cdn.riotgames.com
 
 # rockstar
 rockstar	patches.rockstargames.com
 
-# bsg
-bsg	cdn-11.eft-store.com
-bsg	cl-453343cd.gcdn.co
+# square
+square	patch-dl.ffxiv.com
 
-# cod
-cod	cod-assets.cdn.callofduty.com
-cod	cod-assets.cdn.callofduty.com.edgesuite.net
+# steam
+steam	lancache.steamcontent.com
 
-# pathofexile
-pathofexile	patchcdn.pathofexile.com
+# teso
+teso	live.patcher.elderscrollsonline.com
+
+# test
+test	canary.lancache.net
+test	canary.uklans.net
+test	litmus.lancache.net
+test	litmus.uklans.net
+test	trigger.lancache.net
+test	trigger.uklans.net
+
+# uplay
+uplay	cdn.ubi.com
 
 # warframe
 warframe	content.warframe.com
@@ -133,38 +165,31 @@ wargaming	wg.gcdn.co
 wargaming	wgus-wotasia.wargaming.net
 wargaming	wgus-woteu.wargaming.net
 
-# square
-square	patch-dl.ffxiv.com
+# wsus
+wsus	amupdatedl.microsoft.com
+wsus	amupdatedl2.microsoft.com
+wsus	amupdatedl3.microsoft.com
+wsus	amupdatedl4.microsoft.com
+wsus	amupdatedl5.microsoft.com
+wsus	dl.delivery.mp.microsoft.com
+wsus	do.dsp.mp.microsoft.com
+wsus	microsoft.com.edgesuite.net
+wsus	officecdn.microsoft.com
+wsus	update.microsoft.com
+wsus	windowsupdate.com
 
-# teso
-teso	live.patcher.elderscrollsonline.com
+# xboxlive
+xboxlive	assets1.xboxlive.com
+xboxlive	assets1.xboxlive.com.edgesuite.net
+xboxlive	assets1.xboxlive.com.nsatc.net
+xboxlive	assets2.xboxlive.com
+xboxlive	d1.xboxlive.com
+xboxlive	download.xbox.com
+xboxlive	download.xbox.com.edgesuite.net
+xboxlive	xbox-mbr.xboxlive.com
+xboxlive	xvcf1.xboxlive.com
+xboxlive	xvcf2.xboxlive.com
 
-# daybreak
-daybreak	pls.patch.daybreakgames.com
-
-# arenanet
-arenanet	assetcdn.101.arenanetworks.com
-arenanet	assetcdn.102.arenanetworks.com
-arenanet	assetcdn.103.arenanetworks.com
-
-# frontier
-frontier	cdn.zaonce.net
-
-# windowsupdate
-windowsupdate	dl.delivery.mp.microsoft.com
-windowsupdate	do.dsp.mp.microsoft.com
-windowsupdate	microsoft.com.edgesuite.net
-windowsupdate	update.microsoft.com
-windowsupdate	windowsupdate.com
-windowsupdate	amupdatedl.microsoft.com
-windowsupdate	amupdatedl2.microsoft.com
-windowsupdate	amupdatedl3.microsoft.com
-windowsupdate	amupdatedl4.microsoft.com
-windowsupdate	amupdatedl5.microsoft.com
-windowsupdate	officecdn.microsoft.com
-
-# nexusmods
-nexusmods	filedelivery.nexusmods.com
 
 # ---- 手工补充 (上游通配域缺失, 裸后缀) ----
 steam	steamcontent.com

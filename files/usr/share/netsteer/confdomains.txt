@@ -1,0 +1,24 @@
+# NetSteer 会议平台域名数据集 (work scene evidence)
+# 内置段: 与引擎 JS/awk 同源兜底; 自动段: M365 官方 API (serviceArea=Skype, 微软 Teams 归属该区), 采集 2026-11-12
+# 格式: conf	<域名后缀>; 匹配=host 等于后缀或以其结尾
+
+conf	adl.windows.com
+conf	aka.ms
+conf	dingtalk.com
+conf	feishu.cn
+conf	hangouts.google.com
+conf	keydelivery.mediaservices.windows.net
+conf	larksuite.com
+conf	lync.com
+conf	meet.google.com
+conf	meeting.qq.com
+conf	skype.com
+conf	streaming.mediaservices.windows.net
+conf	teams.cloud.microsoft
+conf	teams.live.com
+conf	teams.microsoft.com
+conf	tencentmeeting.com
+conf	voovmeeting.com
+conf	webex.com
+conf	zoom.com
+conf	zoom.us

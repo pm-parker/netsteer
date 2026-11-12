@@ -61,3 +61,24 @@ letv	letv.com
 letv	letvimg.com
 # hunan/aipai etc.
 pptv	pptv.com
+
+# ---- anti-AD 反推段 START ----
+# 来源: anti-AD 拦截列表按平台家族表反推 (只引入家族命中域名, 其余忽略), 采集 2026-11-12
+# 平台归属: iqiyi=71.am, bilibili=bilibili.com, kuaishou=gifshow.com, mgtv=hunantv.com, iqiyi=iqiyi.com, kuaishou=kuaishou.com, mgtv=mgtv.com, netflix=netflix.com, iqiyi=qy.net, youku=tudou.com, tencent_video=v.qq.com, tencent_video=video.qq.com, youku=youku.com, youtube=youtube.com
+
+stream	71.am
+stream	bilibili.com
+stream	gifshow.com
+stream	hunantv.com
+stream	iqiyi.com
+stream	kuaishou.com
+stream	mgtv.com
+stream	netflix.com
+stream	qy.net
+stream	tudou.com
+stream	v.qq.com
+stream	video.qq.com
+stream	youku.com
+stream	youtube.com
+
+# ---- anti-AD 反推段 END ----

@@ -14,7 +14,7 @@ trap cleanup EXIT
 
 # ---- 构造源目录 (从 repo data/ 复制) 与"老版装机"目录 ----
 mkdir -p "$WORK/data" "$WORK/installed"
-for f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt manifest.tsv; do
+for f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt confdomains.txt downloadtrackers.txt manifest.tsv; do
 	cp "$ROOT/data/$f" "$WORK/data/$f" || { echo "FATAL: $ROOT/data/$f missing (run scripts/gen-manifest.py)"; exit 2; }
 done
 # 老版: streamdomains 少一行 + 老 manifest (sha 全 0)

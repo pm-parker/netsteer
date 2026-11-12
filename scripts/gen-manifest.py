@@ -27,6 +27,8 @@ DATA_FILES = [
     'gameports.txt',
     'downloadports.txt',
     'streamdomains.txt',
+    'confdomains.txt',
+    'downloadtrackers.txt',
 ]
 
 

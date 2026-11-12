@@ -454,7 +454,7 @@ function dnsSummary(records, map, device, ipmap, pmap) {
 }
 
 /* ---- 场景感知引擎 (D12, 对标 cFosSpeed 场景模式/bulk_detect): 纯函数层 ---- */
-/* 工作会议域名 (内置常量, 数据源=各平台官方文档公开域名) */
+/* 工作会议域名 (内置兜底快照; 运行时真源=confdomains.txt, 由 feed 管线下发: 内置 13 条 + M365 官方 API 周采集) */
 var SENSE_WORK_DOMAINS = [
 	'zoom.us', 'zoom.com', 'meet.google.com', 'hangouts.google.com',
 	'teams.microsoft.com', 'teams.live.com', 'dingtalk.com', 'feishu.cn',

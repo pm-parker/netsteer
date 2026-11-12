@@ -21,7 +21,7 @@ LOCAL_MANIFEST="$DATA_DIR/manifest.tsv"
 WORK="$STATE_DIR/feed"
 FEED_HIST="/etc/netsteer/feed-history"
 PHIST="/etc/netsteer/history.log"
-DATA_FILES="manifest.tsv gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt"
+DATA_FILES="manifest.tsv gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt confdomains.txt downloadtrackers.txt"
 DEFAULT_SOURCES="
 https://cdn.jsdelivr.net/gh/pm-parker/netsteer@main/data
 https://raw.githubusercontent.com/pm-parker/netsteer/main/data
@@ -135,7 +135,7 @@ cmd_status() {
 	fi
 	if [ -z "$_manifest_files" ]; then
 		# 包内无 manifest (老包): 列目录里的数据文件
-		for _f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt; do
+		for _f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt confdomains.txt downloadtrackers.txt; do
 			[ -f "$DATA_DIR/$_f" ] && _manifest_files="$_manifest_files $_f"
 		done
 	fi
@@ -158,7 +158,7 @@ validate_data() {
 	[ -s "$_f" ] || { echo "空文件"; return 1; }
 	_base=$(basename "$_f")
 	case "$_base" in
-	gamedomains.txt|streamdomains.txt) # cat TAB 域名后缀
+	gamedomains.txt|streamdomains.txt|confdomains.txt|downloadtrackers.txt) # cat TAB 域名后缀
 		while IFS= read -r _line || [ -n "$_line" ]; do
 			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ 	]*//; s/[ 	]*$//')
 			[ -z "$_line" ] && continue
@@ -381,7 +381,7 @@ cmd_rollback() {
 	# 兼容: 旧 .bak 单代回退
 	_restored=""
 	_n=0
-	for _f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt; do
+	for _f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt confdomains.txt downloadtrackers.txt; do
 		[ -f "$DATA_DIR/$_f.bak" ] || continue
 		cp -f "$DATA_DIR/$_f.bak" "$DATA_DIR/.${_f}.new" 2>/dev/null || continue
 		mv -f "$DATA_DIR/.${_f}.new" "$DATA_DIR/$_f" 2>/dev/null || continue

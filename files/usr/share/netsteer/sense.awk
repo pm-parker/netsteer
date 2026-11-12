@@ -16,6 +16,8 @@ BEGIN {
 
 	# ---- 数据集 (环境变量注入, 缺省走 apk 安装路径) ----
 	gd = (ENVIRON["GAMEDOMAINS"] != "" ? ENVIRON["GAMEDOMAINS"] : "/usr/share/netsteer/gamedomains.txt")
+	cf = (ENVIRON["CONFDOMAINS"] != "" ? ENVIRON["CONFDOMAINS"] : "/usr/share/netsteer/confdomains.txt")
+	dt = (ENVIRON["DLTRACKERS"] != "" ? ENVIRON["DLTRACKERS"] : "/usr/share/netsteer/downloadtrackers.txt")
 	sd = (ENVIRON["STREAMDOMAINS"] != "" ? ENVIRON["STREAMDOMAINS"] : "/usr/share/netsteer/streamdomains.txt")
 	gi = (ENVIRON["GAMEIPS"] != "" ? ENVIRON["GAMEIPS"] : "/usr/share/netsteer/gameips.txt")
 	gp = (ENVIRON["GAMEPORTS"] != "" ? ENVIRON["GAMEPORTS"] : "/usr/share/netsteer/gameports.txt")
@@ -33,10 +35,17 @@ BEGIN {
 	close(dp)
 
 	# ---- 内置列表 (与 JS 同源; 会议域名/STUN/网盘 CDN) ----
+	# 内置兜底 (confdomains.txt/downloadtrackers.txt 缺失时仍可识别; 文件=feed 下发真源)
 	split("zoom.us zoom.com meet.google.com hangouts.google.com teams.microsoft.com teams.live.com dingtalk.com feishu.cn larksuite.com webex.com meeting.qq.com voovmeeting.com tencentmeeting.com", workd, " ")
 	for (w in workd) work[workd[w]] = 1
 	stun[3478] = 1; stun[3479] = 1; stun[19302] = 1
 	dl_suf[1] = ".baidupcs.com"; dl_suf[2] = ".bcsp2p.baidu.com"
+	# 数据文件: 会议域名 (conf TAB suffix) / BT tracker 域名 (download TAB suffix)
+	dn2 = 0
+	while ((getline line < cf) > 0) if (parse_dom(line)) work[suf] = 1
+	close(cf)
+	while ((getline line < dt) > 0) if (parse_dom(line)) { dn2++; dl_suf[dn2 + 2] = "." suf }
+	close(dt)
 }
 
 # ---- 解析 helpers (数据文件格式: cat TAB 识别体, # 注释) ----

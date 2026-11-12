@@ -595,8 +595,8 @@ var NS_ICONS = {
 		['line', { x1: 8.5, y1: 9.5, x2: 8.5, y2: 13.5 }],
 		['circle', { cx: 15.6, cy: 10.6, r: 1 }],
 		['circle', { cx: 18, cy: 13.4, r: 1 }]],
-	work: [['rect', { x: 2.5, y: 6.5, width: 13, height: 11, rx: 2.5 }],
-		['path', { d: 'M15.5 10.5 21.5 7v10l-6-3.5z' }]],
+	work: [['rect', { x: 2.5, y: 6.5, width: 13.5, height: 11, rx: 2.5 }],
+		['path', { d: 'M16.5 10.2 21.5 7.4v9.2l-5-2.8z', fill: 'currentColor', stroke: 'none' }]],
 	stream: [['circle', { cx: 12, cy: 12, r: 9.25 }],
 		['path', { d: 'M10 8.4 16 12l-6 3.6z', fill: 'currentColor', stroke: 'none' }]],
 	download: [['path', { d: 'M12 4.5v10.5' }],
@@ -1332,9 +1332,12 @@ return view.extend({
 			svg,
 			E('div', { 'class': 'ns-axis-row' }, [
 				E('span', {}, '-7.5m'), E('span', {}, '-3.5m'), E('span', {}, 'now')
-			]),
-			E('div', { 'class': 'vt-hint ns-traffic-foot' }, _('基线建立中 — 约 10 秒后出现第一条曲线'))
-		]);
+				]),
+				E('div', { 'class': 'ns-traffic-empty on', 'id': 'ns-traffic-empty' }, [
+					nsIcon('download', 22),
+					E('span', {}, _('基线建立中 — 约 10 秒后出现第一条曲线'))
+				])
+				]);
 	},
 
 	pollTraffic: function() {
@@ -1381,6 +1384,8 @@ return view.extend({
 		var st = this._series;
 		if (!svg || st.rx.length < 2) return;
 		svg.classList.remove('ns-empty');
+		var _emp = document.getElementById('ns-traffic-empty');
+		if (_emp) _emp.classList.remove('on');
 		var W = 640, H = 130;
 		var segs = function(sr, vmax) {
 			var out = [], curSeg = null, span = st.rx[st.rx.length-1][0] - st.rx[0][0] || 1;
@@ -3326,7 +3331,11 @@ renderSoftirqCard: function(text) {
 			'.ns-wires-svg.ns-narrow .ns-wire-rate{font-size:13px}',
 			/* 吞吐空态骨架 */
 			'.ns-skeleton{stroke:var(--vt-line,#d6dade);stroke-width:1;stroke-dasharray:4 5}',
-			'.ns-skeleton-block{fill:none}',
+			'.ns-skeleton-block{fill:none;animation:ns-pulse 1.8s ease-in-out infinite}',
+			'@keyframes ns-pulse{0%,100%{opacity:.25}50%{opacity:.7}}',
+			'.ns-traffic{position:relative}',
+			'.ns-traffic-empty{display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--text-3,#5f666f);font-size:var(--fs-sm,12px);pointer-events:none;text-align:center;padding:0 24px}',
+			'.ns-traffic-empty.on{display:flex}',
 			'.ns-traffic-svg:not(.ns-empty) .ns-skeleton, .ns-traffic-svg:not(.ns-empty) .ns-skeleton-block{display:none}',
 			'.ns-traffic-svg.ns-empty .ns-area-rx,.ns-traffic-svg.ns-empty .ns-line-rx,.ns-traffic-svg.ns-empty .ns-area-tx,.ns-traffic-svg.ns-empty .ns-line-tx{display:none}',
 			/* 提示字对比度提升 + 移动底部安全区 */
@@ -3395,12 +3404,24 @@ renderSoftirqCard: function(text) {
 			'.netsteer-tabpanel{padding-top:6px}',
 			'#netsteer-panel-smart>.netsteer-card+.netsteer-card,#netsteer-panel-pro>.netsteer-card+.netsteer-card{margin-top:16px}',
 
+			/* v1.22.4 界面优化: 膨胀卡通栏横排 (6 卡 5+1 失衡修复) + 深色对比度 + 触控目标 */
+			'.ns-health>.vt-dcard:last-child{grid-column:1/-1;display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap}',
+			'.ns-health>.vt-dcard:last-child .vt-dcard-sub{margin-left:auto}',
+			'.netsteer-root{padding-bottom:20px}',
+			'html[data-darkmode="true"] .netsteer-root .netsteer-note,html[data-darkmode="true"] .netsteer-root .vt-hint,html[data-darkmode="true"] .netsteer-root .vt-dcard-sub,html[data-darkmode="true"] .netsteer-root .netsteer-foot{color:#a3aab3}',
+			'html[data-darkmode="true"] .netsteer-root .netsteer-card{border-color:#323841;box-shadow:0 1px 2px rgba(0,0,0,.4)}',
+			'html[data-darkmode="true"] .netsteer-root .ns-hc{border:1px solid #262b31}',
+			'html[data-darkmode="true"] .netsteer-root .ns-btn-quiet{border-color:#3d434b;color:#c5cbd3!important}',
+			'html[data-darkmode="true"] .netsteer-root .ns-skeleton{stroke:#3a4048}',
+
 			/* 移动端: 触控热区放大 + 布局防挤 + 避开主题固定底栏 */
 			'@media (max-width: 640px){',
 			'.netsteer-root{padding-bottom:96px}',
 			'.netsteer-statusbar{flex-direction:column;align-items:flex-start;gap:6px}',
 			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
-			'.netsteer-minibtn,.ns-btn-act,.ns-btn-quiet{min-height:36px!important;padding:.45em 1em}',
+			'.netsteer-minibtn,.ns-btn-act,.ns-btn-quiet{min-height:44px!important;padding:.55em 1.1em}',
+			'.ns-health>.vt-dcard:last-child .vt-dcard-sub{margin-left:0;width:100%;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}',
+			'.ns-health>.vt-dcard:last-child .vt-dcard-sub>span:first-child{flex:1 1 12em}',
 			'.netsteer-badge{max-width:calc(100% - 2em)}',
 			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',
 			'.netsteer-sq-row{grid-template-columns:6.2em 1fr 3.8em;gap:8px}',

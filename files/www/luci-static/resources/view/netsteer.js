@@ -3107,6 +3107,7 @@ renderSoftirqCard: function(text) {
 				return;
 			}
 			if (!out.update_available) {
+				self._feedNewVersion = null; /* 已最新/防降级 → 撤下自动提示条 */
 				/* 远端更旧 (sha 不同但版本落后) 时明确告知防降级, 不弹应用确认 */
 				alert(out.remote_older
 					? _('远端数据集版本 (%s) 低于当前 (%s)，已跳过 — 防降级保护。').format(out.remote_version || '-', out.installed_version || '-')
@@ -3128,11 +3129,36 @@ renderSoftirqCard: function(text) {
 				alert(u && u.count > 0
 					? _('已更新 %d 个数据文件 → 版本 %s%s').format(u.count, u.version || '-', u.failed ? _('\n部分失败: ') + u.failed : '')
 					: (u && u.failed ? _('更新失败: %s (已保留现有数据集)').format(u.failed) : _('无变更')));
-				/* 数据热生效: 清缓存重载 + 状态行刷新 */
+				/* 数据热生效: 清缓存重载 + 状态行刷新; 成功 → 撤下自动提示条 */
+				if (u && u.count > 0) self._feedNewVersion = null;
 				self._domainMapP = null; self.loadGameDomains();
 				self.paintFeedStatus();
 			});
 		}).catch(function() { btn.disabled = false; alert(_('检查失败: 无法执行 netsteer-feed')); });
+	},
+
+	autoFeedCheck: function() {
+		/* 进入智能模式页自动检测识别库新版 (v1.22.14): 静默 check, 有新版才亮提示条;
+		   会话内一次 + 1h localStorage 节流 (check 要出网拉 manifest, 反复进页不重复查);
+		   远端更旧/网络失败 → 静默 (不打扰, 手动按钮仍可用) */
+		var self = this;
+		if (this._feedAutoBusy) return;
+		var now = Date.now();
+		try { if (now - (+(localStorage.getItem('ns-feed-auto-ts') || 0)) < 3600000) return; }
+		catch (_e) {}
+		if (this._feedAutoTs && now - this._feedAutoTs < 3600000) return;
+		this._feedAutoTs = now;
+		try { localStorage.setItem('ns-feed-auto-ts', String(now)); } catch (_e) {}
+		this._feedAutoBusy = true;
+		fs.exec('/usr/bin/netsteer-feed', ['check']).then(function(r) {
+			self._feedAutoBusy = false;
+			var out = null;
+			try { out = JSON.parse((r.stdout || '').trim()); } catch (_e) {}
+			if (out && out.update_available) {
+				self._feedNewVersion = out.remote_version || '';
+				self.paintFeedStatus();
+			}
+		}).catch(function() { self._feedAutoBusy = false; });
 	},
 
 	paintFeedStatus: function() {
@@ -3147,14 +3173,23 @@ renderSoftirqCard: function(text) {
 			var mv = raw.match(/^(\d{4})\.(\d{2})\.(\d{2})/);
 			var v = mv ? _('识别库已更新至 %s-%s-%s').format(mv[1], mv[2], mv[3]) : (raw ? _('识别库 v%s').format(raw) : _('识别库：随包版本'));
 			var integ = s && s.integrity;
-			el.replaceChildren(
-				E('span', { 'class': 'netsteer-note' }, _('%s%s').format(v, integ === false ? _(' (本地有改动)') : '')),
-				E('button', {
-					'class': 'ns-btn-act', 'id': 'ns-feed-btn',
-					'style': 'margin-left:8px',
+			var kids = [E('span', { 'class': 'netsteer-note' }, _('%s%s').format(v, integ === false ? _(' (本地有改动)') : ''))];
+			/* 自动检测发现新版: 品牌色提示条一键升级 (复用 feedCheck 的确认+校验+回滚流程) */
+			if (self._feedNewVersion) {
+				var nm = String(self._feedNewVersion).match(/^(\d{4})\.(\d{2})\.(\d{2})/);
+				var nv = nm ? _('新版 %s-%s-%s').format(nm[1], nm[2], nm[3]) : _('新版');
+				kids.push(E('button', {
+					'class': 'ns-btn-act', 'id': 'ns-feed-new',
+					'style': 'margin-left:8px;background:rgb(200,240,49);color:#1c2600;border-color:rgb(75,102,0);font-weight:600;min-height:44px',
 					'click': L.bind(self.feedCheck, self)
-				}, _('更新识别库'))
-			);
+				}, _('发现%s，点击升级').format(nv)));
+			}
+			kids.push(E('button', {
+				'class': 'ns-btn-act', 'id': 'ns-feed-btn',
+				'style': 'margin-left:8px',
+				'click': L.bind(self.feedCheck, self)
+			}, _('更新识别库')));
+			el.replaceChildren.apply(el, kids);
 		}).catch(function() {
 			el.replaceChildren(E('span', { 'class': 'netsteer-note' }, _('识别库：随包版本')));
 		});
@@ -3659,10 +3694,12 @@ renderSoftirqCard: function(text) {
 					TABS.forEach(function(x) { PANELS[x.id].style.display = x.id === t.id ? '' : 'none'; });
 					document.querySelectorAll('.netsteer-tab').forEach(function(el) { el.classList.toggle('on', el.getAttribute('data-tab') === t.id); });
 					history.replaceState(null, '', '#tab-' + t.id);
+					if (t.id === 'smart') self.autoFeedCheck();
 				}
 			}, t.name);
 		}));
 		Object.keys(PANELS).forEach(function(id) { PANELS[id].style.display = id === active ? '' : 'none'; });
+		if (active === 'smart') self.autoFeedCheck();
 
 		
 		var root = E('div', { 'class': 'netsteer-root vt-app' }, [

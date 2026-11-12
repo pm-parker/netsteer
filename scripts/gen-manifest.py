@@ -74,6 +74,16 @@ def main():
     version = f'{now.strftime("%Y.%m.%d")}-{digest}'
     generated = now.isoformat()
 
+    # 幂等: 数据行未变则不重写 manifest (generated 时间戳会造成永真 diff → 假 PR)
+    tsv_path = os.path.join(out, 'manifest.tsv')
+    new_rows = ['# netsteer-data-manifest v={0} generated={1}'.format(version, generated)] + [
+        '{0}\t{1}\t{2}'.format(k, files[k]['sha256'], files[k]['size']) for k in DATA_FILES]
+    if os.path.exists(tsv_path):
+        old_rows = [l.rstrip('\n') for l in open(tsv_path, encoding='utf-8') if l.strip() and not l.startswith('#')]
+        if sorted(old_rows) == sorted(new_rows[1:]):
+            print('OK: unchanged (data identical, manifest kept)')
+            return 0
+
     manifest = {
         'schema': 1,
         'version': version,

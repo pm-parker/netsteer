@@ -2681,15 +2681,15 @@ renderSoftirqCard: function(text) {
 	},
 
 	renderSnapshotCard: function() {
-		/* 专家调教: 快照与回滚 (v1.22.1 — 所有配置变更可退) */
+		/* 专家调教: 快照与回滚 (v1.22.2 — 事件 humanize + 相对时间, 不向用户暴露原始 id) */
 		var self = this;
 		var card = E('div', { 'class': 'netsteer-card', 'id': 'netsteer-snapcard' }, [
 			E('div', { 'class': 'netsteer-card-head' }, [
 				E('span', { 'class': 'netsteer-card-title' }, _('快照与回滚')),
 				E('span', { 'class': 'netsteer-note', 'id': 'ns-snap-info' }, _('读取中…'))
 			]),
-			E('p', { 'class': 'netsteer-note', 'style': 'margin:.2em 0 .4em' },
-				_('档位 / 开关 / 向导 / 设备列表每次变更前自动存快照（保留 20 份）。配置改坏时一键回到之前的状态；回滚本身也会先存一份，可以再回滚。')),
+			E('p', { 'class': 'netsteer-note', 'style': 'margin:.15em 0 .35em' },
+				_('配置变更自动存档，改坏可一键回退。')),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'btn cbi-button-neutral', 'type': 'button', 'id': 'ns-snap-refresh',
 					'click': ui.createHandlerFn(this, 'snapRefresh') }, _('刷新')),
@@ -2697,26 +2697,77 @@ renderSoftirqCard: function(text) {
 					'style': 'margin-left:8px',
 					'click': ui.createHandlerFn(this, 'snapRestore') }, _('回滚到最近快照'))
 			]),
-			E('div', { 'id': 'ns-snap-history', 'style': 'margin-top:8px' }, [])
+			E('div', { 'id': 'ns-snap-history', 'style': 'margin-top:10px' }, [])
 		]);
 		window.setTimeout(function() { self.snapRefresh(); }, 300);
 		return card;
 	},
 
+	snapHumanize: function(line) {
+		/* 一行审计日志 → { dot:颜色, text:人话, when:相对时间, raw:原文 }; 不匹配返回 null */
+		var now = new Date(), m, y, mo, d, t, dt, diff, when;
+		m = line.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})(?::\d{2})? /) || line.match(/^(\d{2})-(\d{2}) (\d{2}:\d{2})(?::\d{2})? /);
+		if (!m) return null;
+		y = m[1].length === 4 ? +m[1] : now.getFullYear();
+		if (m[1].length === 2) { mo = +m[1]; d = +m[2]; t = m[3]; } else { mo = +m[2]; d = +m[3]; t = m[4]; }
+		dt = new Date(y, mo - 1, d, parseInt(t), 0);
+		diff = Math.max(0, now - dt);
+		if (diff < 60e3) when = _('刚刚');
+		else if (diff < 3600e3) when = Math.floor(diff / 60e3) + _(' 分钟前');
+		else if (dt.toDateString() === now.toDateString()) when = t;
+		else when = (mo) + '-' + (d) + ' ' + t;
+		/* 事件分类: [圆点色, 人话] */
+		var kind = ['var(--ns-ok, #34c759)', _('配置变更前自动存档')], raw = line;
+		var lab = (line.match(/snapshot auto \S*-(qos-reapply|bulk-reapply|qos-on|qos-off|wizard-apply|wizard|mode-[a-z0-9-]+)$/) || [])[1] || '';
+		if (/snapshot auto/.test(line)) {
+			var map = { 'qos-on': _('QoS 开启'), 'qos-off': _('QoS 关闭'), 'qos-reapply': _('QoS 重新应用'),
+				'wizard': _('向导应用'), 'wizard-apply': _('向导应用') };
+			if (/^mode-/.test(lab)) kind = ['#8e8e93', _('切换档位前自动存档')];
+			else if (/^bulk/.test(lab)) kind = ['#8e8e93', _('不抢网列表变更前自动存档')];
+			else if (map[lab]) kind = ['#8e8e93', map[lab] + _('前自动存档')];
+			else kind = ['#8e8e93', _('配置变更前自动存档')];
+		}
+		else if (/冒烟失败/.test(line)) kind = ['#ff9500', _('数据集更新被拦截（引擎冒烟失败，已自动回滚）')];
+		else if (/升级覆盖(自愈|已恢复)/.test(line)) kind = ['#34c759', _('升级覆盖已恢复（保留了你的数据版本）')];
+		else if (/feed rollback/.test(line)) kind = ['#ff9500', _('数据集已回滚')];
+		else if (/feed update/.test(line)) kind = ['#0a84ff', _('数据集已更新')];
+		else if (/snapshot manual/.test(line) || /restore/.test(line)) kind = ['#ff9500', _('手动回滚')];
+		else if (/漂移/.test(line)) kind = ['#ff9500', _('检测到配置漂移，已自动修复')];
+		else if (/snapshot/.test(line)) kind = ['#8e8e93', _('快照已创建')];
+		return { color: kind[0], text: kind[1], when: when, raw: raw };
+	},
+
 	snapRefresh: function() {
-		/* 快照清单 + 持久变更时间线 (audit 已带 snapshots 计数; 时间线走 snapshot history) */
+		/* 摘要徽章 + humanize 时间线 (v1.22.2: 产品化, 不暴露原始快照 id) */
+		var self = this;
 		var info = document.getElementById('ns-snap-info');
 		var his = document.getElementById('ns-snap-history');
 		fs.exec('/usr/bin/netsteer-audit', []).then(function(r) {
 			var a = null; try { a = JSON.parse((r.stdout || '').trim()); } catch (_e) {}
 			var sn = a && a.snapshots || { count: 0, latest: '' };
-			if (info) info.textContent = sn.count + ' 份 · 最近: ' + (sn.latest || '—');
+			if (info) {
+				info.textContent = '';
+				info.appendChild(E('span', { 'style': 'color:var(--ns-ok,#34c759)' }, '● '));
+				info.appendChild(E('span', {}, sn.count > 0
+					? _('已保护 · %d 份存档').format(sn.count) : _('暂无存档')));
+				if (sn.latest) info.title = sn.latest;
+			}
 		}).catch(function() {});
-		fs.exec('/usr/bin/netsteer-snapshot', ['history', '6']).then(function(r) {
+		fs.exec('/usr/bin/netsteer-snapshot', ['history', '8']).then(function(r) {
 			var lines = ((r && r.stdout) || '').trim().split('\n').filter(Boolean);
-			if (his) his.replaceChildren(E('div', { 'class': 'netsteer-note' },
-				lines.length ? lines.join('\n') : _('暂无变更记录')));
-			if (his) his.style.whiteSpace = 'pre-line';
+			var rows = [];
+			lines.forEach(function(ln) {
+				var h = self.snapHumanize(ln);
+				if (!h) return;
+				rows.push(E('div', { 'style': 'display:flex;align-items:baseline;gap:8px;padding:3px 0;font-size:.92em' }, [
+					E('span', { 'style': 'color:' + h.color + ';flex:0 0 auto' }, '●'),
+					E('span', { 'style': 'flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', 'title': h.raw }, h.text),
+					E('span', { 'class': 'netsteer-note', 'style': 'flex:0 0 auto;font-size:.9em' }, h.when)
+				]));
+			});
+			if (his) his.replaceChildren.apply(his, [document.createDocumentFragment()].concat(
+				rows.length ? [E('div', { 'class': 'netsteer-note', 'style': 'margin-bottom:2px' }, _('最近变更'))].concat(rows)
+					: [E('div', { 'class': 'netsteer-note' }, _('暂无变更记录'))]));
 		}).catch(function() {});
 	},
 

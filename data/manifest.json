@@ -5,8 +5,8 @@
       "size": 406
     },
     "gamedomains.txt": {
-      "sha256": "5c8049cec22b430b2075747c38d0ffff280ab23468756d69d7d59165214abf02",
-      "size": 5454
+      "sha256": "dc2c6a56b8bde4aafec530bb704e7feec864614eaec14ef102bf7b1dcf4adb06",
+      "size": 5455
     },
     "gameips.txt": {
       "sha256": "9d5fcb31bdb1db4b568559e1887085d60fc99b14a34699e1ea0102f119fb6c91",
@@ -21,7 +21,7 @@
       "size": 1370
     }
   },
-  "generated_at": "2026-11-08T22:36:33.802456+08:00",
+  "generated_at": "2026-11-12T01:00:02.703199+08:00",
   "schema": 1,
-  "version": "2026.11.08-24bdaf"
+  "version": "2026.11.12-ebea1c"
 }

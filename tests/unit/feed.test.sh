@@ -24,6 +24,8 @@ printf '# netsteer-data-manifest v=2026.11.01-old gen=x\nstreamdomains.txt\t%s\t
 # ---- 沙箱版 feed: 重定向 DATA_DIR/STATE_DIR/源 ----
 sed -e "s|DATA_DIR=\"/usr/share/netsteer\"|DATA_DIR=\"$WORK/installed\"|" \
 	-e "s|STATE_DIR=\"/tmp/netsteer\"|STATE_DIR=\"$WORK/state\"|" \
+	-e "s|FEED_HIST=\"/etc/netsteer/feed-history\"|FEED_HIST=\"$WORK/fhist\"|" \
+	-e "s|PHIST=\"/etc/netsteer/history.log\"|PHIST=\"$WORK/phist.log\"|" \
 	-e "s|https://cdn.jsdelivr.net/gh/pm-parker/netsteer@main/data|http://127.0.0.1:$PORT|" \
 	-e "s|https://raw.githubusercontent.com/pm-parker/netsteer/main/data||" \
 	"$ROOT/files/usr/bin/netsteer-feed" > "$WORK/feed"
@@ -66,6 +68,50 @@ cp "$WORK/data/streamdomains.txt.bak" /dev/null 2>/dev/null
 # T2 备份被 T5 循环消耗则重建场景: 直接验证 rollback 输出结构
 OUT=$("$WORK/feed" rollback 2>/dev/null)
 echo "$OUT" | grep -q '"restored":\[' && ok || bad "T6 rollback 输出异常: $OUT"
+
+# ---- T7 validate: 合法数据过 / 坏域名拒 / 坏 proto 拒 (v1.22.2) ----
+# 文件名必须用真实数据名 — validate_data 按 basename 分发格式规则, 任意名一律"无有效数据行"
+# 函数体抽取独立加载 (整脚本 source 会执行 case/status 并覆盖 WORK — 避开)
+mkdir -p "$WORK/vtest/bad" "$WORK/vtest/good"
+printf 'gaming\tBAD DOMAIN!!\n' > "$WORK/vtest/bad/gamedomains.txt"
+printf 'steam\t27015/abca\n' > "$WORK/vtest/bad/gameports.txt"
+printf 'steam\t4662/tcp\n' > "$WORK/vtest/good/gameports.txt"
+sed -n '/^validate_data()/,/^}/p' "$WORK/feed" > "$WORK/vfn.sh"
+T7_1=$( ( . "$WORK/vfn.sh"; validate_data "$WORK/data/gamedomains.txt" >/dev/null 2>&1 && echo L || echo x ) )
+T7_2=$( ( . "$WORK/vfn.sh"; validate_data "$WORK/vtest/bad/gamedomains.txt" >/dev/null 2>&1 && echo x || echo L ) )
+T7_3=$( ( . "$WORK/vfn.sh"; validate_data "$WORK/vtest/bad/gameports.txt" >/dev/null 2>&1 && echo x || echo L ) )
+T7_4=$( ( . "$WORK/vfn.sh"; validate_data "$WORK/vtest/good/gameports.txt" >/dev/null 2>&1 && echo L || echo x ) )
+T7OUT="$T7_1$T7_2$T7_3$T7_4"
+case "$T7OUT" in
+	LLLL) ok ;;
+	*) bad "T7 validate 组合异常 ($T7OUT): L=合法过/拒" ;;
+esac
+
+# ---- T8 冒烟失败自动回滚 (v1.22.2): 坏引擎 → update rc=3 + 数据保持原状 ----
+# T5 篡改过源 streamdomains+manifest — 先恢复源一致性, 否则 update 在 sha 层就 rc=2
+cp "$ROOT/data/streamdomains.txt" "$WORK/data/streamdomains.txt"
+rm -rf "$WORK/data/manifest.tsv"
+cp "$ROOT/data/manifest.tsv" "$WORK/data/manifest.tsv"
+cp "$WORK/data/gamedomains.txt" "$WORK/installed/gamedomains.txt"
+printf 'BEGIN { broken' > "$WORK/installed/sense.awk"
+rm -rf "$WORK/state/feed"
+OUT=$("$WORK/feed" update 2>/dev/null); RC=$?
+[ $RC -eq 3 ] && ok || bad "T8 冒烟失败应 rc=3, got $RC"
+echo "$OUT" | grep -q '"rolled_back"' && ok || bad "T8 无 rolled_back 字段: $OUT"
+cmp -s "$WORK/data/gamedomains.txt" "$WORK/installed/gamedomains.txt" && ok || bad "T8 回滚内容与源不符"
+
+# ---- T9 feed-history 版本化 (v1.22.2): update 产生快照, rollback 恢复到更新前 ----
+rm -rf "$WORK/installed/sense.awk"
+ls -1 "$WORK/fhist" 2>/dev/null | grep -q '.' && ok || bad "T9 update 未产生 feed-history 快照"
+printf 'vtest	vtest9.invalid\n' >> "$WORK/data/gamedomains.txt"
+N=$(sha256sum "$WORK/data/gamedomains.txt" | cut -d' ' -f1); S=$(wc -c < "$WORK/data/gamedomains.txt")
+OLD_N=$(grep '^gamedomains.txt' "$WORK/data/manifest.tsv" | cut -f2)
+sed -i "s|$OLD_N|$N	$S|" "$WORK/data/manifest.tsv"
+rm -rf "$WORK/state/feed"
+"$WORK/feed" update >/dev/null 2>&1
+grep -q 'vtest9.invalid' "$WORK/installed/gamedomains.txt" && ok || bad "T9 二次更新未落地"
+"$WORK/feed" rollback >/dev/null 2>&1
+grep -q 'vtest9.invalid' "$WORK/installed/gamedomains.txt"; [ $? -ne 0 ] && ok || bad "T9 rollback 后测试行仍在"
 
 echo "PASS=$PASS FAIL=$FAIL"
 [ $FAIL -eq 0 ] || exit 1

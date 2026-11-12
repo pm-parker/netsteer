@@ -44,16 +44,9 @@ grep -q "var NS_VERSION = '$VERSION';" "$PKGROOT/www/luci-static/resources/view/
 chmod 755 "$PKGROOT"/usr/bin/netsteer-* "$PKGROOT"/etc/init.d/netsteer 2>/dev/null
 find "$PKGROOT" -name '*.js' -o -name '*.json' | xargs chmod 644
 
-# 3. post-install script
-cat > "$WORK/post-install" <<'EOF'
-#!/bin/sh
-/etc/init.d/netsteer enable
-# v1.20: restart 而非 start — 升级时先停旧 daemon 再拉新 (旧 daemon 永生 bug 的安装侧修复)
-/etc/init.d/netsteer restart 2>/dev/null || /etc/init.d/netsteer start 2>/dev/null || true
-rm -f /tmp/luci-indexcache* 2>/dev/null
-/etc/init.d/rpcd reload 2>/dev/null || /etc/init.d/rpcd restart 2>/dev/null || true
-exit 0
-EOF
+# 3. install/upgrade hooks — 不使用。探针包实测 (v1.22.2): OpenWrt apk 3.0.5 对 scripts hooks
+#    完全不执行 (默认与显式 --commit-hooks --scripts 均不跑), 历史版本"安装侧修复"因此从未生效。
+#    P0 数据保护与 P2 cron 挂载改为运行时自愈: netsteer-check 每分钟裁决 (见 netsteer-check)。
 
 # 4. build
 OUT="$OUT_DIR/${NAME}-${VERSION}-${ARCH}.apk"
@@ -64,7 +57,6 @@ OUT="$OUT_DIR/${NAME}-${VERSION}-${ARCH}.apk"
   -I "origin:$NAME" -I "maintainer:pm-parker" \
   -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
   -I "depends:luci-base" \
-  -s "post-install:$WORK/post-install" \
   -o "$OUT"
 
 echo ">> built $OUT ($(stat -c '%s' "$OUT") bytes)"

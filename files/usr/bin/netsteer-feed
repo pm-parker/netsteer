@@ -19,12 +19,19 @@ DATA_DIR="/usr/share/netsteer"
 STATE_DIR="/tmp/netsteer"
 LOCAL_MANIFEST="$DATA_DIR/manifest.tsv"
 WORK="$STATE_DIR/feed"
+FEED_HIST="/etc/netsteer/feed-history"
+PHIST="/etc/netsteer/history.log"
+DATA_FILES="manifest.tsv gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt"
 DEFAULT_SOURCES="
 https://cdn.jsdelivr.net/gh/pm-parker/netsteer@main/data
 https://raw.githubusercontent.com/pm-parker/netsteer/main/data
 "
 
 log() { logger -t netsteer-feed "$*" 2>/dev/null; }
+ph() { # 持久审计 (与 v1.22.1 snapshot/check 同一时间线; 2000 行滚动留 800)
+	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$PHIST" 2>/dev/null
+	[ "$(wc -l < "$PHIST" 2>/dev/null)" -gt 2000 ] && tail -800 "$PHIST" > "$PHIST.tmp" 2>/dev/null && mv "$PHIST.tmp" "$PHIST"
+}
 
 # ---- 输出助手 ----
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -144,6 +151,79 @@ cmd_status() {
 		"$(esc "$_v")" "$([ "$_ok" = 1 ] && echo true || echo false)" "$_items"
 }
 
+# ---- 语义自检 (v1.22.2 P1): sha256 保证传输完整, 这里保证语义正确 — 格式坏=引擎静默降级 ----
+# $1=file → 0=通过; 输出理由到 stdout
+validate_data() {
+	local _f="$1" _base _cat _val _n=0 _bad=0
+	[ -s "$_f" ] || { echo "空文件"; return 1; }
+	_base=$(basename "$_f")
+	case "$_base" in
+	gamedomains.txt|streamdomains.txt) # cat TAB 域名后缀
+		while IFS= read -r _line || [ -n "$_line" ]; do
+			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ 	]*//; s/[ 	]*$//')
+			[ -z "$_line" ] && continue
+			_val=$(printf '%s' "$_line" | sed 's/^[^	 ]*[	 ]*//')
+			case "$_val" in ''|*[!a-z0-9.*-]*) _bad=$((_bad+1)); continue ;; esac
+			_n=$((_n+1))
+		done < "$_f"
+		;;
+	gameips.txt) # cat TAB CIDR
+		while IFS= read -r _line || [ -n "$_line" ]; do
+			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ \t]*//; s/[ \t]*$//')
+			[ -z "$_line" ] && continue
+			_val=$(printf '%s' "$_line" | sed 's/^[^\t ]*[\t ]*//')
+			case "$_val" in *[!0-9./]*) _bad=$((_bad+1)); continue ;; esac
+			case "$_val" in *.*) _n=$((_n+1));; *) _bad=$((_bad+1)); continue ;; esac
+		done < "$_f"
+		;;
+	gameports.txt|downloadports.txt) # cat TAB lo-hi/proto 或 单端口/proto (实测 4662/tcp 单值形态)
+		while IFS= read -r _line || [ -n "$_line" ]; do
+			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ 	]*//; s/[ 	]*$//')
+			[ -z "$_line" ] && continue
+			_val=$(printf '%s' "$_line" | sed 's/^[^	 ]*[	 ]*//')
+			_proto=${_val##*/}
+			_ports=${_val%%/*}
+			[ "$_proto" = "$_val" ] && { _bad=$((_bad+1)); continue; }   # 无 /proto
+			case "$_proto" in tcp|udp) ;; *) _bad=$((_bad+1)); continue ;; esac
+			case "$_ports" in ''|*[!0-9-]*) _bad=$((_bad+1)); continue ;; esac
+			_n=$((_n+1))
+		done < "$_f"
+		;;
+	esac
+	[ "$_bad" -gt 0 ] && { echo "$_bad 行格式非法"; return 1; }
+	[ "$_n" -lt 1 ] && { echo "无有效数据行"; return 1; }
+	return 0
+}
+
+# ---- 引擎冒烟 (v1.22.2 P1): 合成七字段 TSV 行喂判定引擎, 输出须含合法 scene ----
+smoke_engine() {
+	local _out _short
+	# 引擎文件缺失 (异常环境/单测最小装机): 跳过冒烟 — 数据正确性已由 validate_data 承担
+	[ -f "$DATA_DIR/sense.awk" ] || return 0
+	_out=$(printf '5000	udp	192.168.1.10	111.111.111.111	27015	500	stun.example.com' \
+		| awk -f "$DATA_DIR/sense.awk" 2>/dev/null) || { echo "引擎执行失败"; return 1; }
+	case "$_out" in
+		*'"scene"'*) return 0 ;;
+		*) _short=$(printf '%s' "$_out" | cut -c1-60); echo "引擎输出异常: $_short"; return 1 ;;
+	esac
+}
+
+# feed 版本化历史: 更新前整目录快照, 保留 20 份
+hist_save() {
+	local _ts _id _f
+	_ts=$(date +%Y%m%d-%H%M%S)
+	# 同秒冲突防线: cron/手动同秒各存一份时秒级 ts 会撞 — $$ (PID) 保证 id 唯一 (真机实测踩过)
+	_id="${_ts}-$(man_version "$LOCAL_MANIFEST" 2>/dev/null | tr ':.' '--' | cut -c1-20)-$$"
+	mkdir -p "$FEED_HIST/$_id" 2>/dev/null || return 1
+	for _f in $DATA_FILES; do
+		[ -f "$DATA_DIR/$_f" ] && cp -f "$DATA_DIR/$_f" "$FEED_HIST/$_id/$_f" 2>/dev/null
+	done
+	ls -1 "$FEED_HIST" 2>/dev/null | sort -r | tail -n +21 | while read -r _old; do
+		rm -rf "$FEED_HIST/$_old"
+	done
+	echo "$_id"
+}
+
 # ---- check ----
 cmd_check() {
 	if ! pull_manifest; then
@@ -180,7 +260,7 @@ cmd_update() {
 	_src="$(cat "$WORK/source" 2>/dev/null)"
 	_rv="$(man_version "$WORK/manifest.tsv" 2>/dev/null || echo '-')"
 	_mkdir_ok=0
-	mkdir -p "$WORK/dl" 2>/dev/null && _mkdir_ok=1
+	mkdir -p "$WORK/dl" "$WORK/stage" 2>/dev/null && _mkdir_ok=1
 	if [ "$_mkdir_ok" != 1 ]; then
 		printf '{"error":"no_tmp","detail":"无法创建临时目录 %s"}\n' "$WORK/dl"
 		return 1
@@ -207,21 +287,40 @@ cmd_update() {
 			_gotsz="$(wc -c < "$WORK/dl/$_f" 2>/dev/null | tr -d ' ')"
 			[ "$_gotsz" = "$_rsize" ] || { _failed="$_failed$_f(size),"; continue; }
 		fi
-		# 备份旧版 (首次无备份则不生成)
-		[ -f "$DATA_DIR/$_f" ] && cp -f "$DATA_DIR/$_f" "$DATA_DIR/$_f.bak" 2>/dev/null
-		# 原子替换
-		cp -f "$WORK/dl/$_f" "$DATA_DIR/.${_f}.new" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
-		chmod 644 "$DATA_DIR/.${_f}.new" 2>/dev/null
-		mv -f "$DATA_DIR/.${_f}.new" "$DATA_DIR/$_f" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
-		[ -n "$_updated" ] && _updated="$_updated,"
-		_updated="$_updated{\"file\":\"$(esc "$_f")\",\"sha256\":\"$_rsha\"}"
+		# v1.22.2 P1: 语义自检 — sha 对但格式坏的数据不落地 (引擎静默降级防线)
+		if ! _vmsg="$(validate_data "$WORK/dl/$_f")"; then
+			_failed="$_failed$_f(validate:$_vmsg),"
+			continue
+		fi
+		cp -f "$WORK/dl/$_f" "$WORK/stage/$_f" 2>/dev/null
+		_updated="$_updated{\"file\":\"$(esc "$_f")\",\"sha256\":\"$_rsha\"},"
 		_n=$((_n + 1))
 	done
-	# manifest 同步落地 (本地版本基线 = 远端版本)
-	if [ "$_n" -gt 0 ] || [ "$_rv" != "$(man_version "$LOCAL_MANIFEST" 2>/dev/null || echo '-')" ]; then
-		[ -f "$LOCAL_MANIFEST" ] && cp -f "$LOCAL_MANIFEST" "$LOCAL_MANIFEST.bak" 2>/dev/null
+	_updated=${_updated%,}   # 上面逗号后缀统一收尾
+	if [ "$_n" -gt 0 ]; then
+		# v1.22.2 P4: 版本化快照 (整目录进 /etc/netsteer/feed-history, 20 份; 回滚可回滚)
+		_hist_id=$(hist_save)
+		# stage → 现场原子替换 + manifest 同步
+		for _f in $DATA_FILES; do
+			[ -f "$WORK/stage/$_f" ] || continue
+			cp -f "$WORK/stage/$_f" "$DATA_DIR/.${_f}.new" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
+			chmod 644 "$DATA_DIR/.${_f}.new" 2>/dev/null
+			mv -f "$DATA_DIR/.${_f}.new" "$DATA_DIR/$_f" 2>/dev/null || { _failed="$_failed$_f(commit),"; continue; }
+		done
 		cp -f "$WORK/manifest.tsv" "$DATA_DIR/.manifest.tsv.new" 2>/dev/null && \
 			mv -f "$DATA_DIR/.manifest.tsv.new" "$LOCAL_MANIFEST" 2>/dev/null
+		rm -f "$DATA_DIR"/*.bak 2>/dev/null   # 旧 .bak 机制退役, 历史走 feed-history
+		# v1.22.2 P1: 冒烟 — 替换后引擎必须还能出合法判定, 否则整包自动回滚
+		if ! _smsg="$(smoke_engine)"; then
+			for _f in $DATA_FILES; do
+				[ -f "$FEED_HIST/$_hist_id/$_f" ] && cp -f "$FEED_HIST/$_hist_id/$_f" "$DATA_DIR/$_f" 2>/dev/null
+			done
+			ph "feed update 冒烟失败已自动回滚: $_smsg (版本 $_rv)"
+			log "update smoke FAILED auto-rolled-back: $_smsg ver=$_rv"
+			printf '{"error":"smoke_failed","detail":"%s","rolled_back":"%s"}\n' "$(esc "$_smsg")" "$(esc "$_hist_id")"
+			return 3
+		fi
+		ph "feed update 版本 $_rv: $_n 文件 (回滚点 $_hist_id)"
 	fi
 	printf '{"updated":[%s],"count":%d,"version":"%s","source":"%s"%s}\n' \
 		"$_updated" "$_n" "$(esc "$_rv")" "$(esc "$_src")" \
@@ -232,7 +331,34 @@ cmd_update() {
 }
 
 # ---- rollback ----
+# v1.22.2: 主路径 = feed-history 版本化回滚 (restore <id|latest>); 旧 .bak 单代回退保留兼容
 cmd_rollback() {
+	_id="${2:-latest}"
+	if [ "$_id" = "latest" ]; then
+		_id=$(ls -1 "$FEED_HIST" 2>/dev/null | sort -r | head -1)
+	fi
+	if [ -n "$_id" ] && [ -d "$FEED_HIST/$_id" ]; then
+		_n=0; _restored=""
+		# 先锁定目标 id 再存 pre (顺序 bug 教训: 先存 pre 会让 latest 解析到 pre 自己=恢复污染态)
+		_pre=$(hist_save)
+		for _f in $DATA_FILES; do
+			[ -f "$FEED_HIST/$_id/$_f" ] || continue
+			cp -f "$FEED_HIST/$_id/$_f" "$DATA_DIR/.${_f}.new" 2>/dev/null || continue
+			mv -f "$DATA_DIR/.${_f}.new" "$DATA_DIR/$_f" 2>/dev/null || continue
+			_restored="$_restored{\"file\":\"$(esc "$_f")\"},"
+			_n=$((_n + 1))
+		done
+		_restored=${_restored%,}
+		if ! _smsg="$(smoke_engine)"; then
+			printf '{"error":"smoke_failed","detail":"%s"}\n' "$(esc "$_smsg")"
+			return 3
+		fi
+		ph "feed rollback → $_id ($_n 文件, 回滚前存 $_pre)"
+		log "feed rollback: → $_id restored=$_n"
+		printf '{"restored":[%s],"count":%d,"from":"%s","pre":"%s"}\n' "$_restored" "$_n" "$(esc "$_id")" "$(esc "$_pre")"
+		return 0
+	fi
+	# 兼容: 旧 .bak 单代回退
 	_restored=""
 	_n=0
 	for _f in gamedomains.txt gameips.txt gameports.txt downloadports.txt streamdomains.txt; do
@@ -251,10 +377,37 @@ cmd_rollback() {
 	return 0
 }
 
+# ---- auto (v1.22.2 P2): cron 每周调用 — check→有更新→update→审计; uci 开关 netsteer.feed.auto ----
+cmd_auto() {
+	[ "$(uci -q get netsteer.feed.auto 2>/dev/null || echo 1)" = "1" ] || exit 0   # 宁可显式关, 默认开
+	if ! pull_manifest; then
+		log "auto: 所有数据源不可达, 保持现状"
+		ph "feed auto: 源不可达, 保持现状"
+		exit 1
+	fi
+	_rv="$(man_version "$WORK/manifest.tsv" 2>/dev/null || echo '-')"
+	_lv="$(man_version "$LOCAL_MANIFEST" 2>/dev/null || echo '-')"
+	if [ "$_rv" = "$_lv" ]; then
+		# 版本相同仍比对文件 sha (远端可能热修)
+		_diff=0
+		for _f in $(man_names "$WORK/manifest.tsv"); do
+			[ "$(man_sha "$WORK/manifest.tsv" "$_f")" != "$(sha_of "$DATA_DIR/$_f" 2>/dev/null)" ] && _diff=1 && break
+		done
+		[ "$_diff" = "0" ] && { log "auto: 已是最新 ($_rv)"; exit 0; }
+	fi
+	log "auto: 发现更新 $_lv → $_rv, 开始 update"
+	_out=$(cmd_update); _rc=$?
+	_out_short=$(printf '%s' "$_out" | cut -c1-120)
+	ph "feed auto: $_lv → $_rv rc=$_rc $_out_short"
+	log "auto update rc=$_rc $_out_short"
+	exit $_rc
+}
+
 case "${1:-status}" in
 	status)   cmd_status;;
 	check)    cmd_check;;
-	update)   cmd_update;;
-	rollback) cmd_rollback;;
-	*)        echo "usage: netsteer-feed {status|check|update|rollback}" >&2; exit 2;;
+	update)   shift; cmd_update;;
+	auto)     cmd_auto;;
+	rollback) shift; cmd_rollback "$@";;
+	*)        echo "usage: netsteer-feed {status|check|update|auto|rollback [id]}" >&2; exit 2;;
 esac

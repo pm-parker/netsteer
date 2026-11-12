@@ -25,11 +25,11 @@
       "size": 516
     },
     "streamdomains.txt": {
-      "sha256": "14750ab920ca50d1008e6c4338d3484bd435804dc28b9c91d3fd8ac1b7221b37",
-      "size": 2095
+      "sha256": "d1f0283835230c244a4676a4bef0f66b28971c60ce8987f80372aee0b43001c7",
+      "size": 2207
     }
   },
-  "generated_at": "2026-11-12T15:25:13.326730+08:00",
+  "generated_at": "2026-11-12T16:36:45.013632+08:00",
   "schema": 1,
-  "version": "2026.11.12-c8ff2a"
+  "version": "2026.11.12-ac3186"
 }

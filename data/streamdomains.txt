@@ -53,6 +53,7 @@ douyin	iesdouyin.com
 kuaishou	kuaishou.com
 kuaishou	ksapisrv.com
 kuaishou	kwimgs.com
+kuaishou	yximgs.com   # 快手视频主 CDN (kwimgs=图片, 视频大头走 yximgs; 2026-11-12 实测漏判补)
 # mgtv / sohu / letv
 mgtv	mgtv.com
 sohu	tv.sohu.com

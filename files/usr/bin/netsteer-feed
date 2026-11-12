@@ -224,6 +224,12 @@ hist_save() {
 	echo "$_id"
 }
 
+# 版本日期段 → 可比较整数 (2026.11.08-abc → 20261108); 无效回 0
+ver_num() {
+	_v=$(printf '%s' "$1" | cut -d'-' -f1 | tr -d '.')
+	case "$_v" in ''|*[!0-9]*) printf '0';; *) printf '%s' "$_v";; esac
+}
+
 # ---- check ----
 cmd_check() {
 	if ! pull_manifest; then
@@ -245,9 +251,15 @@ cmd_check() {
 			_n=$((_n + 1))
 		fi
 	done
-	printf '{"remote_version":"%s","installed_version":"%s","source":"%s","update_available":%s,"changed":[%s]}\n' \
+		# 降级保护: 远端日期段旧于本地 → 不算有更新 (sha 不同≠该更新)
+	_rn=$(ver_num "$_rv"); _ln=$(ver_num "$_lv")
+	_older=false
+	[ "$_rn" -gt 0 ] && [ "$_ln" -gt 0 ] && [ "$_rn" -lt "$_ln" ] && _older=true
+	_avail=false
+	[ "$_n" -gt 0 ] && [ "$_older" = "false" ] && _avail=true
+	printf '{"remote_version":"%s","installed_version":"%s","source":"%s","update_available":%s,"remote_older":%s,"changed":[%s]}\n' \
 		"$(esc "$_rv")" "$(esc "$_lv")" "$(esc "$_src")" \
-		"$([ "$_n" -gt 0 ] && echo true || echo false)" "$_changed"
+		"$_avail" "$_older" "$_changed"
 	return 0
 }
 
@@ -259,6 +271,14 @@ cmd_update() {
 	fi
 	_src="$(cat "$WORK/source" 2>/dev/null)"
 	_rv="$(man_version "$WORK/manifest.tsv" 2>/dev/null || echo '-')"
+	# 降级保护 (双保险, check 可能被绕过): 远端日期段旧于本地 → 拒绝, 本地数据不动
+	_lv_now="$(man_version "$LOCAL_MANIFEST" 2>/dev/null || echo '-')"
+	_rn2=$(ver_num "$_rv"); _ln2=$(ver_num "$_lv_now")
+	if [ "$_rn2" -gt 0 ] && [ "$_ln2" -gt 0 ] && [ "$_rn2" -lt "$_ln2" ]; then
+		logger -t netsteer-feed -s "降级拦截: 远端 $_rv 旧于本地 $_lv_now, 保持现状" 2>/dev/null
+		printf '{"status":"skipped_remote_older","remote_version":"%s","installed_version":"%s"}\n' "$(esc "$_rv")" "$(esc "$_lv_now")"
+		return 0
+	fi
 	_mkdir_ok=0
 	mkdir -p "$WORK/dl" "$WORK/stage" 2>/dev/null && _mkdir_ok=1
 	if [ "$_mkdir_ok" != 1 ]; then

@@ -3107,19 +3107,27 @@ renderSoftirqCard: function(text) {
 				return;
 			}
 			if (!out.update_available) {
-				alert(_('数据集已是最新 (%s)。').format(out.remote_version || '-'));
+				/* 远端更旧 (sha 不同但版本落后) 时明确告知防降级, 不弹应用确认 */
+				alert(out.remote_older
+					? _('远端数据集版本 (%s) 低于当前 (%s)，已跳过 — 防降级保护。').format(out.remote_version || '-', out.installed_version || '-')
+					: _('数据集已是最新 (%s)。').format(out.remote_version || '-'));
 				self.paintFeedStatus();
 				return;
 			}
 			var names = (out.changed || []).map(function(c) { return c.file; }).join(', ');
-			if (!confirm(_('发现数据集更新: %s\n\n远端版本 %s → 本地 %s\n更新文件: %s\n\n应用更新? (sha256 校验, 失败自动保留现状)').format('', out.remote_version, out.installed_version, names)))
+			if (!confirm(_('发现数据集更新\n\n将更新至远端版本 %s (当前 %s)\n更新文件: %s\n\n应用更新? (sha256 校验, 失败自动保留现状)').format(out.remote_version, out.installed_version, names)))
 				return;
 			fs.exec('/usr/bin/netsteer-feed', ['update']).then(function(r2) {
 				var u = null;
 				try { u = JSON.parse((r2.stdout || '').trim()); } catch (_e) {}
+				if (u && u.status === 'skipped_remote_older') {
+					alert(_('已跳过: 远端版本 (%s) 低于当前 (%s)，本地数据保持不变。').format(u.remote_version || '-', u.installed_version || '-'));
+					self.paintFeedStatus();
+					return;
+				}
 				alert(u && u.count > 0
 					? _('已更新 %d 个数据文件 → 版本 %s%s').format(u.count, u.version || '-', u.failed ? _('\n部分失败: ') + u.failed : '')
-					: (u && u.failed ? _('更新失败: %s (已保留现有数据集)').format(u.failed) : _('无变更'))); 
+					: (u && u.failed ? _('更新失败: %s (已保留现有数据集)').format(u.failed) : _('无变更')));
 				/* 数据热生效: 清缓存重载 + 状态行刷新 */
 				self._domainMapP = null; self.loadGameDomains();
 				self.paintFeedStatus();

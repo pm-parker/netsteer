@@ -113,6 +113,22 @@ grep -q 'vtest9.invalid' "$WORK/installed/gamedomains.txt" && ok || bad "T9 二�
 "$WORK/feed" rollback >/dev/null 2>&1
 grep -q 'vtest9.invalid' "$WORK/installed/gamedomains.txt"; [ $? -ne 0 ] && ok || bad "T9 rollback 后测试行仍在"
 
+# ---- T19/T20 降级保护: 源版本旧于装机 → check 不算更新, update 拒绝且数据不动 ----
+# 前置: T9 rollback 已把 installed 恢复到构造旧版 — 先升到 repo 当前版 (新于 2026.11.01)
+"$WORK/feed" update >/dev/null 2>&1
+SRC_VER=$(grep '^# ' "$WORK/data/manifest.tsv" | head -1)
+sed -i "1s|.*|# netsteer-data-manifest v=2026.11.01-old gen=x|" "$WORK/data/manifest.tsv"
+OUT=$("$WORK/feed" check 2>/dev/null)
+echo "$OUT" | grep -q '"update_available":false' && ok || bad "T19 旧远端仍报有更新: $OUT"
+echo "$OUT" | grep -q '"remote_older":true' && ok || bad "T19 缺 remote_older:true: $OUT"
+GD_BEFORE=$(sha256sum "$WORK/installed/gamedomains.txt" | cut -d' ' -f1)
+OUT2=$("$WORK/feed" update 2>/dev/null)
+echo "$OUT2" | grep -q 'skipped_remote_older' && ok || bad "T20 update 未拒绝降级: $OUT2"
+GD_AFTER=$(sha256sum "$WORK/installed/gamedomains.txt" | cut -d' ' -f1)
+[ "$GD_BEFORE" = "$GD_AFTER" ] && ok || bad "T20 降级拦截但数据被动了"
+# 恢复源版本 (供后续潜在用例)
+sed -i "1s|.*|$SRC_VER|" "$WORK/data/manifest.tsv"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ $FAIL -eq 0 ] || exit 1
 exit 0

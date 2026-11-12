@@ -1523,7 +1523,7 @@ return view.extend({
 		var bl = a && a.bloat || null;
 		var bm = bloatMeta(bl && bl.verdict, bl ? bl.bloat_ms : null);
 		var tm = tempMeta(h.temp_milli != null ? h.temp_milli : -1);
-		return E('div', { 'class': 'vt-health ns-health' }, [
+		var grid = E('div', { 'class': 'vt-health ns-health' }, [
 			E('div', { 'class': 'vt-dcard ns-hc ns-good' }, [
 				E('span', { 'class': 'vt-dcard-label' }, _('当前场景')),
 				sceneValEl,
@@ -1539,20 +1539,27 @@ return view.extend({
 				E('b', { 'class': 'vt-dcard-value vt-tn' }, tm.txt),
 				E('span', { 'class': 'vt-dcard-sub' }, tm.hint)
 			]),
-			E('div', { 'class': 'vt-dcard ns-hc ' + bm.cls }, [
-				E('span', { 'class': 'vt-dcard-label' }, _('缓冲膨胀')),
-				E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-bloat-value' },
-					bl ? bm.name + ' +' + bl.bloat_ms + 'ms' + (bl.load_mbps != null ? ' @' + bl.load_mbps + 'Mbps' : '') : bm.name),
-				E('span', { 'class': 'vt-dcard-sub' }, [
-					E('span', { 'id': 'ns-bloat-hint' }, bm.hint),
-					E('button', {
-						'class': 'netsteer-minibtn', 'type': 'button',
-						'style': 'margin-left:8px', 'id': 'ns-bloat-run',
-						'click': ui.createHandlerFn(this, 'runBloat')
-					}, [nsIcon('refresh', 12), ' ' + (bl ? _('重测') : _('测膨胀'))])
-				])
+		]);
+
+		/* v1.22.6: 膨胀卡独立矮条 (移出 grid — grid-column:1/-1 会阻止 auto-fit 塌缩空轨道,
+		   宽屏 6 列时留出空白第 6 格; 矮条全左对齐, 与其余卡片语言一致) */
+		var bloatRow = E('div', { 'class': 'vt-dcard ns-bloat-row ' + bm.cls }, [
+			E('span', { 'class': 'vt-dcard-label' }, _('缓冲膨胀')),
+			E('b', { 'class': 'vt-dcard-value vt-tn', 'id': 'ns-bloat-value' },
+				bl ? bm.name + ' +' + bl.bloat_ms + 'ms' + (bl.load_mbps != null ? ' @' + bl.load_mbps + 'Mbps' : '') : bm.name),
+			E('span', { 'class': 'vt-dcard-sub' }, [
+				E('span', { 'id': 'ns-bloat-hint' }, bm.hint),
+				E('button', {
+					'class': 'netsteer-minibtn', 'type': 'button',
+					'style': 'margin-left:8px', 'id': 'ns-bloat-run',
+					'click': ui.createHandlerFn(this, 'runBloat')
+				}, [nsIcon('refresh', 12), ' ' + (bl ? _('重测') : _('测膨胀'))])
 			])
 		]);
+		var frag = document.createDocumentFragment();
+		frag.appendChild(grid);
+		frag.appendChild(bloatRow);
+		return frag;
 	},
 
 	/* 缓冲膨胀测量: 后台起 netsteer-bloat, 轮询 audit 刷新 (测量窗 ~20s) */
@@ -1579,7 +1586,7 @@ return view.extend({
 						var bm = bloatMeta(bl.verdict, bl.bloat_ms);
 						if (vEl) vEl.textContent = bm.name + ' +' + bl.bloat_ms + 'ms';
 						if (hEl) hEl.textContent = bm.hint;
-						var card = vEl && vEl.closest && vEl.closest('.ns-hc');
+						var card = vEl && vEl.closest && vEl.closest('.ns-bloat-row');
 						if (card) { card.classList.remove('ns-bad'); if (bm.cls === 'ns-bad') card.classList.add('ns-bad'); }
 					}
 				}).catch(function() {});
@@ -3442,12 +3449,15 @@ renderSoftirqCard: function(text) {
 			'#netsteer-panel-smart>.netsteer-card+.netsteer-card,#netsteer-panel-pro>.netsteer-card+.netsteer-card{margin-top:16px}',
 
 			/* v1.22.4 界面优化: 膨胀卡通栏横排 (6 卡 5+1 失衡修复) + 深色对比度 + 触控目标 */
-			'.ns-health>.vt-dcard:last-child{grid-column:1/-1;display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap}',
-			'.ns-health>.vt-dcard:last-child .vt-dcard-sub{margin-left:auto}',
+			/* 特异性 ≥ 主题 .vt-app .vt-dcard (0,2,0), 否则 flex-direction:column 反扑 */
+			'.netsteer-root .ns-bloat-row{flex-direction:row!important;align-items:center;flex-wrap:wrap;gap:4px 18px;margin-top:10px;padding:12px 16px;text-align:left}',
+			'.netsteer-root .ns-bloat-row .vt-dcard-label{flex:none;text-align:left}',
+			'.netsteer-root .ns-bloat-row .vt-dcard-value{font-size:var(--vt-fs-lg,15px);text-align:left;white-space:normal}',
+			'.netsteer-root .ns-bloat-row .vt-dcard-sub{margin-left:auto!important;display:flex;align-items:center;gap:8px;flex-wrap:wrap;text-align:left}',
 			'.netsteer-root{padding-bottom:20px}',
 			'html[data-darkmode="true"] .netsteer-root .netsteer-note,html[data-darkmode="true"] .netsteer-root .vt-hint,html[data-darkmode="true"] .netsteer-root .vt-dcard-sub,html[data-darkmode="true"] .netsteer-root .netsteer-foot{color:#a3aab3}',
 			'html[data-darkmode="true"] .netsteer-root .netsteer-card{border-color:#323841;box-shadow:0 1px 2px rgba(0,0,0,.4)}',
-			'html[data-darkmode="true"] .netsteer-root .ns-hc{border:1px solid #262b31}',
+			'html[data-darkmode="true"] .netsteer-root .ns-hc,html[data-darkmode="true"] .netsteer-root .ns-bloat-row{border:1px solid #262b31}',
 			'html[data-darkmode="true"] .netsteer-root .ns-btn-quiet{border-color:#3d434b;color:#c5cbd3!important}',
 			'html[data-darkmode="true"] .netsteer-root .ns-skeleton{stroke:#3a4048}',
 
@@ -3457,7 +3467,7 @@ renderSoftirqCard: function(text) {
 			'.netsteer-statusbar{flex-direction:column;align-items:flex-start;gap:6px}',
 			'.netsteer-chip{min-width:2.9em;min-height:44px;padding:.5em .55em}',
 			'.netsteer-minibtn,.ns-btn-act,.ns-btn-quiet{min-height:44px!important;padding:.55em 1.1em}',
-			'.ns-health>.vt-dcard:last-child .vt-dcard-sub{margin-left:0;width:100%;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}',
+			'.ns-bloat-row .vt-dcard-sub{margin-left:0!important;width:100%}',
 			'.ns-health>.vt-dcard:last-child .vt-dcard-sub>span:first-child{flex:1 1 12em}',
 			'.netsteer-badge{max-width:calc(100% - 2em)}',
 			'.netsteer-row{flex-wrap:wrap;row-gap:.45em}',

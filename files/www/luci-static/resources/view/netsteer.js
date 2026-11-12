@@ -1403,22 +1403,24 @@ return view.extend({
 			E('div', { 'class': 'ns-traffic-nums' }, [
 				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:var(--vt-chart-1,var(--accent,#3563e9))' }), E('span', { 'class': 'vt-hint' }, _('下行')), E('b', { 'class': 'vt-tn ns-num-rx' }, '—') ]),
 				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw ns-sw-tx' }), E('span', { 'class': 'vt-hint' }, _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ]),
-				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-accent,#c8f031) 0 2px,transparent 2px 6px)' }), E('span', { 'class': 'vt-hint' }, _('vs 基线')) ])
+				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-accent,#c8f031) 0 1.5px,transparent 1.5px 4.5px);opacity:.9' }), E('span', { 'class': 'vt-hint' }, _('vs 基线')) ])
 			]),
-			svg,
-			E('div', { 'class': 'ns-axis-row' }, [
-				E('span', {}, '-7.5m'), E('span', {}, '-3.5m'), E('span', {}, 'now')
-				]),
-				E('div', { 'class': 'ns-traffic-empty on', 'id': 'ns-traffic-empty' }, [
-					nsIcon('download', 22),
-					E('span', {}, _('基线建立中 — 约 10 秒后出现第一条曲线'))
-				]),
+			E('div', { 'class': 'ns-chart-wrap' }, [
+				svg,
 				E('div', { 'class': 'ns-yaxis', 'id': 'ns-yaxis' }, [
 					E('span', { 'style': 'position:absolute;top:0' }, ''),
 					E('span', { 'style': 'position:absolute;top:49%;transform:translateY(-50%)' }, ''),
-					E('span', { 'style': 'position:absolute;bottom:2px' }, '0')
+					E('span', { 'style': 'position:absolute;bottom:2px' }, '0 Mbit/s')
 				])
-				]);
+			]),
+			E('div', { 'class': 'ns-axis-row' }, [
+				E('span', {}, '-7.5m'), E('span', {}, '-3.5m'), E('span', {}, 'now')
+			]),
+			E('div', { 'class': 'ns-traffic-empty on', 'id': 'ns-traffic-empty' }, [
+				nsIcon('download', 22),
+				E('span', {}, _('基线建立中 — 约 10 秒后出现第一条曲线'))
+			])
+		]);
 	},
 
 	pollTraffic: function() {
@@ -1470,12 +1472,6 @@ return view.extend({
 		if (_emp) _emp.classList.remove('on');
 		var _tc = document.getElementById('ns-traffic');
 		if (_tc) _tc.classList.add('has-data');
-		var _ya = document.getElementById('ns-yaxis');
-		if (_ya) {
-			var _bb = svg.getBoundingClientRect(), _cb = _tc.getBoundingClientRect();
-			_ya.style.top = Math.round(_bb.top - _cb.top) + 'px';
-			_ya.style.height = Math.round(_bb.height) + 'px';
-		}
 		var W = 640, H = 130;
 		var segs = function(sr, vmax) {
 			var out = [], curSeg = null, span = st.rx[st.rx.length-1][0] - st.rx[0][0] || 1;
@@ -3510,9 +3506,11 @@ renderSoftirqCard: function(text) {
 			'.ns-traffic-num{display:flex;align-items:center;gap:6px}',
 			'.ns-sw{width:20px;height:4px;border-radius:2px;flex:none}',
 			'.ns-traffic-nums{flex-wrap:wrap;row-gap:6px}',
-			'.ns-yaxis{display:none;position:absolute;left:0;width:50px;pointer-events:none;font-size:10px;line-height:1;color:var(--text-3,#5f666f);font-family:var(--vt-mono,var(--mono,ui-monospace,monospace));z-index:1;white-space:nowrap}',
+			'.ns-chart-wrap{position:relative}',
+			'.ns-yaxis{display:none;position:absolute;left:0;top:0;height:100%;width:50px;pointer-events:none;font-size:10px;line-height:1;color:var(--text-3,#5f666f);font-family:var(--vt-mono,var(--mono,ui-monospace,monospace));font-variant-numeric:tabular-nums}',
 			'.ns-yaxis span{opacity:.85}',
 			'.ns-traffic.has-data .ns-yaxis{display:block}',
+			'.ns-traffic.has-data .ns-axis-row{margin-left:56px}',
 			'.ns-traffic.has-data .ns-traffic-svg{margin-left:54px;width:calc(100% - 54px)}',
 			'.ns-sw-tx{background:repeating-linear-gradient(90deg,#0e7490 0 5px,transparent 5px 8px)}',
 			'.ns-line-tx{stroke:#0e7490}',

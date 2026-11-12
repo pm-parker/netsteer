@@ -604,7 +604,9 @@ var NS_ICONS = {
 		['path', { d: 'M5 19.5h14' }]],
 	web: [['circle', { cx: 12, cy: 12, r: 9.25 }],
 		['path', { d: 'M2.75 12h18.5' }],
-		['path', { d: 'M12 2.75c3.8 3.6 3.8 14.9 0 18.5-3.8-3.6-3.8-14.9 0-18.5z' }]]
+		['path', { d: 'M12 2.75c3.8 3.6 3.8 14.9 0 18.5-3.8-3.6-3.8-14.9 0-18.5z' }]],
+	refresh: [['path', { d: 'M20 12a8 8 0 1 1-2.4-5.7' }],
+		['path', { d: 'M20 3.5v4h-4' }]]
 };
 /* SVG 命名空间构造器 — LuCI 的 E() 创建的是 HTMLUnknownElement 不渲染, 全部 SVG 走这里 */
 function svgEl(tag, attrs) {
@@ -1257,7 +1259,7 @@ return view.extend({
 		[['wan', nodes[0], nodes[1]], ['lan', nodes[1], nodes[2]]].forEach(function(seg) {
 			var mid = (seg[1].x + seg[1].w + seg[2].x) / 2;
 			var t = mk('text', { x: mid, y: narrow ? 20 : 22, 'text-anchor': 'middle', 'class': 'ns-wire-rate', 'data-rate': seg[0] });
-			t.textContent = '—';
+			t.textContent = _('— Mb');
 			svg.appendChild(t);
 		});
 		return E('div', { 'class': 'vt-tile ns-wires', 'id': 'ns-wires' }, [
@@ -1326,7 +1328,7 @@ return view.extend({
 			]),
 			E('div', { 'class': 'ns-traffic-nums' }, [
 				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:var(--vt-chart-1,var(--accent,#3563e9))' }), E('span', { 'class': 'vt-hint' }, _('下行')), E('b', { 'class': 'vt-tn ns-num-rx' }, '—') ]),
-				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-chart-2,#2a78d6) 0 5px,transparent 5px 8px)' }), E('span', { 'class': 'vt-hint' }, _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ]),
+				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw ns-sw-tx' }), E('span', { 'class': 'vt-hint' }, _('上行')), E('b', { 'class': 'vt-tn ns-num-tx' }, '—') ]),
 				E('div', { 'class': 'ns-traffic-num' }, [ E('i', { 'class': 'ns-sw', 'style': 'background:repeating-linear-gradient(90deg,var(--vt-accent,#c8f031) 0 2px,transparent 2px 6px)' }), E('span', { 'class': 'vt-hint' }, _('vs 基线')) ])
 			]),
 			svg,
@@ -1336,6 +1338,11 @@ return view.extend({
 				E('div', { 'class': 'ns-traffic-empty on', 'id': 'ns-traffic-empty' }, [
 					nsIcon('download', 22),
 					E('span', {}, _('基线建立中 — 约 10 秒后出现第一条曲线'))
+				]),
+				E('div', { 'class': 'ns-yaxis', 'id': 'ns-yaxis' }, [
+					E('span', { 'style': 'position:absolute;top:0' }, ''),
+					E('span', { 'style': 'position:absolute;top:49%;transform:translateY(-50%)' }, ''),
+					E('span', { 'style': 'position:absolute;bottom:2px' }, '0')
 				])
 				]);
 	},
@@ -1386,6 +1393,14 @@ return view.extend({
 		svg.classList.remove('ns-empty');
 		var _emp = document.getElementById('ns-traffic-empty');
 		if (_emp) _emp.classList.remove('on');
+		var _tc = document.getElementById('ns-traffic');
+		if (_tc) _tc.classList.add('has-data');
+		var _ya = document.getElementById('ns-yaxis');
+		if (_ya) {
+			var _bb = svg.getBoundingClientRect(), _cb = _tc.getBoundingClientRect();
+			_ya.style.top = Math.round(_bb.top - _cb.top) + 'px';
+			_ya.style.height = Math.round(_bb.height) + 'px';
+		}
 		var W = 640, H = 130;
 		var segs = function(sr, vmax) {
 			var out = [], curSeg = null, span = st.rx[st.rx.length-1][0] - st.rx[0][0] || 1;
@@ -1471,6 +1486,12 @@ return view.extend({
 		var nx = document.querySelector('#ns-traffic .ns-num-rx'), ntx = document.querySelector('#ns-traffic .ns-num-tx');
 		if (nx) nx.textContent = fmtBps(lastRx);
 		if (ntx) ntx.textContent = fmtBps(lastTx);
+		var _ya = document.getElementById('ns-yaxis');
+		if (_ya) {
+			var _sp = _ya.querySelectorAll('span');
+			if (_sp[0]) _sp[0].textContent = fmtBps(peak);
+			if (_sp[1]) _sp[1].textContent = fmtBps(peak / 2);
+		}
 		var foot = document.querySelector('#ns-traffic .ns-traffic-foot');
 		var pk = function(a) { return Math.max.apply(null, a.map(function(p) { return p[1] || 0; }).concat([0])); };
 		if (foot) foot.textContent = _('峰值 ↓%s · ↑%s · 量程 %s').format(fmtBps(pk(st.rx)), fmtBps(pk(st.tx)), fmtBps(peak));
@@ -1528,16 +1549,20 @@ return view.extend({
 						'class': 'netsteer-minibtn', 'type': 'button',
 						'style': 'margin-left:8px', 'id': 'ns-bloat-run',
 						'click': ui.createHandlerFn(this, 'runBloat')
-					}, bl ? _('重测') : _('测膨胀'))
+					}, [nsIcon('refresh', 12), ' ' + (bl ? _('重测') : _('测膨胀'))])
 				])
 			])
 		]);
 	},
 
 	/* 缓冲膨胀测量: 后台起 netsteer-bloat, 轮询 audit 刷新 (测量窗 ~20s) */
+	setBloatBtn: function(btn, label) {
+		/* v1.22.5: 按钮带刷新图标 — textContent 会抹掉 icon, 统一走这里 */
+		if (btn) btn.replaceChildren(nsIcon('refresh', 12), ' ' + label);
+	},
 	runBloat: function(ev) {
 		var btn = ev && ev.target;
-		if (btn) { btn.disabled = true; btn.textContent = _('测量中…'); }
+		if (btn) { btn.disabled = true; this.setBloatBtn(btn, _('测量中…')); }
 		var t0 = Math.floor(Date.now() / 1000) - 5;
 		fs.exec('/usr/bin/netsteer-bloat', ['bg']).then(function() {
 			var tries = 0;
@@ -1548,7 +1573,7 @@ return view.extend({
 					var bl = a && a.bloat;
 					if (bl && bl.ts >= t0) {
 						window.clearInterval(timer);
-						if (btn) { btn.disabled = false; btn.textContent = _('重测'); }
+						if (btn) { btn.disabled = false; btn.replaceChildren(nsIcon('refresh', 12), ' ' + _('重测')); }
 						var vEl = document.getElementById('ns-bloat-value');
 						var hEl = document.getElementById('ns-bloat-hint');
 						var bm = bloatMeta(bl.verdict, bl.bloat_ms);
@@ -1558,10 +1583,10 @@ return view.extend({
 						if (card) { card.classList.remove('ns-bad'); if (bm.cls === 'ns-bad') card.classList.add('ns-bad'); }
 					}
 				}).catch(function() {});
-				if (tries > 8) { window.clearInterval(timer); if (btn) { btn.disabled = false; btn.textContent = _('测膨胀'); } }
+				if (tries > 8) { window.clearInterval(timer); if (btn) { btn.disabled = false; btn.replaceChildren(nsIcon('refresh', 12), ' ' + _('测膨胀')); } }
 			}, 5000);
 		}).catch(function(_err) {
-			if (btn) { btn.disabled = false; btn.textContent = _('测膨胀'); }
+			if (btn) { btn.disabled = false; btn.replaceChildren(nsIcon('refresh', 12), ' ' + _('测膨胀')); }
 		});
 	},
 
@@ -3386,12 +3411,24 @@ renderSoftirqCard: function(text) {
 			'.ns-traffic-svg{width:100%;height:120px;display:block}',
 			'.ns-area-rx{fill:var(--vt-chart-1,var(--accent,#3563e9));opacity:.14}',
 			'.ns-line-rx{fill:none;stroke:var(--vt-chart-1,var(--accent,#3563e9));stroke-width:1.6}',
-			'.ns-area-tx{fill:var(--vt-chart-2,#2a78d6);opacity:.12}',
-			'.ns-line-tx{fill:none;stroke:var(--vt-chart-2,#2a78d6);stroke-width:1.6;stroke-dasharray:3 2}',
+			'.ns-area-tx{opacity:.12}',
+			'.ns-line-tx{fill:none;stroke-width:1.6;stroke-dasharray:3 2}',
 			'.ns-traffic-num{display:flex;align-items:center;gap:6px}',
-			'.ns-sw{width:14px;height:3px;border-radius:2px;flex:none}',
+			'.ns-sw{width:20px;height:4px;border-radius:2px;flex:none}',
+			'.ns-traffic-nums{flex-wrap:wrap;row-gap:6px}',
+			'.ns-yaxis{display:none;position:absolute;left:0;width:50px;pointer-events:none;font-size:10px;line-height:1;color:var(--text-3,#5f666f);font-family:var(--vt-mono,var(--mono,ui-monospace,monospace));z-index:1;white-space:nowrap}',
+			'.ns-yaxis span{opacity:.85}',
+			'.ns-traffic.has-data .ns-yaxis{display:block}',
+			'.ns-traffic.has-data .ns-traffic-svg{margin-left:54px;width:calc(100% - 54px)}',
+			'.ns-sw-tx{background:repeating-linear-gradient(90deg,#0e7490 0 5px,transparent 5px 8px)}',
+			'.ns-line-tx{stroke:#0e7490}',
+			'.ns-area-tx{fill:#0e7490}',
+			'html[data-darkmode="true"] .netsteer-root .ns-sw-tx{background:repeating-linear-gradient(90deg,#2dd4bf 0 5px,transparent 5px 8px)}',
+			'html[data-darkmode="true"] .netsteer-root .ns-line-tx{stroke:#2dd4bf}',
+			'html[data-darkmode="true"] .netsteer-root .ns-area-tx{fill:#2dd4bf}',
+			'html[data-darkmode="true"] .netsteer-root .ns-traffic-empty{color:#b8bfc7}',
 			'.ns-sw-tx{background-image:linear-gradient(90deg,currentColor 55%,transparent 55%);background-size:5px 3px}','.ns-traffic-foot{margin:6px 0 0}',
-			'.ns-grid{stroke:var(--vt-line,#d6dade);stroke-width:1;stroke-dasharray:3 6;opacity:.55}',
+			'.ns-grid{stroke:var(--vt-line,#c3cad1);stroke-width:1;stroke-dasharray:3 6;opacity:.8}',
 			'.ns-axis-row{display:flex;justify-content:space-between;margin:-4px 2px 0;font-size:10.5px;color:var(--vt-text-3,#5f666f);opacity:.8;font-family:var(--vt-mono,monospace)}',
 			'.vt-tile-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}',
 			'.vt-tile-title{font-size:var(--vt-fs-md,14px);font-weight:640}',

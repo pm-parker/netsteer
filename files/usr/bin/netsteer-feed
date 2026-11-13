@@ -169,9 +169,13 @@ validate_data() {
 		;;
 	gameips.txt) # cat TAB CIDR
 		while IFS= read -r _line || [ -n "$_line" ]; do
-			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ \t]*//; s/[ \t]*$//')
+			# 方括号内 \t 不是转义而是字面 \ 与 t (POSIX 字符类无转义):
+			# 原写法把分类名里的 t 当分隔符, "steam<TAB>1.2.3.0/24" 被切成
+			# "eam<TAB>1.2.3.0/24" → 真实 gameips.txt 全 53 行判非法, 整份
+			# 数据集被拒。改用字面 TAB (与同文件其它分支一致)。
+			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ 	]*//; s/[ 	]*$//')
 			[ -z "$_line" ] && continue
-			_val=$(printf '%s' "$_line" | sed 's/^[^\t ]*[\t ]*//')
+			_val=$(printf '%s' "$_line" | sed 's/^[^	 ]*[	 ]*//')
 			case "$_val" in *[!0-9./]*) _bad=$((_bad+1)); continue ;; esac
 			case "$_val" in *.*) _n=$((_n+1));; *) _bad=$((_bad+1)); continue ;; esac
 		done < "$_f"

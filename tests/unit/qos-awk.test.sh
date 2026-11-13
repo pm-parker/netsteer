@@ -45,7 +45,7 @@ echo "$OUT2" | grep -q '"u":"15"' && ok "小数值 upload 精确 (15, 无前导�
 # 5) 零值与多元素 (逗号分隔合法 JSON)
 FIXTURE3='{"id":"c","upload":0,"download":0,"network":"tcp","sourceIP":"192.168.11.9","metadata":{"host":"zero.example"}}'
 OUT3=$(printf '%s\n%s\n' "$FIXTURE" "$FIXTURE3" | awk "$AWK")
-N=$(printf '%s' "$OUT3" | grep -o '"q":' | wc -l)
+N=$(printf '%s' "$OUT3" | grep -o '"q":' | wc -l | tr -d ' ')
 [ "$N" = "2" ] && ok "多元素逗号分隔 (2 条)" || bad "多元素输出异常: $OUT3"
 echo "$OUT3" | grep -q '"u":"0","v":"0"' && ok "零值 upload/download 精确" || bad "零值错误"
 

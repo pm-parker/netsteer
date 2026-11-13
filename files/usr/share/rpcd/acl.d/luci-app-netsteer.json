@@ -32,6 +32,9 @@
         "/tmp/netsteer/state.json": [
           "read"
         ],
+        "/tmp/netsteer/health.json": [
+          "read"
+        ],
         "/tmp/netsteer/sense.json": [
           "read"
         ],
@@ -59,6 +62,9 @@
       ],
       "file": {
         "/usr/bin/netsteer-apply": [
+          "exec"
+        ],
+        "/usr/bin/netsteer-check": [
           "exec"
         ],
         "/usr/bin/netsteer-p2p": [

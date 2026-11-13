@@ -2,7 +2,34 @@
 # netsteer: 开机应用 RPS/RFS/XPS 转向 (首装自动探测生成配置)
 START=70
 
+CRON_FILE=/etc/crontabs/root
+CHECK_CRON='* * * * * /usr/bin/netsteer-check'
+
+# cron 行幂等挂载: 已有则零动作, 新增才重启 cron (避免每次 start 都踢 crond)
+ensure_check_cron() {
+	[ -x /usr/bin/netsteer-check ] || return 0
+	grep -qF 'netsteer-check' "$CRON_FILE" 2>/dev/null && return 0
+	mkdir -p "$(dirname "$CRON_FILE")"
+	echo "$CHECK_CRON" >> "$CRON_FILE" || return 1
+	/etc/init.d/cron enable >/dev/null 2>&1
+	/etc/init.d/cron restart >/dev/null 2>&1
+	logger -t netsteer "已挂载 netsteer-check cron (每分钟对账/自愈)"
+}
+
+# 卸载时摘掉 cron 行 (留着会每分钟报 not found)
+remove_check_cron() {
+	[ -f "$CRON_FILE" ] || return 0
+	grep -qF 'netsteer-check' "$CRON_FILE" 2>/dev/null || return 0
+	grep -vF 'netsteer-check' "$CRON_FILE" > "$CRON_FILE.ns" 2>/dev/null &&
+		mv "$CRON_FILE.ns" "$CRON_FILE"
+	/etc/init.d/cron restart >/dev/null 2>&1
+}
+
 start() {
+	# 对账/自愈 cron 挂载 (幂等): netsteer-check 承载过热保护、漂移自愈、数据集
+	# 升级保护与 feed 周更挂载。apk 3.0.5 不执行 scripts hooks (v1.22.2 实测),
+	# 此前没有任何入口调度它 — 这四项能力因此从未真正生效。
+	ensure_check_cron
 	# 无配置时自动探测接口生成 (已有配置则跳过)
 	/usr/bin/netsteer-detect >/dev/null 2>&1
 	/usr/bin/netsteer-apply >/dev/null 2>&1
@@ -38,4 +65,10 @@ stop() {
 		[ -n "$dp" ] && kill "$dp" 2>/dev/null
 		rm -f /tmp/netsteer/sense.pid
 	fi
+}
+
+# service disable (= 不再开机自启) 时同步摘掉 cron 行
+disable() {
+	remove_check_cron
+	rm -f "/etc/rc.d/S${START}netsteer"
 }

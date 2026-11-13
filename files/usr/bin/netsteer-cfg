@@ -21,9 +21,19 @@ esc() {
 	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+# section/key 白名单: 只允许 uci 标识符字符。未校验时 section 里带点就能越过
+# "netsteer." 前缀写到别的配置文件 — 本脚本在 rpcd exec 白名单内以 root 跑。
+valid_id() {
+	case "$1" in
+		'' | *[!A-Za-z0-9_]*) return 1 ;;
+	esac
+	return 0
+}
+
 case "$1" in
 set)
 	[ -n "$2" ] && [ -n "$3" ] || { echo '{"ok":false,"err":"usage: set <section> <key> <value>"}'; exit 2; }
+	valid_id "$2" && valid_id "$3" || { echo '{"ok":false,"err":"invalid section/key"}'; exit 2; }
 	if "$UCI" set "netsteer.$2.$3=$4" 2>/dev/null && "$UCI" commit netsteer 2>/dev/null; then
 		echo '{"ok":true}'
 	else
@@ -33,6 +43,8 @@ set)
 	;;
 get)
 	[ -n "$2" ] || { echo '{"ok":false,"err":"usage: get <section> [key]"}'; exit 2; }
+	valid_id "$2" || { echo '{"ok":false,"err":"invalid section"}'; exit 2; }
+	[ -z "$3" ] || valid_id "$3" || { echo '{"ok":false,"err":"invalid key"}'; exit 2; }
 	v=$("$UCI" -q get "netsteer.$2.$3" 2>/dev/null)
 	echo "{\"ok\":true,\"value\":\"$(esc "$v")\"}"
 	;;

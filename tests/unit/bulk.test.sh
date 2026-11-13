@@ -28,16 +28,18 @@ eq "invalid >255" "$(valid_ip 192.168.11.999 && echo y)" ""
 R1="$(emit_rules '192.168.11.175' 'pppoe-wan')"
 has "单设备 表名" "$R1" "table inet netsteer_bulk"
 has "单设备 上行" "$R1" 'ip saddr 192.168.11.175 ip dscp set cs1'
-has "单设备 下行" "$R1" 'iifname "pppoe-wan" ip daddr 192.168.11.175 ip dscp set cs1'
+has "单设备 下行" "$R1" 'ip daddr 192.168.11.175 ip dscp set cs1'
 has "上行钩子" "$R1" "hook forward priority -140"
-has "下行钩子" "$R1" "hook ingress priority -440"
+# ingress 链必须带 device: 内核 NFTA_HOOK_DEV 必填, 缺了整表加载失败 (EOPNOTSUPP)
+has "下行钩子" "$R1" 'hook ingress device "pppoe-wan" priority -440'
 has "counter" "$R1" "counter"
 
 # --- emit_rules: 多设备 ---
 R2="$(emit_rules '192.168.11.175 192.168.11.178' 'eth1')"
 eq "多设备 上行规则数" "$(echo "$R2" | grep -c 'saddr.*set cs1')" "2"
 eq "多设备 下行规则数" "$(echo "$R2" | grep -c 'daddr.*set cs1')" "2"
-nohas "多设备 无残留 pppoe" "$R2" 'iifname "pppoe-wan"'
+has "多设备 ingress 绑 eth1" "$R2" 'hook ingress device "eth1"'
+nohas "多设备 无残留 pppoe" "$R2" 'pppoe-wan'
 
 # --- emit_rules: 空列表 (防御: write_rules 空表已短路, emit 仍应产出合法空链) ---
 R3="$(emit_rules '' 'pppoe-wan')"
@@ -116,14 +118,14 @@ ip saddr 192.168.11.180 ip dscp set cs1 counter comment "sym"
 ip saddr 192.168.11.181 ip dscp set 80 counter comment "not-bulk-80"
 EOF
 echo "unrelated" > /tmp/bulk_mig_test/nftables.d/10-other.nft
-FOUND=$(grep -lE 'dscp set (cs1|8)( |$)' /tmp/bulk_mig_test/nftables.d/*.nft 2>/dev/null | wc -l)
+FOUND=$(grep -lE 'dscp set (cs1|8)( |$)' /tmp/bulk_mig_test/nftables.d/*.nft 2>/dev/null | wc -l | tr -d ' ')
 eq "migrate 发现 fixture 文件" "$FOUND" "2"
 IPS=$(grep -hoE 'ip saddr [0-9.]+' /tmp/bulk_mig_test/nftables.d/20-wangxin-bulk.nft /tmp/bulk_mig_test/nftables.d/21-sym.nft | awk '{print $3}')
 eq "migrate 提取数值形 IP" "$(echo "$IPS" | head -1)" "192.168.11.175"
 eq "migrate 提取符号形 IP" "$(echo "$IPS" | grep -c 192.168.11.180)" "1"
 # 纯 set 80 (非 CS1) 文件不应被 migrate 命中
 echo 'ip saddr 192.168.11.181 ip dscp set 80 counter' > /tmp/bulk_mig_test/nftables.d/22-only80.nft
-ONLY=$(grep -lE 'dscp set (cs1|8)( |$)' /tmp/bulk_mig_test/nftables.d/22-only80.nft 2>/dev/null | wc -l)
+ONLY=$(grep -lE 'dscp set (cs1|8)( |$)' /tmp/bulk_mig_test/nftables.d/22-only80.nft 2>/dev/null | wc -l | tr -d ' ')
 eq "migrate 不命中纯 set80" "$ONLY" "0"
 
 rm -rf /tmp/bulk_mig_test /tmp/bulk_src_test.sh /tmp/bulk_sugg.awk /tmp/bulk_sugg_pure.sh /tmp/bulk_suggest_test.sh

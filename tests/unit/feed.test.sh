@@ -87,6 +87,19 @@ case "$T7OUT" in
 	*) bad "T7 validate 组合异常 ($T7OUT): L=合法过/拒" ;;
 esac
 
+# ---- T7b gameips 分类名含 't': 方括号内 \t 是字面 \ 与 t, 不是制表符 —
+# 原写法把 "steam<TAB>CIDR" 切成 "eam<TAB>CIDR", 真实 gameips.txt 全行判非法 ----
+mkdir -p "$WORK/vtest/ips"
+printf 'steam\t1.2.3.0/24\nvalorant\t5.6.7.0/24\n' > "$WORK/vtest/ips/gameips.txt"
+( . "$WORK/vfn.sh"; validate_data "$WORK/vtest/ips/gameips.txt" >/dev/null 2>&1 ) \
+	&& ok || bad "T7b 含 t 分类名的 gameips 被误判非法"
+( . "$WORK/vfn.sh"; validate_data "$ROOT/data/gameips.txt" >/dev/null 2>&1 ) \
+	&& ok || bad "T7b 仓库真实 gameips.txt 校验未通过"
+printf 'steam\tnot-an-ip\n' > "$WORK/vtest/ips/bad.txt"
+mv "$WORK/vtest/ips/bad.txt" "$WORK/vtest/ips/gameips.txt"
+( . "$WORK/vfn.sh"; validate_data "$WORK/vtest/ips/gameips.txt" >/dev/null 2>&1 ) \
+	&& bad "T7b 非法 CIDR 未被拒" || ok
+
 # ---- T8 冒烟失败自动回滚 (v1.22.2): 坏引擎 → update rc=3 + 数据保持原状 ----
 # T5 篡改过源 streamdomains+manifest — 先恢复源一致性, 否则 update 在 sha 层就 rc=2
 cp "$ROOT/data/streamdomains.txt" "$WORK/data/streamdomains.txt"

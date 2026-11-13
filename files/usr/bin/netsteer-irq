@@ -41,11 +41,18 @@ cmd_get() {
 
 cmd_set() { # set <irq> <mask>
 	irq="$1"; mask="$2"
+	# irq 号先校验再拼路径: 未校验时 "../../../tmp/x" 会被规范化成任意路径,
+	# 而本脚本在 rpcd exec 白名单内以 root 跑 — 等于任意文件写入面。
+	case "$irq" in
+		'' | *[!0-9]*) echo "{\"ok\":0,\"error\":\"bad irq\"}"; exit 1 ;;
+	esac
+	case "$mask" in
+		'' | *[!0-9a-fA-F]*) echo "{\"ok\":0,\"error\":\"bad mask\"}"; exit 1 ;;
+	esac
+	# 掩码位宽封顶 (16 位十六进制 = 64 核): 超长必是误传或构造
+	[ "${#mask}" -le 16 ] || { echo "{\"ok\":0,\"error\":\"mask too long\"}"; exit 1; }
 	aff="/proc/irq/$irq/smp_affinity"
 	[ -e "$aff" ] || { echo "{\"ok\":0,\"error\":\"irq $irq not found\"}"; exit 1; }
-	case "$mask" in
-		'' | *[!0-9a-fA-F]*) echo "{\"ok\":0,\"error\":\"bad mask '$mask'\"}"; exit 1 ;;
-	esac
 	before=$(cat "$aff" 2>/dev/null | tr -d '[:space:]')
 	echo "$mask" > "$aff" 2>/dev/null
 	after=$(cat "$aff" 2>/dev/null | tr -d '[:space:]')

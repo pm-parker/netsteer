@@ -16,6 +16,7 @@
 LOG_TAG=netsteer
 TABLE=netsteer_bulk
 RULES=/tmp/netsteer/bulk-rules.nft
+LOADERR=/tmp/netsteer/bulk-nft.err
 
 log() { logger -t $LOG_TAG "bulk: $@"; }
 
@@ -65,9 +66,11 @@ emit_rules() { # $1=空格分隔设备列表  $2=wan dev
 	done
 	echo "	}"
 	echo "	chain mark_ing {"
-	echo "		type filter hook ingress priority -440; policy accept;"
+	# ingress 钩子挂在具体接口上, 建链必须带 device (nftables wiki / 内核
+	# NFTA_HOOK_DEV); 缺 device 时内核返回 EOPNOTSUPP, 整表加载失败。
+	echo "		type filter hook ingress device \"$wan\" priority -440; policy accept;"
 	for ip in $devs; do
-		echo "		iifname \"$wan\" ip daddr $ip ip dscp set cs1 counter comment \"netsteer bulk down\""
+		echo "		ip daddr $ip ip dscp set cs1 counter comment \"netsteer bulk down\""
 	done
 	echo "	}"
 	echo "}"
@@ -75,19 +78,29 @@ emit_rules() { # $1=空格分隔设备列表  $2=wan dev
 
 # ---- nft 标记规则 (绝对幂等: 整表删除重建) ----
 write_rules() {
-	local devs="$(devices_get)"
+	local devs="$(devices_get)" err
 	mkdir -p /tmp/netsteer
 	nft list table inet $TABLE >/dev/null 2>&1 && nft delete table inet $TABLE >/dev/null 2>&1
-	[ -n "$devs" ] || { rm -f "$RULES"; return 0; }
+	[ -n "$devs" ] || { rm -f "$RULES" "$LOADERR"; return 0; }
 	emit_rules "$devs" "$(wan_dev)" > "$RULES"
-	nft -f "$RULES" 2>/dev/null
+	# 加载错误必须留痕: 此前 2>/dev/null 吞掉 stderr, 而 rules_active() 只看
+	# 表是否存在 → ingress 链建不起来时 UI 仍显示"已生效"。
+	err=$(nft -f "$RULES" 2>&1)
+	if [ -n "$err" ]; then
+		printf '%s\n' "$err" > "$LOADERR"
+		log "WARN: nft 加载有错: $err"
+		return 1
+	fi
+	rm -f "$LOADERR"
+	return 0
 }
 remove_rules() {
 	nft delete table inet $TABLE >/dev/null 2>&1
-	rm -f "$RULES"
+	rm -f "$RULES" "$LOADERR"
 }
 rules_active() {
-	nft list table inet $TABLE >/dev/null 2>&1 && echo 1 || echo 0
+	# 表存在且 ingress 链真的在 → 才算生效
+	nft list table inet $TABLE 2>/dev/null | grep -q 'hook ingress' && echo 1 || echo 0
 }
 
 # ---- 动作 ----
@@ -164,7 +177,10 @@ bulk_status() {
 		j="$j\"$ip\""; i=$((i+1))
 	done
 	j="$j]"
-	echo "{\"devices\":$j,\"active\":$(rules_active),\"count\":$i,\"pkts\":$pkts,\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"game_device\":\"$(qos_get device -)\",\"game_enabled\":$(qos_get enabled 0)}"
+	# nft 加载失败原因随 status 上报, 前端才能把"规则没装上"说清楚
+	local nfterr=""
+	[ -s "$LOADERR" ] && nfterr=$(head -1 "$LOADERR" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	echo "{\"devices\":$j,\"active\":$(rules_active),\"count\":$i,\"pkts\":$pkts,\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"nft_error\":\"$nfterr\",\"game_device\":\"$(qos_get device -)\",\"game_enabled\":$(qos_get enabled 0)}"
 }
 
 # ---- 存量手工规则迁移检测 (D22: 部署时检测 /etc/nftables.d/ 手工 CS1 规则) ----

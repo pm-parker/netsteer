@@ -66,9 +66,13 @@
 
 ```sh
 apk add --allow-untrusted /tmp/luci-app-netsteer-*.apk
+/etc/init.d/netsteer enable
+/etc/init.d/netsteer start
+rm -f /tmp/luci-indexcache*
+/etc/init.d/rpcd reload
 ```
 
-安装包会启用开机自启、清 LuCI 菜单缓存并重载 rpcd。首次打开页面会引导初始设置。适用 OpenWrt 24.10+/25.12（apk 包格式）。
+OpenWrt 的 apk 不执行包内 install hooks（apk 3.0.5 实测），所以开机自启、菜单缓存和 rpcd 重载需要上面四行手动完成；`netsteer start` 同时会挂上 `netsteer-check` 的每分钟 cron（对账自愈、过热保护、数据集升级保护）。首次打开页面会引导初始设置。适用 OpenWrt 24.10+/25.12（apk 包格式）。
 
 ### 方式 B — 手动安装
 

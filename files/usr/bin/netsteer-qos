@@ -19,6 +19,7 @@
 LOG_TAG=netsteer
 TABLE=netsteer_qos
 RULES=/tmp/netsteer/qos-rules.nft
+LOADERR=/tmp/netsteer/qos-nft.err
 GAMING_QOS="netsteer-gaming.qos"
 BASE_QOS="simple.qos"
 PROBE_TARGET="223.5.5.5"
@@ -54,8 +55,11 @@ cake_have() { grep -q '^sch_cake' /proc/modules 2>/dev/null; }
 
 # ---- nft 标记规则 (绝对幂等: 整表删除重建) ----
 write_rules() { # $1=device ip  $2=wan dev
+	local err
 	mkdir -p /tmp/netsteer
 	nft list table inet $TABLE >/dev/null 2>&1 && nft delete table inet $TABLE >/dev/null 2>&1
+	# ingress 钩子挂在具体接口上, 建链必须带 device (nftables wiki / 内核
+	# NFTA_HOOK_DEV); 缺 device 时内核返回 EOPNOTSUPP, 整表加载失败。
 	cat > "$RULES" <<EOF
 table inet $TABLE {
 
@@ -65,19 +69,29 @@ table inet $TABLE {
 	}
 
 	chain mark_ing {
-		type filter hook ingress priority -450; policy accept;
-		iifname "$2" ip daddr $1 ip dscp set cs4 comment "netsteer game down"
+		type filter hook ingress device "$2" priority -450; policy accept;
+		ip daddr $1 ip dscp set cs4 comment "netsteer game down"
 	}
 }
 EOF
-	nft -f "$RULES" 2>/dev/null
+	# 加载错误必须留痕: 此前 2>/dev/null 吞掉 stderr, 而 rules_active() 只看
+	# 表是否存在 → ingress 链建不起来时 UI 仍显示"已生效"。
+	err=$(nft -f "$RULES" 2>&1)
+	if [ -n "$err" ]; then
+		printf '%s\n' "$err" > "$LOADERR"
+		log "WARN: nft 加载有错: $err"
+		return 1
+	fi
+	rm -f "$LOADERR"
+	return 0
 }
 remove_rules() {
 	nft delete table inet $TABLE >/dev/null 2>&1
-	rm -f "$RULES"
+	rm -f "$RULES" "$LOADERR"
 }
 rules_active() {
-	nft list table inet $TABLE >/dev/null 2>&1 && echo 1 || echo 0
+	# 表存在且 ingress 链真的在 → 才算生效
+	nft list table inet $TABLE 2>/dev/null | grep -q 'hook ingress' && echo 1 || echo 0
 }
 
 # ---- 整形脚本切换 ----
@@ -175,7 +189,10 @@ qos_status() {
 	local wan="$(wan_dev)"
 	local up_mode="$(tc qdisc show dev "$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
 	local dn_mode="$(tc qdisc show dev "ifb4$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
-	echo "{\"enabled\":$(qos_get enabled 0),\"device\":\"$(qos_get device -)\",\"active\":$(rules_active),\"script\":\"$(uci -q get sqm.$(sqm_section).script 2>/dev/null || echo '-')\",\"prev_script\":\"$(qos_get prev_script '-')\",\"sqm_enabled\":$(sqm_enabled && echo 1 || echo 0),\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"mode\":\"$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)\",\"dns_observer\":\"$(qos_get dns_observer mihomo)\",\"probe_target\":\"$(qos_get probe_target "$PROBE_TARGET")\"}"
+	# nft 加载失败原因随 status 上报, 前端才能把"规则没装上"说清楚
+	local nfterr=""
+	[ -s "$LOADERR" ] && nfterr=$(head -1 "$LOADERR" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	echo "{\"enabled\":$(qos_get enabled 0),\"device\":\"$(qos_get device -)\",\"active\":$(rules_active),\"nft_error\":\"$nfterr\",\"script\":\"$(uci -q get sqm.$(sqm_section).script 2>/dev/null || echo '-')\",\"prev_script\":\"$(qos_get prev_script '-')\",\"sqm_enabled\":$(sqm_enabled && echo 1 || echo 0),\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"mode\":\"$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)\",\"dns_observer\":\"$(qos_get dns_observer mihomo)\",\"probe_target\":\"$(qos_get probe_target "$PROBE_TARGET")\"}"
 }
 
 qos_probe() { # 轻量延迟采样: 3 ping 取平均 (供游戏通道页 8s 轮询画曲线); busybox ping 只支持整数 -i

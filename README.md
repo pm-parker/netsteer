@@ -73,9 +73,13 @@ Grab the `.apk` matching your architecture from [Releases](https://github.com/pm
 
 ```sh
 apk add --allow-untrusted /tmp/luci-app-netsteer-*.apk
+/etc/init.d/netsteer enable
+/etc/init.d/netsteer start
+rm -f /tmp/luci-indexcache*
+/etc/init.d/rpcd reload
 ```
 
-The package enables boot autostart, clears the LuCI menu cache and reloads rpcd. First open walks you through initial setup. Requires OpenWrt 24.10+/25.12 (apk package format).
+OpenWrt's apk does not run in-package install hooks (verified on apk 3.0.5), so boot autostart, the menu cache and the rpcd reload are the four manual lines above; `netsteer start` also installs the per-minute `netsteer-check` cron (drift reconciliation, thermal guard, dataset upgrade protection). First open walks you through initial setup. Requires OpenWrt 24.10+/25.12 (apk package format).
 
 ### Option B — Manual install
 

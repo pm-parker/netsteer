@@ -1,0 +1,30 @@
+name: "Feature request / 功能建议"
+description: "New scenario, dataset source, or steering improvement"
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve / 解决什么问题
+      description: Describe the scenario — what traffic, what hardware, what result you're getting vs. what you want.
+      placeholder: "e.g. 家里 NAS 走 2.5G 口, 希望 LAN→NAS 流量也参与 steering 判定"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / 期望的方案
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 涉及方向
+      options:
+        - Steering engine (RPS/XPS/IRQ)
+        - Traffic classification / dataset (场景判定/数据集)
+        - LuCI UI
+        - Upgrade / feed pipeline
+        - Other
+    validations:
+      required: true

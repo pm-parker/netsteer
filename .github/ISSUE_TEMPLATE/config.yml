@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "Discussions / 使用讨论与提问"
+    url: https://github.com/pm-parker/netsteer/discussions
+    about: |
+      Questions, benchmark results, steering configs for your router —
+      使用疑问、跑分对比、各机型配置分享请走 Discussions，不发 Issue。
+  - name: "Documentation / 文档"
+    url: https://dnsworker.com/netsteer/
+    about: Docs, install guide & dataset pipeline notes

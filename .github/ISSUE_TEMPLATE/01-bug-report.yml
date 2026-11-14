@@ -1,0 +1,47 @@
+name: "Bug report / 问题反馈"
+description: "Something doesn't work as expected — steering results, LuCI UI, upgrade/rollback, feed/dataset"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report! 请先花 30 秒确认：
+        1. 已升级到最新版（智能模式页会提示新版，或手动检查更新）
+        2. 现有 [Issues](https://github.com/pm-parker/netsteer/issues?q=is%3Aissue) 中没有相同报告
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened / 出了什么问题
+      description: A clear description of the bug. 清楚描述实际发生了什么、期望是什么。
+      placeholder: "e.g. 启用 steering 后 / speedtest 下载反而变慢 / 智能模式页提示升级失败并回滚"
+    validations:
+      required: true
+  - type: textarea
+    id: device-info
+    attributes:
+      label: Device & firmware / 设备与固件
+      description: Router model, OpenWrt version, netsteer version (see 智能模式 → 关于)
+      placeholder: "e.g. Xiaomi AX3000T / OpenWrt 24.10.0 / netsteer v1.22.x"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs & output / 日志与输出
+      description: |
+        Run these on the router and paste the output:
+        ```
+        logread | grep -i netsteer | tail -30
+        cat /usr/share/netsteer/history.log 2>/dev/null | tail -10
+        ```
+    validations:
+      required: false
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist / 自查
+      options:
+        - label: I am on the latest netsteer release (已升级到最新版本)
+          required: true
+        - label: I searched existing issues and found no duplicate (确认没有重复 Issue)
+          required: true

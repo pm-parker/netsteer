@@ -1,0 +1,34 @@
+name: "Dataset source request / 数据源请求"
+description: "Ask for a new app/streaming/conference domain to be recognized"
+labels: ["dataset", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        数据集与插件版本解耦，新增域名不需要发新版。
+        提交前请确认该域名确实承载对应场景流量（可用抓包或 `nslookup` 验证）。
+  - type: input
+    id: domain
+    attributes:
+      label: Domain / 域名
+      placeholder: "e.g. example-cdn.com"
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category / 场景类别
+      options:
+        - streaming (流媒体)
+        - download (下载/P2P)
+        - work/conference (办公/会议)
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / 依据
+      description: Which app produced this traffic? How did you verify?
+    validations:
+      required: true

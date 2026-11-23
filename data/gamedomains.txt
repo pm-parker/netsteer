@@ -1,6 +1,6 @@
 # NetSteer 游戏平台域名数据集 (L1 DNS 分类)
 # 派生自 uklans/cache-domains (MIT License) https://github.com/uklans/cache-domains
-# 自动采集: 2026-11-12 (上游 27 个 service 域名 + 手工补充 40 条)
+# 自动采集: 2026-11-23 (上游 27 个 service 域名 + 手工补充 40 条)
 # 格式: <类别>\t<域名后缀>; 匹配=查询名等于后缀或以其结尾
 # 共 172 个后缀 (上游 132 + 手工 40)
 

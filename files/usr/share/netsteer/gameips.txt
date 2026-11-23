@@ -1,5 +1,5 @@
 # netsteer L2: game platform IP segments (category TAB CIDR, IPv4)
-# source: Valve official SDR API (ISteamApps/GetSDRConfig appid=730) pulled 2026-11-12
+# source: Valve official SDR API (ISteamApps/GetSDRConfig appid=730) pulled 2026-11-23
 # auto-aggregated /24 per relay (same-block relays merged); /16 /22 AS-consensus
 # blocks from the 2026-11-08 manual curation are kept below (API sees relays only)
 # matching: longest-prefix wins; covers bare-IP direct traffic (no SNI/DNS name)

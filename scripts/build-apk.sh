@@ -4,6 +4,30 @@
 # Requires: curl, tar, python3 (for file permission fixups); downloads apk-tools-static on first run.
 set -euo pipefail
 
+# GitHub-hosted runners reject unprivileged user namespaces (unshare -r → EPERM).
+# sudo -n is the supported fallback: mkpkg itself runs as uid 0 so package metadata stays root:root.
+ns_root_runner() {
+  if [ "$(id -u)" -eq 0 ]; then
+    printf 'root\n'
+    return 0
+  fi
+  if command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
+    printf 'unshare\n'
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    printf 'sudo\n'
+    return 0
+  fi
+  printf 'fail\n'
+  return 1
+}
+
+if [ "${NS_PRINT_ROOT_RUNNER:-}" = 1 ]; then
+  ns_root_runner
+  exit $?
+fi
+
 VERSION="${1:-1.6.0}"
 ARCH="${2:-aarch64_generic}"
 # 防御: 版本串只允许安全字符 (会被插入 sed 表达式与包名; 斜杠等会导致 sed 分隔符提前终止)
@@ -15,7 +39,15 @@ esac
 NAME="luci-app-netsteer"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+NS_USED_SUDO=0
+ns_cleanup() {
+  if [ "$NS_USED_SUDO" = 1 ]; then
+    sudo -n rm -rf "$WORK"
+  else
+    rm -rf "$WORK"
+  fi
+}
+trap ns_cleanup EXIT
 OUT_DIR="$HERE/dist"
 mkdir -p "$OUT_DIR"
 
@@ -36,16 +68,32 @@ sed -i "s/var NS_VERSION = '[^']*';/var NS_VERSION = '$VERSION';/" \
   "$PKGROOT/www/luci-static/resources/view/netsteer.js"
 grep -q "var NS_VERSION = '$VERSION';" "$PKGROOT/www/luci-static/resources/view/netsteer.js" \
   || { echo "FATAL: NS_VERSION inject failed" >&2; exit 1; }
-chmod 755 "$PKGROOT"/usr/bin/netsteer-* "$PKGROOT"/etc/init.d/netsteer 2>/dev/null
+chmod 755 "$PKGROOT"/usr/bin/netsteer-* "$PKGROOT"/etc/init.d/netsteer "$PKGROOT"/etc/hotplug.d/iface/99-netsteer 2>/dev/null
 find "$PKGROOT" -name '*.js' -o -name '*.json' | xargs chmod 644
 
 # 3. install/upgrade hooks — 不使用。探针包实测 (v1.22.2): OpenWrt apk 3.0.5 对 scripts hooks
 #    完全不执行 (默认与显式 --commit-hooks --scripts 均不跑), 历史版本"安装侧修复"因此从未生效。
 #    P0 数据保护与 P2 cron 挂载改为运行时自愈: netsteer-check 每分钟裁决 (见 netsteer-check)。
 
-# 4. build
+# 4. build — 必须以 root 身份 (UID/GID 0) 打包: 静态链接的 apk.static 不受 fakeroot (LD_PRELOAD) 影响,
+#    非 root 直接打包会把构建机用户名写入包元数据, 在 OpenWrt 上安装后落成 nobody:nogroup (本地提权风险)。
+#    使用 Linux user namespace (unshare -r) 在内核层将当前用户映射为 0:0。
 OUT="$OUT_DIR/${NAME}-${VERSION}-${ARCH}.apk"
-"$MKPKG" mkpkg \
+ns_as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
+    unshare -r "$@"
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    NS_USED_SUDO=1
+    sudo -n "$@"
+  else
+    echo "ERROR: non-root build requires 'unshare -r' or passwordless sudo so packaged files are owned by root:root" >&2
+    exit 1
+  fi
+}
+ns_as_root chown -R 0:0 "$PKGROOT"
+ns_as_root "$MKPKG" mkpkg \
   -F "$PKGROOT" \
   -I "name:$NAME" -I "version:$VERSION" -I "arch:$ARCH" \
   -I "description:NetSteer - steer network softirq/IRQ load across CPU cores with auto benchmark" \
@@ -53,6 +101,11 @@ OUT="$OUT_DIR/${NAME}-${VERSION}-${ARCH}.apk"
   -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
   -I "depends:luci-base" \
   -o "$OUT"
+if [ "$NS_USED_SUDO" = 1 ]; then
+  sudo -n chown -R "$(id -u):$(id -g)" "$PKGROOT"
+  sudo -n chown "$(id -u):$(id -g)" "$OUT"
+  sudo -n chmod a+r "$OUT"
+fi
 
 echo ">> built $OUT ($(stat -c '%s' "$OUT") bytes)"
 echo ">> verify content:"
@@ -61,6 +114,21 @@ mkdir -p "$WORK/check"
 find "$WORK/check" -type f | sort | sed 's/^/   /'
 # integrity check — a package that fails verify must never be shipped
 "$MKPKG" verify --allow-untrusted "$OUT" >/dev/null || { echo "ERROR: apk verify failed"; exit 1; }
+# ownership check — fail closed: adbdump must succeed, contain root metadata, and contain zero non-root entries
+ADB_DUMP="$("$MKPKG" adbdump "$OUT")"
+printf '%s\n' "$ADB_DUMP" | grep -qE '^[[:space:]]*user: root$' \
+  || { echo "ERROR: adbdump missing expected 'user: root' metadata" >&2; exit 1; }
+printf '%s\n' "$ADB_DUMP" | grep -qE '^[[:space:]]*group: root$' \
+  || { echo "ERROR: adbdump missing expected 'group: root' metadata" >&2; exit 1; }
+BAD_OWN="$(printf '%s\n' "$ADB_DUMP" | grep -E '^[[:space:]]*(user|group):' | grep -vE '^[[:space:]]*(user|group): root$' || true)"
+if [ -n "$BAD_OWN" ]; then
+  echo "ERROR: package contains non-root ownership metadata:" >&2
+  echo "$BAD_OWN" | head -n 10 >&2
+  exit 1
+fi
+HP="$WORK/check/etc/hotplug.d/iface/99-netsteer"
+HP_MODE=$(stat -c '%a' "$HP" 2>/dev/null || echo missing)
+[ "$HP_MODE" = "755" ] || { echo "ERROR: 99-netsteer mode is $HP_MODE, want 755" >&2; exit 1; }
 # sanity: js must be present and non-empty
 JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
 [ -s "$JS" ] || { echo "ERROR: package is missing netsteer.js — build is broken"; exit 1; }

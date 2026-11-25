@@ -8,6 +8,269 @@
 #   preset <name>  先写回 uci 再应用 (uci 仍是唯一真相, 避免 netsteer-check 判漂移反复摆震)
 #                  name: all / balanced (=全核, 同义) / off (=清零)
 #   auto           同 preset all (首装探测默认)
+#   sync-packet-steering active|auto|inactive
+#     active: 显式 start, 清掉停止标记后把 packet_steering 置 0 并记住原值
+#     auto:   hotplug/check/apply, 服务已 stop 时不再改它
+#     inactive: 服务 stop, 提交成功后才按原值恢复并留下停止标记
+
+PS_ORIGIN="${NS_PS_ORIGIN:-/etc/netsteer/packet_steering.origin}"
+PS_STOPPED="${NS_PS_STOPPED:-/etc/netsteer/service.stopped}"
+if [ -n "${NS_PS_LOCK:-}" ]; then
+	PS_LOCK="$NS_PS_LOCK"
+elif [ -n "${NS_PS_ORIGIN:-}" ]; then
+	PS_LOCK="$(dirname "$PS_ORIGIN")/packet_steering.lock"
+else
+	PS_LOCK="/tmp/netsteer/packet_steering.lock"
+fi
+
+ps_get() {
+	if uci -q get network.globals.packet_steering >/dev/null 2>&1; then
+		uci -q get network.globals.packet_steering
+		return 0
+	fi
+	if uci -q get network.@globals[0].packet_steering >/dev/null 2>&1; then
+		uci -q get network.@globals[0].packet_steering
+		return 0
+	fi
+	return 1
+}
+
+ps_commit() {
+	uci commit network
+}
+
+ps_set() {
+	if ! uci set network.globals.packet_steering="$1"; then
+		uci set network.@globals[0].packet_steering="$1" || return 1
+	fi
+	ps_commit || return 1
+}
+
+ps_del() {
+	uci delete network.globals.packet_steering 2>/dev/null
+	uci delete network.@globals[0].packet_steering 2>/dev/null
+	if ps_get >/dev/null 2>&1; then
+		return 1
+	fi
+	ps_commit || return 1
+}
+
+# 快照必须是普通文件且格式完整。符号链接不打开, 避免读到任意目标。
+ps_origin_kind() {
+	[ -L "$PS_ORIGIN" ] && return 1
+	[ -f "$PS_ORIGIN" ] || return 1
+	_n=$(wc -l < "$PS_ORIGIN" | tr -d ' ')
+	_a=$(sed -n '1p' "$PS_ORIGIN")
+	_b=$(sed -n '2p' "$PS_ORIGIN")
+	case "$_a" in
+		set|stopping|stopped)
+			[ "$_n" -eq 2 ] || return 1
+			case "$_b" in ''|*[!0-9]*) return 1 ;; esac
+			;;
+		absent|stopping-absent|stopped-absent)
+			[ "$_n" -eq 1 ] || return 1
+			;;
+		*) return 1 ;;
+	esac
+	printf '%s\n' "$_a"
+}
+
+ps_write_origin() {
+	[ -L "$PS_ORIGIN" ] && return 1
+	dir=$(dirname "$PS_ORIGIN")
+	mkdir -p "$dir" || return 1
+	[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+	tmp=$(mktemp "$dir/.packet_steering.XXXXXX") || return 1
+	if [ -n "${2:-}" ]; then
+		printf '%s\n%s\n' "$1" "$2" > "$tmp" || { rm -f "$tmp"; return 1; }
+	else
+		printf '%s\n' "$1" > "$tmp" || { rm -f "$tmp"; return 1; }
+	fi
+	mv -f "$tmp" "$PS_ORIGIN" || { rm -f "$tmp"; return 1; }
+	ps_origin_kind >/dev/null || return 1
+}
+
+ps_save_once() {
+	if [ -L "$PS_ORIGIN" ]; then
+		return 1
+	fi
+	if [ -e "$PS_ORIGIN" ]; then
+		ps_origin_kind >/dev/null || return 1
+		return 0
+	fi
+	if cur=$(ps_get); then
+		ps_write_origin set "$cur" || return 1
+	else
+		ps_write_origin absent || return 1
+	fi
+}
+
+ps_restore_from_origin() {
+	kind=$(ps_origin_kind) || return 1
+	val=$(sed -n '2p' "$PS_ORIGIN")
+	case "$kind" in
+		set|stopping|stopped)
+			ps_set "$val" || return 1
+			;;
+		absent|stopping-absent|stopped-absent)
+			ps_del || return 1
+			;;
+		*) return 1 ;;
+	esac
+}
+
+ps_note_stopping() {
+	kind=$(ps_origin_kind) || return 1
+	val=$(sed -n '2p' "$PS_ORIGIN")
+	case "$kind" in
+		set|stopping|stopped) ps_write_origin stopping "$val" || return 1 ;;
+		absent|stopping-absent|stopped-absent) ps_write_origin stopping-absent || return 1 ;;
+		*) return 1 ;;
+	esac
+}
+
+ps_mark_stopped() {
+	dir=$(dirname "$PS_STOPPED")
+	mkdir -p "$dir" || return 1
+	[ -d "$dir" ] || return 1
+	tmp=$(mktemp "$dir/.service.stopped.XXXXXX") || return 1
+	printf 'stopped\n' > "$tmp" || { rm -f "$tmp"; return 1; }
+	mv -f "$tmp" "$PS_STOPPED" || { rm -f "$tmp"; return 1; }
+}
+
+ps_hold() {
+	[ -f "$PS_STOPPED" ] && [ ! -L "$PS_STOPPED" ] && return 0
+	if [ -L "$PS_ORIGIN" ]; then
+		return 0
+	fi
+	if [ -e "$PS_ORIGIN" ]; then
+		kind=$(ps_origin_kind) || return 0
+		case "$kind" in
+			stopping|stopping-absent|stopped|stopped-absent) return 0 ;;
+		esac
+	fi
+	return 1
+}
+
+ps_force_off() {
+	# 停止中或已停止: 自动路径不得再把 packet_steering 写成 0
+	ps_hold && return 0
+	ps_save_once || return 1
+	cur=$(ps_get 2>/dev/null || true)
+	if [ "$cur" != "0" ]; then
+		ps_set 0 || return 1
+		logger -t netsteer "已关闭原生 packet_steering, 防止与 netsteer 互相覆写 RPS/IRQ" 2>/dev/null || true
+	fi
+}
+
+ps_stop() {
+	if [ -L "$PS_ORIGIN" ] || { [ -e "$PS_ORIGIN" ] && ! ps_origin_kind >/dev/null; }; then
+		return 1
+	fi
+	if [ ! -e "$PS_ORIGIN" ] && [ ! -L "$PS_ORIGIN" ]; then
+		if cur=$(ps_get); then
+			ps_write_origin stopped "$cur" || return 1
+		else
+			ps_write_origin stopped-absent || return 1
+		fi
+	else
+		ps_note_stopping || return 1
+		ps_restore_from_origin || return 1
+	fi
+	ps_mark_stopped || return 1
+	rm -f "$PS_ORIGIN" || return 1
+}
+
+ps_start() {
+	if [ -L "$PS_ORIGIN" ] || { [ -e "$PS_ORIGIN" ] && ! ps_origin_kind >/dev/null; }; then
+		return 1
+	fi
+	if [ -e "$PS_ORIGIN" ]; then
+		kind=$(ps_origin_kind) || return 1
+		val=$(sed -n '2p' "$PS_ORIGIN")
+		case "$kind" in
+			absent|stopping-absent|stopped-absent) remember=absent ;;
+			*) remember="$val" ;;
+		esac
+	else
+		if cur=$(ps_get); then
+			remember="$cur"
+		else
+			remember=absent
+		fi
+	fi
+	if [ ! -e "$PS_ORIGIN" ] && [ ! -L "$PS_ORIGIN" ]; then
+		if [ "$remember" = "absent" ]; then
+			ps_write_origin absent || return 1
+		else
+			ps_write_origin set "$remember" || return 1
+		fi
+	fi
+	ps_set 0 || return 1
+	case "$(ps_origin_kind)" in
+		stopping|stopped) ps_write_origin set "$remember" || return 1 ;;
+		stopping-absent|stopped-absent) ps_write_origin absent || return 1 ;;
+	esac
+	rm -f "$PS_STOPPED" || return 1
+}
+
+ps_with_lock() {
+	# 纯 POSIX 原子 mkdir 目录锁 (零 flock/-w/浮点 sleep 依赖, 兼容 OpenWrt BusyBox 与 Linux CI)
+	if [ -L "$PS_LOCK" ]; then
+		return 1
+	fi
+	dir=$(dirname "$PS_LOCK")
+	if [ -L "$dir" ]; then
+		return 1
+	fi
+	mkdir -p "$dir" || return 1
+	[ -d "$dir" ] || return 1
+	_wait="${NS_PS_LOCK_WAIT:-20}"
+	case "$_wait" in ''|*[!0-9]*) _wait=20 ;; esac
+	_elapsed=0
+	while ! mkdir "$PS_LOCK" 2>/dev/null; do
+		[ -L "$PS_LOCK" ] && return 1
+		if [ -f "$PS_LOCK" ]; then
+			# 兼容旧版遗留的普通锁文件
+			rm -f "$PS_LOCK" 2>/dev/null && continue
+			return 1
+		fi
+		_holder=$(cat "$PS_LOCK/pid" 2>/dev/null)
+		case "$_holder" in ''|*[!0-9]*) _holder='' ;; esac
+		if [ -n "$_holder" ] && ! kill -0 "$_holder" 2>/dev/null; then
+			mv "$PS_LOCK" "$PS_LOCK.stale.$$" 2>/dev/null && rm -rf "$PS_LOCK.stale.$$" 2>/dev/null
+			continue
+		fi
+		if [ -z "$_holder" ]; then
+			_ts=$(cat "$PS_LOCK/ts" 2>/dev/null)
+			_now=$(date +%s 2>/dev/null || echo 0)
+			if [ -n "$_ts" ] && [ "$(( _now - _ts ))" -ge 120 ] 2>/dev/null; then
+				mv "$PS_LOCK" "$PS_LOCK.stale.$$" 2>/dev/null && rm -rf "$PS_LOCK.stale.$$" 2>/dev/null
+				continue
+			fi
+		fi
+		[ "$_elapsed" -ge "$_wait" ] && return 1
+		sleep 1
+		_elapsed=$((_elapsed + 1))
+	done
+	printf '%s\n' "$$" > "$PS_LOCK/pid" 2>/dev/null || true
+	date +%s > "$PS_LOCK/ts" 2>/dev/null || true
+	"$@"
+	_rc=$?
+	rm -rf "$PS_LOCK" 2>/dev/null || true
+	return $_rc
+}
+
+if [ "${1:-}" = "sync-packet-steering" ]; then
+	case "${2:-}" in
+		active) ps_with_lock ps_start || exit 1 ;;
+		auto) ps_with_lock ps_force_off || exit 1 ;;
+		inactive) ps_with_lock ps_stop || exit 1 ;;
+		*) echo "Usage: netsteer-apply sync-packet-steering active|auto|inactive" >&2; exit 1 ;;
+	esac
+	exit 0
+fi
+
 . /lib/functions.sh
 
 LOG_TAG=netsteer
@@ -43,8 +306,8 @@ _sec_for_dev() { # 已有节的 iface == $1 → 回节名; 否则回设备名转
 }
 _ensure_sec() { # 节不存在则建; 不覆盖已有选项
 	uci -q get "netsteer.$1" >/dev/null 2>&1 || uci -q set "netsteer.$1=interface"
-	uci -q set "netsteer.$1.iface='$2'"
-	[ -n "$(uci -q get "netsteer.$1.rfs_flow_cnt" 2>/dev/null)" ] || uci -q set "netsteer.$1.rfs_flow_cnt='4096'"
+	uci -q set "netsteer.$1.iface=$2"
+	[ -n "$(uci -q get "netsteer.$1.rfs_flow_cnt" 2>/dev/null)" ] || uci -q set "netsteer.$1.rfs_flow_cnt=4096"
 }
 preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-check 判漂移摆震)
 	local d n sec s vsec i=0 k changed=0
@@ -66,9 +329,9 @@ preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-ch
 				k=$(( NCPU - 1 - i ))
 				[ "$k" -lt 0 ] && k=$(( i % NCPU ))
 				_ensure_sec "$sec" "$n"
-				uci -q set "netsteer.$sec.rps_cpus='$FULL'"
-				uci -q set "netsteer.$sec.xps_cpus='$FULL'"
-				uci -q set "netsteer.$sec.irq_cpus='$(printf '%x' $(( 1 << k )))'"
+				uci -q set "netsteer.$sec.rps_cpus=$FULL"
+				uci -q set "netsteer.$sec.xps_cpus=$FULL"
+				uci -q set "netsteer.$sec.irq_cpus=$(printf '%x' $(( 1 << k )))"
 				i=$(( i + 1 )); changed=1
 				log "preset=$PRESET $sec($n) rps/xps=$FULL irq_cpu=$k"
 			done
@@ -76,7 +339,7 @@ preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-ch
 			for s in $(_sections); do
 				vsec=$(uci -q get "netsteer.$s.iface" 2>/dev/null)
 				[ -n "$vsec" ] && [ -d "/sys/class/net/$vsec" ] && [ ! -d "/sys/class/net/$vsec/device" ] || continue
-				uci -q set "netsteer.$s.rps_cpus='$FULL'"
+				uci -q set "netsteer.$s.rps_cpus=$FULL"
 				log "preset=$PRESET $s($vsec) rps=$FULL (虚拟口, IRQ 不动)"
 				changed=1
 			done
@@ -88,16 +351,25 @@ preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-ch
 
 STATE_DIR=/tmp/netsteer
 STATE_FILE=$STATE_DIR/state.json
-STATE_TMP=$STATE_DIR/.state.tmp
+STATE_TMP=$STATE_DIR/.state.json.$$
 STATE_TXT=$STATE_DIR/state.txt
+STATE_TXT_TMP=$STATE_DIR/.state.txt.$$
 mkdir -p "$STATE_DIR"
+trap 'rm -f "$STATE_TMP" "$STATE_TXT_TMP"' EXIT
 echo "{" > "$STATE_TMP"
-: > "$STATE_TXT"
+: > "$STATE_TXT_TMP"
 
 config_load netsteer
 [ -n "$PRESET" ] && { preset_to_uci; config_load netsteer; }   # 重载: 后续 apply 读新值
 
 config_get enabled state enabled 1
+# 服务 stop 之后保持已恢复的 packet_steering, 直到 init start / mode 切换明确清掉停止标记。
+# 接管态才压成 0; 快照写失败则不改配置。禁用 / clear / preset off 按快照恢复。
+if [ "$enabled" = "1" ] && [ "$MODE" != "clear" ] && [ "$PRESET" != "off" ]; then
+	ps_with_lock ps_force_off || exit 1
+else
+	ps_with_lock ps_stop || exit 1
+fi
 # clear 模式不受 enabled 开关限制 (否则 off 模式在禁用态下静默不生效)
 [ "$enabled" = "1" ] || [ "$MODE" = "clear" ] || { log "disabled in uci, skip"; exit 0; }
 
@@ -105,6 +377,12 @@ config_get enabled state enabled 1
 config_get entries global rfs_sock_flow_entries 32768
 echo "$entries" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null \
 	&& log "rps_sock_flow_entries=$entries" || log "WARN: rps_sock_flow_entries 写入失败"
+
+norm_hex() {
+	local h
+	h=$(printf '%s' "$1" | tr 'A-F' 'a-f' | tr -d ',[:space:]' | sed 's/^0*//')
+	[ -n "$h" ] && printf '%s' "$h" || printf '0'
+}
 
 # 状态 JSON 追加: "iface":{"irq":"N","affinity":"X"} (逗号管理)
 state_add() {
@@ -172,9 +450,9 @@ apply_iface() {
 			before=$(cat "$aff_file" 2>/dev/null)
 			echo "$irq" > "$aff_file" 2>/dev/null
 			after=$(cat "$aff_file" 2>/dev/null)
-			# 写后回读判成败 (managed IRQ 可能拒写)
-			if [ "$after" = "$irq" ]; then
-				log "$iface irq$n irq=$irq"
+			# 写后回读判成败 (归一化比对, 兼容 >4 核内核前导零如 08 vs 8)
+			if [ "$(norm_hex "$after")" = "$(norm_hex "$irq")" ]; then
+				log "$iface irq$n irq=$after"
 			else
 				log "WARN: $iface irq$n 写入失败 (before=$before after=$after), 保持原值"
 			fi
@@ -194,13 +472,14 @@ apply_iface() {
 	done
 
 	# 通用状态行 (netsteer-check 比对用; 无硬编码接口/IRQ)
-	printf 'netsteer %s %s rps %s' "$cfg" "$iface" "$rps" >> "$STATE_TXT"
-	[ -n "$first_irq_no" ] && printf ' irq %s %s' "$first_irq_no" "$first_aff" >> "$STATE_TXT"
-	echo >> "$STATE_TXT"
+	printf 'netsteer %s %s rps %s' "$cfg" "$iface" "$rps" >> "$STATE_TXT_TMP"
+	[ -n "$first_irq_no" ] && printf ' irq %s %s' "$first_irq_no" "$first_aff" >> "$STATE_TXT_TMP"
+	echo >> "$STATE_TXT_TMP"
 }
 
 config_foreach apply_iface interface
 
 echo "}" >> "$STATE_TMP"
 mv "$STATE_TMP" "$STATE_FILE"
+mv "$STATE_TXT_TMP" "$STATE_TXT"
 exit 0

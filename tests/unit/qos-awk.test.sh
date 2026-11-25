@@ -15,7 +15,7 @@ bad() { fail=$((fail+1)); echo "FAIL: $1"; }
 AWK=$(python3 - "$QOS" <<'PYEOF'
 import sys, re
 src = open(sys.argv[1]).read()
-m = re.search(r"qos_dnslog_mihomo\(\) \{.*?awk '(.*?)'\n\}", src, re.S)
+m = re.search(r"qos_dnslog_mihomo\(\) \{.*?awk(?:\s+-v\s+\S+)* '(.*?)'\n\}", src, re.S)
 if not m:
     sys.exit(1)
 block = m.group(1)
@@ -45,9 +45,14 @@ echo "$OUT2" | grep -q '"u":"15"' && ok "小数值 upload 精确 (15, 无前导�
 # 5) 零值与多元素 (逗号分隔合法 JSON)
 FIXTURE3='{"id":"c","upload":0,"download":0,"network":"tcp","sourceIP":"192.168.11.9","metadata":{"host":"zero.example"}}'
 OUT3=$(printf '%s\n%s\n' "$FIXTURE" "$FIXTURE3" | awk "$AWK")
-N=$(printf '%s' "$OUT3" | grep -o '"q":' | wc -l)
+N=$(printf '%s' "$OUT3" | grep -o '"q":' | wc -l | tr -d ' ')
 [ "$N" = "2" ] && ok "多元素逗号分隔 (2 条)" || bad "多元素输出异常: $OUT3"
 echo "$OUT3" | grep -q '"u":"0","v":"0"' && ok "零值 upload/download 精确" || bad "零值错误"
+
+# 6) top 上限截断生效
+OUT4=$(printf '%s\n%s\n' "$FIXTURE" "$FIXTURE3" | awk -v top=1 "$AWK")
+N4=$(printf '%s' "$OUT4" | grep -o '"q":' | wc -l | tr -d ' ')
+[ "$N4" = "1" ] && ok "top=1 条数上限生效 (1 条)" || bad "top=1 未截断: $OUT4"
 
 echo "PASS=$pass FAIL=$fail"
 [ "$fail" = 0 ]

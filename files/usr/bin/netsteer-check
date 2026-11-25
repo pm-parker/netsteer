@@ -2,10 +2,41 @@
 # netsteer-check: 值记录仪 + 漂移自愈 + 现场抓取 (cron 每分钟)
 # 跨设备通用: 接口与 IRQ 全部从 netsteer-apply 产出的 state.txt 读取, 零硬编码
 # 值无变化: 静默; 变化: 记 history; 漂移 (运行态 vs uci): logger + logread 存证 + 重应用
-STATE_DIR=/tmp/netsteer
+STATE_DIR=${NS_STATE_DIR:-/tmp/netsteer}
+NS_APPLY=${NS_APPLY:-/usr/bin/netsteer-apply}
+NS_NET_SYS=${NS_NET_SYS:-/sys}
+NS_PROC=${NS_PROC:-/proc}
+NS_INC_DIR=${NS_INC_DIR:-/etc/netsteer/incidents}
+NS_HISTORY=${NS_HISTORY:-/etc/netsteer/history.log}
+NS_DATA_DIR=${NS_DATA_DIR:-/usr/share/netsteer}
+NS_FEED_HIST=${NS_FEED_HIST:-/etc/netsteer/feed-history}
 HIST=$STATE_DIR/history.log
 STATE_TXT=$STATE_DIR/state.txt
 mkdir -p "$STATE_DIR"
+
+prune_incidents() {
+	[ -d "$NS_INC_DIR" ] || return 0
+	ls -1t "$NS_INC_DIR" 2>/dev/null | tail -n +21 | while read -r _old; do
+		[ -n "$_old" ] && rm -f "$NS_INC_DIR/$_old"
+	done
+}
+
+append_phist() {
+	mkdir -p "$(dirname "$NS_HISTORY")" 2>/dev/null
+	echo "$1" >> "$NS_HISTORY" 2>/dev/null
+	if [ "$(wc -l < "$NS_HISTORY" 2>/dev/null || echo 0)" -gt 2000 ]; then
+		tail -800 "$NS_HISTORY" > "$NS_HISTORY.tmp.$$" 2>/dev/null && mv "$NS_HISTORY.tmp.$$" "$NS_HISTORY" 2>/dev/null
+	fi
+}
+
+norm_hex() {
+	local h
+	h=$(printf '%s' "$1" | tr 'A-F' 'a-f' | tr -d ',[:space:]' | sed 's/^0*//')
+	[ -n "$h" ] && printf '%s' "$h" || printf '0'
+}
+
+# 存量清理: 即使不再产生新漂移, 也能把升级前已堆积的超额 incident 清理至 20 份
+prune_incidents
 
 # ---- 温度监测 (v1.22): 任何设备都跑, 不依赖 apply 状态 ----
 # 数值落 /tmp/netsteer/health.json (内存盘, 每分钟写不伤 flash); 仅跨阈值事件写 uci/log
@@ -24,9 +55,10 @@ if [ "$TMAX" -ge 95000 ]; then
 	CURMODE=$(uci -q get netsteer.scenario.mode 2>/dev/null)
 	if [ -n "$CURMODE" ] && [ "$CURMODE" != "steering" ] && [ "$CURMODE" != "off" ]; then
 		/usr/bin/netsteer-mode steering >/dev/null 2>&1
-		INC_DIR=/etc/netsteer/incidents
+		INC_DIR=$NS_INC_DIR
 		mkdir -p "$INC_DIR"
 		{ echo "== $(date '+%m-%d %H:%M:%S') 过热降档: ${TMAX} (milli°C) → steering"; tail -30 "$HIST" 2>/dev/null; } > "$INC_DIR/thermal-$(date '+%m%d-%H%M%S').log"
+		prune_incidents
 		logger -t netsteer "过热保护: ${TMAX} (milli°C), 已自动降档 steering (温度回落后请在 UI 手动恢复)"
 	fi
 fi
@@ -43,8 +75,8 @@ fi
 
 # ---- feed 数据版本自愈 (v1.22.2 P0): OpenWrt apk 不执行 scripts hooks (探针包实测),
 # 升级覆盖数据集后无人裁决 — 这里每分钟裁决: 用户已 feed 版本 ≥ 包内版本 → 恢复用户版
-FD=/usr/share/netsteer
-FH=/etc/netsteer/feed-history
+FD=$NS_DATA_DIR
+FH=$NS_FEED_HIST
 if [ -d "$FH" ]; then
 	_lat=$(ls -1 "$FH" 2>/dev/null | sort -r | head -1)
 	if [ -n "$_lat" ] && [ -f "$FH/$_lat/manifest.tsv" ] && [ -f "$FD/manifest.tsv" ]; then
@@ -61,21 +93,24 @@ if [ -d "$FH" ]; then
 			# 同日期: 保守不恢复 (快照与包内同日谁新不可判定, 升级场景包内是官方发布版, 回滚旧快照几乎必错)
 		fi
 		if [ "$_need" = "1" ]; then
-			for _f in "$FH/$_lat"/*.txt; do
+			for _f in "$FH/$_lat"/*.txt "$FH/$_lat/manifest.tsv"; do
 				[ -f "$_f" ] && cp -f "$_f" "$FD/${_f##*/}" 2>/dev/null
 			done
 			logger -t netsteer-feed "升级保护: 数据集恢复用户版 $_ov (包内 $_nv)"
-			echo "$(date '+%m-%d %H:%M:%S') feed 升级覆盖已恢复用户数据 (版本 $_ov)" >> /etc/netsteer/history.log 2>/dev/null
+			append_phist "$(date '+%m-%d %H:%M:%S') feed 升级覆盖已恢复用户数据 (版本 $_ov)"
 		fi
 	fi
 fi
 
-# ---- feed 自动更新 cron 自愈 (v1.22.2 P2): hooks 不执行, 幂等挂载兜底 (uci netsteer.feed.auto=0 仍可在 auto 内退出) ----
-if [ -x /usr/bin/netsteer-feed ] && ! grep -q "netsteer-feed auto" /etc/crontabs/root 2>/dev/null; then
+# ---- feed 自动更新 cron 自愈 (v1.22.2 P2): hooks 不执行, 幂等挂载兜底 (与 init.d 同口径, 保留用户自定义参数行) ----
+if [ -x /usr/bin/netsteer-feed ] && ! grep -qE '(^|[[:space:]])/usr/bin/netsteer-feed([[:space:]]|$)' /etc/crontabs/root 2>/dev/null; then
 	echo "37 4 * * 1 /usr/bin/netsteer-feed auto" >> /etc/crontabs/root 2>/dev/null
 	/etc/init.d/cron restart 2>/dev/null
 fi
 
+# 总开关关闭 (netsteer.state.enabled=0 或 scenario.mode=off) 时不做漂移自愈, 防止 60s 后把 off 模式强行拉回
+[ "$(uci -q get netsteer.state.enabled 2>/dev/null || echo 1)" = "1" ] || exit 0
+[ "$(uci -q get netsteer.scenario.mode 2>/dev/null)" = "off" ] && exit 0
 [ -s "$STATE_TXT" ] || exit 0   # apply 未跑过, 无从比对
 
 now=$(date "+%m-%d %H:%M")
@@ -85,35 +120,42 @@ while read -r tag sec dev rpskw mask irqkw irqno aff; do
 	[ "$tag" = "netsteer" ] || continue
 	cur="$cur $sec=$mask"
 	want=$(uci -q get "netsteer.$sec.rps_cpus")
-	got=$(cat "/sys/class/net/$dev/queues/rx-0/rps_cpus" 2>/dev/null)
-	[ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ] && drift="$drift $sec.rps($want≠$got)"
+	got=$(cat "$NS_NET_SYS/class/net/$dev/queues/rx-0/rps_cpus" 2>/dev/null)
+	[ -n "$want" ] && [ -n "$got" ] && [ "$(norm_hex "$want")" != "$(norm_hex "$got")" ] && drift="$drift $sec.rps($want≠$got)"
 	if [ "$irqkw" = "irq" ] && [ -n "$irqno" ]; then
 		cur="$cur i$irqno=$aff"
 		want=$(uci -q get "netsteer.$sec.irq_cpus")
-		got=$(cat "/proc/irq/$irqno/smp_affinity" 2>/dev/null)
-		[ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ] && drift="$drift $sec.irq($want≠$got)"
+		got=$(cat "$NS_PROC/irq/$irqno/smp_affinity" 2>/dev/null)
+		[ -n "$want" ] && [ -n "$got" ] && [ "$(norm_hex "$want")" != "$(norm_hex "$got")" ] && drift="$drift $sec.irq($want≠$got)"
 	fi
 done < "$STATE_TXT"
 cur=$(echo "$cur" | sed 's/^ //')
 
 last=$(tail -1 "$HIST" 2>/dev/null | cut -d' ' -f3-)
-# v1.22.1: 变更双写 — /tmp 版 (重启即失) + /etc 持久版 (审计时间线; 仅 state 变化时写, 不伤 flash)
-if [ "$cur" != "$last" ]; then
+ns_note_state() {
+	[ "$cur" != "$last" ] || return 0
 	echo "$now $cur" >> "$HIST"
-	echo "$now $cur" >> /etc/netsteer/history.log 2>/dev/null
-fi
-# 轮转: 超 3000 行留尾部 1000
-[ "$(wc -l < "$HIST" 2>/dev/null)" -gt 3000 ] && tail -1000 "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
+	append_phist "$now $cur"
+	[ "$(wc -l < "$HIST" 2>/dev/null)" -gt 3000 ] && tail -1000 "$HIST" > "$HIST.tmp.$$" && mv "$HIST.tmp.$$" "$HIST"
+}
 
 if [ -n "$drift" ]; then
 	logger -t netsteer "漂移:$drift — 存证+重应用"
-	# 现场证据写持久层 (/etc/netsteer/incidents): 路由器重启后仍可查 (logread 本身是内存的)
-	INC_DIR=/etc/netsteer/incidents
+	# 重应用失败就不能记成已经自愈, 也不能把失败前的运行态写成新的成功状态。
+	"$NS_APPLY" >/dev/null 2>&1
+	_rc=$?
+	if [ "$_rc" -ne 0 ]; then
+		logger -t netsteer "漂移自愈失败:$drift"
+		exit $_rc
+	fi
+	ns_note_state
+	INC_DIR=$NS_INC_DIR
 	mkdir -p "$INC_DIR"
 	inc="$INC_DIR/incident-$(date "+%m%d-%H%M%S").log"
 	{ echo "== $now 漂移:$drift"; echo "== 同窗口系统日志 (找真凶)"; logread 2>/dev/null | tail -60; echo "== history 近 10 行"; tail -10 "$HIST"; } > "$inc"
-	logger -t netsteer "现场已存 $inc"
-	/usr/bin/netsteer-apply >/dev/null 2>&1
+	prune_incidents
 	logger -t netsteer "自愈完成"
+else
+	ns_note_state
 fi
 exit 0

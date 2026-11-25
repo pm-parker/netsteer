@@ -169,9 +169,9 @@ validate_data() {
 		;;
 	gameips.txt) # cat TAB CIDR
 		while IFS= read -r _line || [ -n "$_line" ]; do
-			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ \t]*//; s/[ \t]*$//')
+			_line=$(printf '%s' "$_line" | sed 's/#.*//' | sed 's/^[ 	]*//; s/[ 	]*$//')
 			[ -z "$_line" ] && continue
-			_val=$(printf '%s' "$_line" | sed 's/^[^\t ]*[\t ]*//')
+			_val=$(printf '%s' "$_line" | sed 's/^[^	 ]*[	 ]*//')
 			case "$_val" in *[!0-9./]*) _bad=$((_bad+1)); continue ;; esac
 			case "$_val" in *.*) _n=$((_n+1));; *) _bad=$((_bad+1)); continue ;; esac
 		done < "$_f"

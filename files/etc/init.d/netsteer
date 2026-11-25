@@ -3,9 +3,11 @@
 START=70
 
 start() {
+	# 只有这次显式启动成功, 才从停止态回到接管。失败时停止标记仍在。
+	/usr/bin/netsteer-apply sync-packet-steering active || return 1
 	# 无配置时自动探测接口生成 (已有配置则跳过)
 	/usr/bin/netsteer-detect >/dev/null 2>&1
-	/usr/bin/netsteer-apply >/dev/null 2>&1
+	/usr/bin/netsteer-apply >/dev/null 2>&1 || return 1
 	# 游戏通道标记规则 + 整形脚本一致性兜底 (内部自判 enabled, 关闭态零动作)
 	/usr/bin/netsteer-qos reapply >/dev/null 2>&1
 	# 不抢网设备标记规则兜底 (v1.19 D22, 内部自判列表非空)
@@ -18,6 +20,50 @@ start() {
 	else
 		(/usr/bin/netsteer-qos sense-daemon >/dev/null 2>&1 &)
 	fi
+	ns_cron_ensure
+}
+
+ns_cron_file() {
+	printf '%s\n' "${IPKG_INSTROOT:-}/etc/crontabs/root"
+}
+
+ns_cron_has() { # $1=file $2=命令路径。自定义参数也算用户已经有自己的行。
+	grep -E "(^|[[:space:]])$2([[:space:]]|$)" "$1" >/dev/null 2>&1
+}
+
+ns_cron_ensure() {
+	local f added=0
+	f=$(ns_cron_file)
+	mkdir -p "$(dirname "$f")" || return 1
+	touch "$f" || return 1
+	if ! ns_cron_has "$f" '/usr/bin/netsteer-check'; then
+		printf '%s\n' '* * * * * /usr/bin/netsteer-check' >> "$f" || return 1
+		added=1
+	fi
+	if ! ns_cron_has "$f" '/usr/bin/netsteer-feed'; then
+		printf '%s\n' '37 4 * * 1 /usr/bin/netsteer-feed auto' >> "$f" || return 1
+		added=1
+	fi
+	if [ "$added" = 1 ] && [ -z "${IPKG_INSTROOT:-}" ]; then
+		/etc/init.d/cron restart >/dev/null 2>&1 || true
+	fi
+}
+
+ns_cron_remove() {
+	local f tmp
+	f=$(ns_cron_file)
+	[ -f "$f" ] || return 0
+	tmp=$(mktemp "$(dirname "$f")/.crontab.XXXXXX") || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in
+			'* * * * * /usr/bin/netsteer-check'|'37 4 * * 1 /usr/bin/netsteer-feed auto')
+				continue
+				;;
+		esac
+		printf '%s\n' "$line" >> "$tmp" || { rm -f "$tmp"; return 1; }
+	done < "$f"
+	mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+	[ -z "${IPKG_INSTROOT:-}" ] && /etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
 boot() {
@@ -38,4 +84,31 @@ stop() {
 		[ -n "$dp" ] && kill "$dp" 2>/dev/null
 		rm -f /tmp/netsteer/sense.pid
 	fi
+	# 服务停掉后把原生 packet_steering 还回插件接管前的值。enable 不会调用 stop。
+	if [ -x /usr/bin/netsteer-apply ]; then
+		/usr/bin/netsteer-apply sync-packet-steering inactive || return 1
+	fi
+}
+
+# OpenWrt 23.05 / 24.10 的 rc.common enable() 不会调用 disable()。
+# 这里自行维护 rc.d 链接, 并只增删插件自己的两条 cron, 不动用户自定义行。
+enable() {
+	local err=1 name
+	name="$(basename "${initscript:-$0}")"
+	[ "${START:-}" ] && \
+		ln -sf "../init.d/$name" "${IPKG_INSTROOT:-}/etc/rc.d/S${START}${name##S[0-9][0-9]}" && \
+		err=0
+	[ "${STOP:-}" ] && \
+		ln -sf "../init.d/$name" "${IPKG_INSTROOT:-}/etc/rc.d/K${STOP}${name##K[0-9][0-9]}" && \
+		err=0
+	ns_cron_ensure || return 1
+	return $err
+}
+
+disable() {
+	local name
+	name="$(basename "${initscript:-$0}")"
+	rm -f "${IPKG_INSTROOT:-}"/etc/rc.d/S??$name
+	rm -f "${IPKG_INSTROOT:-}"/etc/rc.d/K??$name
+	ns_cron_remove || return 1
 }

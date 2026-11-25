@@ -15,6 +15,7 @@
 
 PS_ORIGIN="${NS_PS_ORIGIN:-/etc/netsteer/packet_steering.origin}"
 PS_STOPPED="${NS_PS_STOPPED:-/etc/netsteer/service.stopped}"
+PS_LOCK="${NS_PS_LOCK:-$(dirname "$PS_ORIGIN")/packet_steering.lock}"
 
 ps_get() {
 	if uci -q get network.globals.packet_steering >/dev/null 2>&1; then
@@ -48,31 +49,78 @@ ps_del() {
 	ps_commit || return 1
 }
 
-ps_save_once() {
-	[ -s "$PS_ORIGIN" ] && return 0
-	dir=$(dirname "$PS_ORIGIN")
-	mkdir -p "$dir" || return 1
-	[ -d "$dir" ] || return 1
-	tmp=$(mktemp "$dir/.packet_steering.XXXXXX") || return 1
-	if cur=$(ps_get); then
-		printf 'set\n%s\n' "$cur" > "$tmp" || { rm -f "$tmp"; return 1; }
-	else
-		printf 'absent\n' > "$tmp" || { rm -f "$tmp"; return 1; }
-	fi
-	mv -f "$tmp" "$PS_ORIGIN" || { rm -f "$tmp"; return 1; }
-	[ -s "$PS_ORIGIN" ] || return 1
+# 快照必须是普通文件且格式完整。符号链接不打开, 避免读到任意目标。
+ps_origin_kind() {
+	[ -L "$PS_ORIGIN" ] && return 1
+	[ -f "$PS_ORIGIN" ] || return 1
+	_n=$(wc -l < "$PS_ORIGIN" | tr -d ' ')
+	_a=$(sed -n '1p' "$PS_ORIGIN")
+	_b=$(sed -n '2p' "$PS_ORIGIN")
+	case "$_a" in
+		set|stopping|stopped)
+			[ "$_n" -eq 2 ] || return 1
+			case "$_b" in ''|*[!0-9]*) return 1 ;; esac
+			;;
+		absent|stopping-absent|stopped-absent)
+			[ "$_n" -eq 1 ] || return 1
+			;;
+		*) return 1 ;;
+	esac
+	printf '%s\n' "$_a"
 }
 
-ps_restore() {
-	[ -f "$PS_ORIGIN" ] || return 0
-	kind=$(sed -n '1p' "$PS_ORIGIN")
-	val=$(sed -n '2p' "$PS_ORIGIN")
-	if [ "$kind" = "absent" ]; then
-		ps_del || return 1
+ps_write_origin() {
+	[ -L "$PS_ORIGIN" ] && return 1
+	dir=$(dirname "$PS_ORIGIN")
+	mkdir -p "$dir" || return 1
+	[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+	tmp=$(mktemp "$dir/.packet_steering.XXXXXX") || return 1
+	if [ -n "${2:-}" ]; then
+		printf '%s\n%s\n' "$1" "$2" > "$tmp" || { rm -f "$tmp"; return 1; }
 	else
-		ps_set "$val" || return 1
+		printf '%s\n' "$1" > "$tmp" || { rm -f "$tmp"; return 1; }
 	fi
-	rm -f "$PS_ORIGIN" || return 1
+	mv -f "$tmp" "$PS_ORIGIN" || { rm -f "$tmp"; return 1; }
+	ps_origin_kind >/dev/null || return 1
+}
+
+ps_save_once() {
+	if [ -L "$PS_ORIGIN" ]; then
+		return 1
+	fi
+	if [ -e "$PS_ORIGIN" ]; then
+		ps_origin_kind >/dev/null || return 1
+		return 0
+	fi
+	if cur=$(ps_get); then
+		ps_write_origin set "$cur" || return 1
+	else
+		ps_write_origin absent || return 1
+	fi
+}
+
+ps_restore_from_origin() {
+	kind=$(ps_origin_kind) || return 1
+	val=$(sed -n '2p' "$PS_ORIGIN")
+	case "$kind" in
+		set|stopping|stopped)
+			ps_set "$val" || return 1
+			;;
+		absent|stopping-absent|stopped-absent)
+			ps_del || return 1
+			;;
+		*) return 1 ;;
+	esac
+}
+
+ps_note_stopping() {
+	kind=$(ps_origin_kind) || return 1
+	val=$(sed -n '2p' "$PS_ORIGIN")
+	case "$kind" in
+		set|stopping|stopped) ps_write_origin stopping "$val" || return 1 ;;
+		absent|stopping-absent|stopped-absent) ps_write_origin stopping-absent || return 1 ;;
+		*) return 1 ;;
+	esac
 }
 
 ps_mark_stopped() {
@@ -84,9 +132,23 @@ ps_mark_stopped() {
 	mv -f "$tmp" "$PS_STOPPED" || { rm -f "$tmp"; return 1; }
 }
 
+ps_hold() {
+	[ -f "$PS_STOPPED" ] && [ ! -L "$PS_STOPPED" ] && return 0
+	if [ -L "$PS_ORIGIN" ]; then
+		return 0
+	fi
+	if [ -e "$PS_ORIGIN" ]; then
+		kind=$(ps_origin_kind) || return 0
+		case "$kind" in
+			stopping|stopping-absent|stopped|stopped-absent) return 0 ;;
+		esac
+	fi
+	return 1
+}
+
 ps_force_off() {
-	# 服务已 stop: 自动 apply/hotplug/check 不得再次关掉 packet_steering
-	[ -f "$PS_STOPPED" ] && return 0
+	# 停止中或已停止: 自动路径不得再把 packet_steering 写成 0
+	ps_hold && return 0
 	ps_save_once || return 1
 	cur=$(ps_get 2>/dev/null || true)
 	if [ "$cur" != "0" ]; then
@@ -95,19 +157,84 @@ ps_force_off() {
 	fi
 }
 
+ps_stop() {
+	if [ -L "$PS_ORIGIN" ] || { [ -e "$PS_ORIGIN" ] && ! ps_origin_kind >/dev/null; }; then
+		return 1
+	fi
+	if [ ! -e "$PS_ORIGIN" ] && [ ! -L "$PS_ORIGIN" ]; then
+		if cur=$(ps_get); then
+			ps_write_origin stopped "$cur" || return 1
+		else
+			ps_write_origin stopped-absent || return 1
+		fi
+	else
+		ps_note_stopping || return 1
+		ps_restore_from_origin || return 1
+	fi
+	ps_mark_stopped || return 1
+	rm -f "$PS_ORIGIN" || return 1
+}
+
+ps_start() {
+	if [ -L "$PS_ORIGIN" ] || { [ -e "$PS_ORIGIN" ] && ! ps_origin_kind >/dev/null; }; then
+		return 1
+	fi
+	if [ -e "$PS_ORIGIN" ]; then
+		kind=$(ps_origin_kind) || return 1
+		val=$(sed -n '2p' "$PS_ORIGIN")
+		case "$kind" in
+			absent|stopping-absent|stopped-absent) remember=absent ;;
+			*) remember="$val" ;;
+		esac
+	else
+		if cur=$(ps_get); then
+			remember="$cur"
+		else
+			remember=absent
+		fi
+	fi
+	if [ ! -e "$PS_ORIGIN" ] && [ ! -L "$PS_ORIGIN" ]; then
+		if [ "$remember" = "absent" ]; then
+			ps_write_origin absent || return 1
+		else
+			ps_write_origin set "$remember" || return 1
+		fi
+	fi
+	ps_set 0 || return 1
+	case "$(ps_origin_kind)" in
+		stopping|stopped) ps_write_origin set "$remember" || return 1 ;;
+		stopping-absent|stopped-absent) ps_write_origin absent || return 1 ;;
+	esac
+	rm -f "$PS_STOPPED" || return 1
+}
+
+ps_with_lock() {
+	if [ -L "$PS_LOCK" ]; then
+		return 1
+	fi
+	dir=$(dirname "$PS_LOCK")
+	if [ -L "$dir" ]; then
+		return 1
+	fi
+	mkdir -p "$dir" || return 1
+	[ -d "$dir" ] || return 1
+	command -v flock >/dev/null 2>&1 || return 1
+	exec 9>>"$PS_LOCK" || return 1
+	if [ -L "$PS_LOCK" ]; then
+		return 1
+	fi
+	flock -w "${NS_PS_LOCK_WAIT:-20}" 9 || return 1
+	"$@"
+	_rc=$?
+	flock -u 9 2>/dev/null || true
+	return $_rc
+}
+
 if [ "${1:-}" = "sync-packet-steering" ]; then
 	case "${2:-}" in
-		active)
-			rm -f "$PS_STOPPED" || exit 1
-			ps_force_off || exit 1
-			;;
-		auto)
-			ps_force_off || exit 1
-			;;
-		inactive)
-			ps_restore || exit 1
-			ps_mark_stopped || exit 1
-			;;
+		active) ps_with_lock ps_start || exit 1 ;;
+		auto) ps_with_lock ps_force_off || exit 1 ;;
+		inactive) ps_with_lock ps_stop || exit 1 ;;
 		*) echo "Usage: netsteer-apply sync-packet-steering active|auto|inactive" >&2; exit 1 ;;
 	esac
 	exit 0
@@ -207,12 +334,10 @@ config_load netsteer
 config_get enabled state enabled 1
 # 服务 stop 之后保持已恢复的 packet_steering, 直到 init start 明确清掉停止标记。
 # 接管态才压成 0; 快照写失败则不改配置。禁用 / clear 在服务仍运行时按快照恢复。
-if [ -f "$PS_STOPPED" ]; then
-	:
-elif [ "$enabled" = "1" ] && [ "$MODE" != "clear" ]; then
-	ps_force_off || exit 1
+if [ "$enabled" = "1" ] && [ "$MODE" != "clear" ]; then
+	ps_with_lock ps_force_off || exit 1
 else
-	ps_restore || exit 1
+	ps_with_lock ps_stop || exit 1
 fi
 # clear 模式不受 enabled 开关限制 (否则 off 模式在禁用态下静默不生效)
 [ "$enabled" = "1" ] || [ "$MODE" = "clear" ] || { log "disabled in uci, skip"; exit 0; }

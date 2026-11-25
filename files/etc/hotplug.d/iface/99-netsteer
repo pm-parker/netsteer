@@ -3,7 +3,8 @@
 [ "$ACTION" = ifup ] || exit 0
 case "$INTERFACE" in
 	wan|pppoe-wan|lan)
-		/usr/bin/netsteer-apply >/dev/null 2>&1 &
+		# 保持异步。退出码不回传到 hotplug; 失败只记日志。
+		( /usr/bin/netsteer-apply >/dev/null 2>&1 || logger -t netsteer "hotplug apply 失败" ) &
 		/usr/bin/netsteer-qos reapply >/dev/null 2>&1 &
 		/usr/bin/netsteer-bulk reapply >/dev/null 2>&1 &
 		;;

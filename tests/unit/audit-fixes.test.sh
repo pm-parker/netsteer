@@ -80,7 +80,7 @@ has "check feed 恢复同步拷贝 manifest.tsv" 'manifest\.tsv' "$FILES/usr/bin
 has "check 在 enabled=0 时跳过漂移自愈" 'netsteer\.state\.enabled' "$FILES/usr/bin/netsteer-check"
 has "check 在 mode=off 时跳过漂移自愈" 'netsteer\.scenario\.mode.*off' "$FILES/usr/bin/netsteer-check"
 has "check 对 incidents 目录做 20 份轮转" 'tail -n \+21' "$FILES/usr/bin/netsteer-check"
-has "check 对持久 history.log 做 2000/800 轮转" 'tail -800 /etc/netsteer/history\.log' "$FILES/usr/bin/netsteer-check"
+has "check 对持久 history.log 做 2000/800 轮转" 'tail -800 "\$NS_HISTORY"' "$FILES/usr/bin/netsteer-check"
 
 # ---- 5. netsteer-apply 原子写 + packet_steering 冲突处理 ----
 has "apply state.json 临时文件含 PID" 'STATE_TMP=.*\$\$' "$FILES/usr/bin/netsteer-apply"

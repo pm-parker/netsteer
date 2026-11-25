@@ -46,6 +46,7 @@ grep -q '99-netsteer' "$ROOT/scripts/build-apk.sh" && grep -q '755' "$ROOT/scrip
 # ---------- 2. packet_steering: 开启时置 0, 关闭时按原值恢复; 重复 apply 不把 0 写成原值 ----------
 export UCI_ROOT="$WORK/uci"
 export NS_PS_ORIGIN="$WORK/ps.origin"
+export NS_PS_STOPPED="$WORK/svc.stopped"
 mkdir -p "$UCI_ROOT"
 cat > "$WORK/bin/uci" <<'EOF'
 #!/bin/sh
@@ -81,6 +82,22 @@ case "$cmd" in
     printf 'delete %s\n' "$1" >> "$root/.log"
     ;;
   commit)
+    if [ -n "${UCI_PAUSE_COMMIT:-}" ]; then
+      # 冻结本进程已暂存的值, 停在提交前, 让另一个进程先完成自己的提交。
+      mkdir -p "$UCI_PAUSE_COMMIT.priv"
+      rm -rf "$UCI_PAUSE_COMMIT.priv"/*
+      cp -a "$stage"/. "$UCI_PAUSE_COMMIT.priv"/ 2>/dev/null || true
+      touch "$UCI_PAUSE_COMMIT.staged"
+      i=0
+      while [ ! -f "$UCI_PAUSE_COMMIT.go" ]; do
+        i=$((i+1))
+        [ "$i" -gt 200 ] && exit 1
+        sleep 0.05
+      done
+      rm -rf "$stage"
+      mkdir -p "$stage"
+      cp -a "$UCI_PAUSE_COMMIT.priv"/. "$stage"/ 2>/dev/null || true
+    fi
     [ "$UCI_COMMIT_FAIL" = 1 ] && exit 1
     for t in "$stage"/*.deleted; do
       [ -f "$t" ] || continue
@@ -315,6 +332,111 @@ export UCI_COMMIT_FAIL
 sh "$ROOT/files/usr/bin/netsteer-mode" sqm-opts-sync off wan >/dev/null 2>&1; RC=$?
 [ "$RC" -eq 0 ] && [ ! -f "$UCI_ROOT/sqm.wan.iqdisc_opts" ] && [ ! -f "$NS_SQM_ORIGIN" ] \
 	&& ok "SQM 重试关闭后回到启用前的缺失" || nok "SQM 重试未回到缺失 rc=$RC"
+
+# ---------- 6. 前提不成立: 入口标记和分开的恢复/标记步骤挡不住交错提交 ----------
+# active 在 commit 前停住; inactive 完成恢复并打上停止标记; active 再提交自己暂存的 0。
+export NS_PS_ORIGIN="$WORK/ps.origin"
+export NS_PS_STOPPED="$WORK/svc.stopped"
+rm -f "$NS_PS_ORIGIN" "$NS_PS_STOPPED"
+rm -rf "$UCI_ROOT/.stage"
+printf '1' > "$UCI_ROOT/network.globals.packet_steering"
+PAUSE="$WORK/pause-commit"
+rm -rf "$PAUSE.priv" "$PAUSE.staged" "$PAUSE.go"
+# 第一次接管在把 0 提交出去之前停下。
+UCI_PAUSE_COMMIT="$PAUSE" "$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/tmp/active.out 2>&1 &
+APID=$!
+i=0
+while [ ! -f "$PAUSE.staged" ] && [ "$i" -lt 50 ]; do i=$((i+1)); sleep 0.05; done
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering inactive >/tmp/inactive.out 2>&1 &
+IPID=$!
+sleep 0.3
+if kill -0 "$IPID" 2>/dev/null; then
+	ok "inactive 在 active 提交完成前不能结束"
+else
+	nok "inactive 在 active 持有转换时已经结束"
+fi
+touch "$PAUSE.go"
+wait "$APID"; ARC=$?
+wait "$IPID"; IRC=$?
+BAD=0
+[ "$(ps_val)" = "0" ] && [ -f "$NS_PS_STOPPED" ] && [ ! -f "$NS_PS_ORIGIN" ] && BAD=1
+[ "$BAD" = 0 ] && [ "$(ps_val)" = "1" ] && [ -f "$NS_PS_STOPPED" ] \
+	&& ok "交错 active/inactive 后持久值仍是原值 1 且处于停止" \
+	|| nok "交错后状态被破坏 val=$(ps_val) stopped=$([ -f "$NS_PS_STOPPED" ] && echo y) snap=$([ -f "$NS_PS_ORIGIN" ] && echo y) arc=$ARC irc=$IRC"
+unset UCI_PAUSE_COMMIT
+
+# 停止标记写失败: 快照必须还在, 随后的 auto 不得把原值再收成 0
+for orig in 1 0 ABSENT; do
+	rm -f "$NS_PS_ORIGIN" "$NS_PS_STOPPED"
+	rm -rf "$UCI_ROOT/.stage" "$UCI_ROOT/network.globals.packet_steering"
+	if [ "$orig" = "ABSENT" ]; then
+		:
+	else
+		printf '%s' "$orig" > "$UCI_ROOT/network.globals.packet_steering"
+	fi
+	"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1 || true
+	MARKBLOCK="$WORK/mark-$orig"
+	printf 'x' > "$MARKBLOCK"
+	NS_PS_STOPPED="$MARKBLOCK/stopped" "$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering inactive >/dev/null 2>&1; RC=$?
+	[ "$RC" -ne 0 ] && [ -s "$NS_PS_ORIGIN" ] && ok "原值 $orig 标记失败仍保留快照" || nok "原值 $orig 标记失败丢快照 rc=$RC"
+	NS_PS_STOPPED="$MARKBLOCK/stopped" "$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering auto >/dev/null 2>&1; RC=$?
+	[ "$RC" -eq 0 ] && [ -s "$NS_PS_ORIGIN" ] && ok "原值 $orig 标记失败后 auto 不接管" || nok "原值 $orig auto 在失败停止后仍接管 rc=$RC snap=$([ -s "$NS_PS_ORIGIN" ] && echo y)"
+done
+export NS_PS_STOPPED="$WORK/svc.stopped"
+
+# 显式 start 失败不得清掉停止标记
+rm -f "$NS_PS_ORIGIN" "$NS_PS_STOPPED"
+rm -rf "$UCI_ROOT/.stage"
+printf '1' > "$UCI_ROOT/network.globals.packet_steering"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1 || true
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering inactive >/dev/null 2>&1 || true
+export UCI_COMMIT_FAIL=1
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && [ -f "$NS_PS_STOPPED" ] && [ "$(ps_val)" = "1" ] \
+	&& ok "失败的 start 仍保持停止且持久值不变" || nok "失败 start 破坏停止 rc=$RC val=$(ps_val) mark=$([ -f "$NS_PS_STOPPED" ] && echo y)"
+unset UCI_COMMIT_FAIL
+export UCI_COMMIT_FAIL
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering auto >/dev/null 2>&1 || true
+[ "$(ps_val)" = "1" ] && [ -f "$NS_PS_STOPPED" ] && ok "失败 start 之后 auto 仍不接管" || nok "失败 start 后 auto 接管了 val=$(ps_val)"
+
+# 快照是符号链接或内容损坏时不跟随、不改配置
+SECRET="$WORK/secret"
+printf 'SECRET\n' > "$SECRET"
+rm -f "$NS_PS_ORIGIN"
+ln -s "$SECRET" "$NS_PS_ORIGIN"
+printf '1' > "$UCI_ROOT/network.globals.packet_steering"
+rm -rf "$UCI_ROOT/.stage"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && [ "$(ps_val)" = "1" ] && [ "$(cat "$SECRET")" = "SECRET" ] && [ -L "$NS_PS_ORIGIN" ] \
+	&& ok "符号链接快照被拒绝且不读目标" || nok "符号链接快照未被拒绝 rc=$RC val=$(ps_val)"
+rm -f "$NS_PS_ORIGIN"
+printf 'set\n' > "$NS_PS_ORIGIN"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && [ "$(ps_val)" = "1" ] && [ "$(cat "$NS_PS_ORIGIN")" = "set" ] \
+	&& ok "截断快照被拒绝且原文件保留" || nok "截断快照未被拒绝 rc=$RC val=$(ps_val)"
+printf 'nope\n' > "$NS_PS_ORIGIN"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && [ "$(ps_val)" = "1" ] && ok "非法快照被拒绝" || nok "非法快照未被拒绝 rc=$RC val=$(ps_val)"
+rm -f "$NS_PS_ORIGIN"
+
+# check 漂移时 apply 失败不得返回 0, 也不得把失败状态写成自愈成功
+CHK="$WORK/check-home"
+mkdir -p "$CHK/sys/class/net/wan/queues/rx-0" "$CHK/inc" "$CHK/state"
+printf '0\n' > "$CHK/sys/class/net/wan/queues/rx-0/rps_cpus"
+printf 'netsteer wan wan rps f\n' > "$CHK/state/state.txt"
+printf 'f' > "$UCI_ROOT/netsteer.wan.rps_cpus"
+printf '1' > "$UCI_ROOT/netsteer.state.enabled"
+cat > "$WORK/bin/apply-fail" <<'EOF'
+#!/bin/sh
+exit 7
+EOF
+chmod 755 "$WORK/bin/apply-fail"
+NS_STATE_DIR="$CHK/state" NS_NET_SYS="$CHK/sys" NS_INC_DIR="$CHK/inc" NS_HISTORY="$CHK/history.log" \
+	NS_APPLY="$WORK/bin/apply-fail" sh "$ROOT/files/usr/bin/netsteer-check" >/tmp/check.out 2>&1; RC=$?
+[ "$RC" -eq 7 ] && ok "check 把 apply 失败原样返回" || nok "check 掩盖了 apply 失败 rc=$RC"
+[ ! -e "$CHK/inc" ] || [ -z "$(ls -A "$CHK/inc" 2>/dev/null)" ] && ok "apply 失败时不写自愈存证" || nok "apply 失败仍写了 incident"
+grep -q 'wan=0' "$CHK/history.log" 2>/dev/null && nok "apply 失败仍把 wan=0 记成新状态" || ok "apply 失败不记录成功状态"
+grep -q '自愈完成' /tmp/check.out && nok "apply 失败仍打印自愈完成" || ok "apply 失败不宣称自愈完成"
 
 echo "# pass $pass  fail $fail"
 [ "$fail" -eq 0 ]

@@ -280,7 +280,7 @@ case "${1:-}" in
 		uci set netsteer.state='netsteer' 2>/dev/null
 		uci set netsteer.state.enabled='1' 2>/dev/null
 		uci commit netsteer 2>/dev/null
-		netsteer-apply preset balanced >/dev/null 2>&1 || netsteer-apply auto >/dev/null 2>&1
+		"${NS_APPLY:-netsteer-apply}" preset balanced >/dev/null 2>&1 || "${NS_APPLY:-netsteer-apply}" auto >/dev/null 2>&1 || exit 1
 		ACTS="$ACTS steering:balanced"
 		uci set netsteer.scenario='scenario' 2>/dev/null
 		uci set netsteer.scenario.mode='steering'
@@ -292,7 +292,7 @@ case "${1:-}" in
 		uci set netsteer.state='netsteer' 2>/dev/null
 		uci set netsteer.state.enabled='1' 2>/dev/null
 		uci commit netsteer 2>/dev/null
-		/usr/bin/netsteer-apply >/dev/null 2>&1
+		"${NS_APPLY:-/usr/bin/netsteer-apply}" >/dev/null 2>&1 || exit 1
 		case "$1" in
 			standard)   ACTS=$(apply_standard) || exit $? ;;
 			p2p)        ACTS=$(apply_p2p "$@") || exit $? ;;

@@ -3,8 +3,8 @@
 START=70
 
 start() {
-	# 显式 start 才重新接管 packet_steering。stop 留下的标记必须先清掉。
-	rm -f "${NS_PS_STOPPED:-/etc/netsteer/service.stopped}" || return 1
+	# 只有这次显式启动成功, 才从停止态回到接管。失败时停止标记仍在。
+	/usr/bin/netsteer-apply sync-packet-steering active || return 1
 	# 无配置时自动探测接口生成 (已有配置则跳过)
 	/usr/bin/netsteer-detect >/dev/null 2>&1
 	/usr/bin/netsteer-apply >/dev/null 2>&1 || return 1

@@ -29,18 +29,73 @@ sqm_migrate() {
 	# v1.18 D13: 向导校准值覆盖 (环境变量 WIZ_DL/WIZ_UL, kbit 单位; 未设时不动现值)
 	[ -n "$WIZ_DL" ] && uci -q set sqm.$sec.download="$WIZ_DL"
 	[ -n "$WIZ_UL" ] && uci -q set sqm.$sec.upload="$WIZ_UL"
-	# CAKE NAT 感知按主机公平隔离: 仅在未自定义 iqdisc_opts/eqdisc_opts 时补齐默认项
-	if [ -z "$(uci -q get sqm.$sec.iqdisc_opts 2>/dev/null)" ]; then
-		uci set sqm.$sec.qdisc_advanced='1'
-		uci set sqm.$sec.qdisc_really_really_advanced='1'
-		uci set sqm.$sec.iqdisc_opts='nat dual-dsthost'
-	fi
-	if [ -z "$(uci -q get sqm.$sec.eqdisc_opts 2>/dev/null)" ]; then
-		uci set sqm.$sec.qdisc_advanced='1'
-		uci set sqm.$sec.qdisc_really_really_advanced='1'
-		uci set sqm.$sec.eqdisc_opts='nat dual-srchost'
-	fi
 	echo "$sec"
+}
+
+# 原本为空的 CAKE 队列参数只在 SQM 打开时补上, 关闭时按快照还回去。
+# 快照区分缺失 / 空字符串 / 显式值; 重复打开不得把补上的默认值当成用户配置。
+sqm_opts_origin() { printf '%s\n' "${NS_SQM_ORIGIN:-/etc/netsteer/sqm_queue_opts.origin}"; }
+
+sqm_field_state() { # $1=sec $2=key
+	if ! uci -q get "sqm.$1.$2" >/dev/null 2>&1; then
+		printf 'absent\n'
+		return 0
+	fi
+	_v=$(uci -q get "sqm.$1.$2" 2>/dev/null || true)
+	if [ -z "$_v" ]; then
+		printf 'empty\n'
+	else
+		printf 'value\t%s\n' "$_v"
+	fi
+}
+
+sqm_opts_capture() { # $1=sec
+	_f=$(sqm_opts_origin)
+	[ -f "$_f" ] && return 0
+	mkdir -p "$(dirname "$_f")" 2>/dev/null || return 0
+	{
+		for _k in qdisc_advanced qdisc_really_really_advanced iqdisc_opts eqdisc_opts; do
+			printf '%s\t%s\n' "$_k" "$(sqm_field_state "$1" "$_k")"
+		done
+	} > "$_f"
+}
+
+sqm_opts_fill() { # $1=sec  仅 SQM 开启时调用
+	sqm_opts_capture "$1"
+	_f=$(sqm_opts_origin)
+	_fill=0
+	for _k in iqdisc_opts eqdisc_opts; do
+		_line=$(awk -F '\t' -v k="$_k" '$1==k {print; exit}' "$_f")
+		_kind=$(printf '%s' "$_line" | awk -F '\t' '{print $2}')
+		if [ "$_kind" = "absent" ] || [ "$_kind" = "empty" ]; then
+			_fill=1
+			if [ "$_k" = "iqdisc_opts" ]; then
+				uci set "sqm.$1.iqdisc_opts='nat dual-dsthost'"
+			else
+				uci set "sqm.$1.eqdisc_opts='nat dual-srchost'"
+			fi
+		fi
+	done
+	if [ "$_fill" = 1 ]; then
+		uci set "sqm.$1.qdisc_advanced=1"
+		uci set "sqm.$1.qdisc_really_really_advanced=1"
+		uci commit sqm
+	fi
+}
+
+sqm_opts_restore() { # $1=sec  SQM 关闭时调用; 没有快照则不写
+	_f=$(sqm_opts_origin)
+	[ -f "$_f" ] || return 0
+	while IFS="$(printf '\t')" read -r _k _kind _val; do
+		[ -n "$_k" ] || continue
+		case "$_kind" in
+			absent) uci -q delete "sqm.$1.$_k" ;;
+			empty) uci set "sqm.$1.$_k=" ;;
+			value) uci set "sqm.$1.$_k=$_val" ;;
+		esac
+	done < "$_f"
+	uci commit sqm
+	rm -f "$_f"
 }
 
 # 游戏通道保护: 若游戏通道开启, 不覆写 netsteer-gaming.qos, 仅更新 prev_script 供关闭时恢复
@@ -59,6 +114,7 @@ apply_standard() {
 	local acts=""
 	local sec base_dl base_ul
 	sec=$(sqm_migrate)
+	sqm_opts_fill "$sec"
 	uci set sqm.$sec.enabled='1'
 	set_sqm_script_safe "$sec" 'simple.qos'
 	uci set sqm.$sec.qdisc='cake'
@@ -89,6 +145,7 @@ apply_p2p() {
 apply_throughput() {
 	local acts=""
 	sec=$(sqm_migrate)
+	sqm_opts_restore "$sec"
 	uci set sqm.$sec.enabled='0'
 	uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1
 	acts="$acts sqm:off"
@@ -104,6 +161,7 @@ apply_latency() {
 	local acts=""
 	local sec dl ul base_dl base_ul
 	sec=$(sqm_migrate)
+	sqm_opts_fill "$sec"
 	uci set sqm.$sec.enabled='1'
 	set_sqm_script_safe "$sec" 'layer_cake.qos'
 	uci set sqm.$sec.qdisc='cake'
@@ -139,6 +197,15 @@ dep_have() { # dep_have sqm_scripts|kmod_cake → rc 0=有
 	esac
 }
 
+if [ "${1:-}" = "sqm-opts-sync" ]; then
+	case "${2:-}" in
+		on) sqm_opts_fill "${3:-wan}" ;;
+		off) sqm_opts_restore "${3:-wan}" ;;
+		*) echo "Usage: netsteer-mode sqm-opts-sync on|off [section]" >&2; exit 2 ;;
+	esac
+	exit 0
+fi
+
 require_deps() { # 缺依赖拒绝应用 (防半应用: sqm_migrate 会凭空造配置)
 	case "$1" in
 		standard|p2p|latency)
@@ -158,10 +225,13 @@ apply_off() { # 停用全部 netsteer 优化, 回到系统默认 (供 A/B 基线
 	# SQM 关 (保留配置, 只停用)
 	local sec
 	sec=$(uci -q show sqm 2>/dev/null | grep -E '=queue$|=sqm$' | head -1 | cut -d. -f2 | cut -d= -f1)
-	if [ -n "$sec" ] && [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" != "0" ]; then
-		uci set sqm.$sec.enabled='0'
-		uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1
-		acts="$acts sqm:off"
+	if [ -n "$sec" ]; then
+		sqm_opts_restore "$sec"
+		if [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" != "0" ]; then
+			uci set sqm.$sec.enabled='0'
+			uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1
+			acts="$acts sqm:off"
+		fi
 	fi
 	# 分核清零 (RPS/XPS/IRQ 恢复全核默认)
 	if netsteer-apply clear >/dev/null 2>&1; then
@@ -193,8 +263,11 @@ case "${1:-}" in
 	steering)
 		ACTS=""
 		sec=$(uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d. -f2 | cut -d= -f1)
-		if [ -n "$sec" ] && [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" != "0" ]; then
-			uci set sqm.$sec.enabled='0'; uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1; ACTS="$ACTS sqm:off"
+		if [ -n "$sec" ]; then
+			sqm_opts_restore "$sec"
+			if [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" != "0" ]; then
+				uci set sqm.$sec.enabled='0'; uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1; ACTS="$ACTS sqm:off"
+			fi
 		fi
 		uci set netsteer.state='netsteer' 2>/dev/null
 		uci set netsteer.state.enabled='1' 2>/dev/null

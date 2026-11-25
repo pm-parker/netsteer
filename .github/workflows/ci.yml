@@ -29,6 +29,8 @@ jobs:
         run: sh tests/unit/feed.test.sh
       - name: Audit regression tests
         run: sh tests/unit/audit-fixes.test.sh
+      - name: PR6 review regressions
+        run: sh tests/unit/review-pr6.test.sh
       - name: JS syntax check
         run: node --check files/www/luci-static/resources/view/netsteer.js
       - name: JS lint (oxlint — unused 归零门禁)

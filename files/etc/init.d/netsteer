@@ -18,14 +18,31 @@ start() {
 	else
 		(/usr/bin/netsteer-qos sense-daemon >/dev/null 2>&1 &)
 	fi
-	# 幂等挂载 netsteer-check 每分钟 cron (apk 不执行安装 hooks, 由 init.d 负责兜底)
-	if [ -x /usr/bin/netsteer-check ]; then
-		mkdir -p /etc/crontabs
-		if ! grep -q '/usr/bin/netsteer-check' /etc/crontabs/root 2>/dev/null; then
-			echo '* * * * * /usr/bin/netsteer-check' >> /etc/crontabs/root 2>/dev/null
-			/etc/init.d/cron restart >/dev/null 2>&1
-		fi
-	fi
+	ns_cron_ensure
+}
+
+ns_cron_file() {
+	printf '%s\n' "${IPKG_INSTROOT:-}/etc/crontabs/root"
+}
+
+ns_cron_ensure() {
+	local f line added=0
+	f=$(ns_cron_file)
+	mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+	touch "$f" 2>/dev/null || return 0
+	line='* * * * * /usr/bin/netsteer-check'
+	grep -qxF "$line" "$f" 2>/dev/null || { echo "$line" >> "$f"; added=1; }
+	line='37 4 * * 1 /usr/bin/netsteer-feed auto'
+	grep -qxF "$line" "$f" 2>/dev/null || { echo "$line" >> "$f"; added=1; }
+	[ "$added" = 1 ] && { /etc/init.d/cron restart >/dev/null 2>&1 || true; }
+}
+
+ns_cron_remove() {
+	local f
+	f=$(ns_cron_file)
+	[ -f "$f" ] || return 0
+	sed -i '\|/usr/bin/netsteer-check|d; \|/usr/bin/netsteer-feed|d' "$f" 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
 boot() {
@@ -46,12 +63,33 @@ stop() {
 		[ -n "$dp" ] && kill "$dp" 2>/dev/null
 		rm -f /tmp/netsteer/sense.pid
 	fi
+	# 服务停掉后把原生 packet_steering 还回插件接管前的值。enable 不会调用 stop。
+	if [ -x /usr/bin/netsteer-apply ]; then
+		/usr/bin/netsteer-apply sync-packet-steering inactive >/dev/null 2>&1 || true
+	fi
+}
+
+# rc.common 的 enable() 会先调用 disable()。这里的 disable 若无条件删 cron,
+# enable 就会把刚挂上的 check/feed 行清掉。enable 自己补回链接和 cron。
+enable() {
+	NS_RC_FROM_ENABLE=1
+	disable
+	NS_RC_FROM_ENABLE=0
+	local name d
+	name=$(basename "${initscript:-$0}")
+	d="${IPKG_INSTROOT:-}/etc/rc.d"
+	mkdir -p "$d" 2>/dev/null || true
+	[ -n "${START:-}" ] && ln -sfn "../init.d/$name" "$d/S${START}${name}"
+	[ -n "${STOP:-}" ] && ln -sfn "../init.d/$name" "$d/K${STOP}${name}"
+	ns_cron_ensure
 }
 
 disable() {
-	default_disable 2>/dev/null || rm -f /etc/rc.d/S*netsteer /etc/rc.d/K*netsteer
-	if [ -f /etc/crontabs/root ] && grep -qE '/usr/bin/netsteer-(check|feed)' /etc/crontabs/root 2>/dev/null; then
-		sed -i '\|/usr/bin/netsteer-check|d; \|/usr/bin/netsteer-feed|d' /etc/crontabs/root 2>/dev/null
-		/etc/init.d/cron restart >/dev/null 2>&1
+	local name d
+	name=$(basename "${initscript:-$0}")
+	d="${IPKG_INSTROOT:-}/etc/rc.d"
+	rm -f "$d"/S[0-9][0-9]"$name" "$d"/K[0-9][0-9]"$name"
+	if [ "${NS_RC_FROM_ENABLE:-0}" != 1 ]; then
+		ns_cron_remove
 	fi
 }

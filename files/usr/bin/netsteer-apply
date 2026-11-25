@@ -8,6 +8,76 @@
 #   preset <name>  先写回 uci 再应用 (uci 仍是唯一真相, 避免 netsteer-check 判漂移反复摆震)
 #                  name: all / balanced (=全核, 同义) / off (=清零)
 #   auto           同 preset all (首装探测默认)
+#   sync-packet-steering active|inactive
+#     插件接管时把原生 packet_steering 置 0, 退出接管时按第一次看到的原值恢复
+#     (原本没有这个选项和显式 0/1/2 要分开; 重复接管不得把强制的 0 当成原值)
+
+PS_ORIGIN="${NS_PS_ORIGIN:-/etc/netsteer/packet_steering.origin}"
+
+ps_get() {
+	if uci -q get network.globals.packet_steering >/dev/null 2>&1; then
+		uci -q get network.globals.packet_steering
+		return 0
+	fi
+	if uci -q get network.@globals[0].packet_steering >/dev/null 2>&1; then
+		uci -q get network.@globals[0].packet_steering
+		return 0
+	fi
+	return 1
+}
+
+ps_set() {
+	uci -q set network.globals.packet_steering="$1" 2>/dev/null \
+		|| uci -q set network.@globals[0].packet_steering="$1" 2>/dev/null
+	uci -q commit network >/dev/null 2>&1 || uci -q commit network
+}
+
+ps_del() {
+	uci -q delete network.globals.packet_steering 2>/dev/null || true
+	uci -q delete network.@globals[0].packet_steering 2>/dev/null || true
+	uci -q commit network >/dev/null 2>&1 || uci -q commit network
+}
+
+ps_save_once() {
+	[ -f "$PS_ORIGIN" ] && return 0
+	mkdir -p "$(dirname "$PS_ORIGIN")" 2>/dev/null || return 0
+	if cur=$(ps_get); then
+		printf 'set\n%s\n' "$cur" > "$PS_ORIGIN"
+	else
+		printf 'absent\n' > "$PS_ORIGIN"
+	fi
+}
+
+ps_restore() {
+	[ -f "$PS_ORIGIN" ] || return 0
+	kind=$(sed -n '1p' "$PS_ORIGIN")
+	val=$(sed -n '2p' "$PS_ORIGIN")
+	if [ "$kind" = "absent" ]; then
+		ps_del
+	else
+		ps_set "$val"
+	fi
+	rm -f "$PS_ORIGIN"
+}
+
+ps_force_off() {
+	ps_save_once
+	cur=$(ps_get 2>/dev/null || true)
+	if [ "$cur" != "0" ]; then
+		ps_set 0
+		logger -t netsteer "已关闭原生 packet_steering, 防止与 netsteer 互相覆写 RPS/IRQ" 2>/dev/null || true
+	fi
+}
+
+if [ "${1:-}" = "sync-packet-steering" ]; then
+	case "${2:-}" in
+		active) ps_force_off ;;
+		inactive) ps_restore ;;
+		*) echo "Usage: netsteer-apply sync-packet-steering active|inactive" >&2; exit 1 ;;
+	esac
+	exit 0
+fi
+
 . /lib/functions.sh
 
 LOG_TAG=netsteer
@@ -100,19 +170,15 @@ config_load netsteer
 [ -n "$PRESET" ] && { preset_to_uci; config_load netsteer; }   # 重载: 后续 apply 读新值
 
 config_get enabled state enabled 1
+# 接管态 (enabled 且不是 clear) 才把原生 packet_steering 压成 0, 并记住第一次看到的原值。
+# 禁用 / clear / off 把原值写回去。重复接管不得用已经写成的 0 覆盖快照。
+if [ "$enabled" = "1" ] && [ "$MODE" != "clear" ]; then
+	ps_force_off
+else
+	ps_restore
+fi
 # clear 模式不受 enabled 开关限制 (否则 off 模式在禁用态下静默不生效)
 [ "$enabled" = "1" ] || [ "$MODE" = "clear" ] || { log "disabled in uci, skip"; exit 0; }
-
-# 避免与 OpenWrt 原生 packet_steering 打架: 只要 netsteer 处于接管态 (非 clear),
-# 原生 packet_steering=1/2 会在每次 firewall/interface 事件覆写 RPS/IRQ 引发持续漂移
-if [ "$MODE" != "clear" ]; then
-	ps_cur=$(uci -q get network.globals.packet_steering 2>/dev/null || uci -q get network.@globals[0].packet_steering 2>/dev/null || echo "")
-	if [ -n "$ps_cur" ] && [ "$ps_cur" != "0" ]; then
-		uci -q set network.globals.packet_steering='0' 2>/dev/null || uci -q set network.@globals[0].packet_steering='0' 2>/dev/null
-		uci -q commit network 2>/dev/null
-		log "已关闭原生 network.globals.packet_steering (原值=$ps_cur), 防止与 netsteer 互相覆写 RPS/IRQ"
-	fi
-fi
 
 # 全局 RFS
 config_get entries global rfs_sock_flow_entries 32768

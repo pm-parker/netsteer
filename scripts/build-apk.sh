@@ -4,6 +4,30 @@
 # Requires: curl, tar, python3 (for file permission fixups); downloads apk-tools-static on first run.
 set -euo pipefail
 
+# GitHub-hosted runners reject unprivileged user namespaces (unshare -r → EPERM).
+# sudo -n is the supported fallback: mkpkg itself runs as uid 0 so package metadata stays root:root.
+ns_root_runner() {
+  if [ "$(id -u)" -eq 0 ]; then
+    printf 'root\n'
+    return 0
+  fi
+  if command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
+    printf 'unshare\n'
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    printf 'sudo\n'
+    return 0
+  fi
+  printf 'fail\n'
+  return 1
+}
+
+if [ "${NS_PRINT_ROOT_RUNNER:-}" = 1 ]; then
+  ns_root_runner
+  exit $?
+fi
+
 VERSION="${1:-1.6.0}"
 ARCH="${2:-aarch64_generic}"
 # 防御: 版本串只允许安全字符 (会被插入 sed 表达式与包名; 斜杠等会导致 sed 分隔符提前终止)
@@ -15,7 +39,15 @@ esac
 NAME="luci-app-netsteer"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+NS_USED_SUDO=0
+ns_cleanup() {
+  if [ "$NS_USED_SUDO" = 1 ]; then
+    sudo -n rm -rf "$WORK"
+  else
+    rm -rf "$WORK"
+  fi
+}
+trap ns_cleanup EXIT
 OUT_DIR="$HERE/dist"
 mkdir -p "$OUT_DIR"
 
@@ -47,31 +79,32 @@ find "$PKGROOT" -name '*.js' -o -name '*.json' | xargs chmod 644
 #    非 root 直接打包会把构建机用户名写入包元数据, 在 OpenWrt 上安装后落成 nobody:nogroup (本地提权风险)。
 #    使用 Linux user namespace (unshare -r) 在内核层将当前用户映射为 0:0。
 OUT="$OUT_DIR/${NAME}-${VERSION}-${ARCH}.apk"
-mkpkg_cmd() {
-  "$MKPKG" mkpkg \
-    -F "$PKGROOT" \
-    -I "name:$NAME" -I "version:$VERSION" -I "arch:$ARCH" \
-    -I "description:NetSteer - steer network softirq/IRQ load across CPU cores with auto benchmark" \
-    -I "origin:$NAME" -I "maintainer:pm-parker" \
-    -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
-    -I "depends:luci-base" \
-    -o "$OUT"
+ns_as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
+    unshare -r "$@"
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    NS_USED_SUDO=1
+    sudo -n "$@"
+  else
+    echo "ERROR: non-root build requires 'unshare -r' or passwordless sudo so packaged files are owned by root:root" >&2
+    exit 1
+  fi
 }
-if [ "$(id -u)" -eq 0 ]; then
-  chown -R 0:0 "$PKGROOT"
-  mkpkg_cmd
-elif command -v unshare >/dev/null 2>&1 && unshare -r true 2>/dev/null; then
-  unshare -r "$MKPKG" mkpkg \
-    -F "$PKGROOT" \
-    -I "name:$NAME" -I "version:$VERSION" -I "arch:$ARCH" \
-    -I "description:NetSteer - steer network softirq/IRQ load across CPU cores with auto benchmark" \
-    -I "origin:$NAME" -I "maintainer:pm-parker" \
-    -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
-    -I "depends:luci-base" \
-    -o "$OUT"
-else
-  echo "ERROR: non-root build requires 'unshare -r' so packaged files are owned by root:root" >&2
-  exit 1
+ns_as_root chown -R 0:0 "$PKGROOT"
+ns_as_root "$MKPKG" mkpkg \
+  -F "$PKGROOT" \
+  -I "name:$NAME" -I "version:$VERSION" -I "arch:$ARCH" \
+  -I "description:NetSteer - steer network softirq/IRQ load across CPU cores with auto benchmark" \
+  -I "origin:$NAME" -I "maintainer:pm-parker" \
+  -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
+  -I "depends:luci-base" \
+  -o "$OUT"
+if [ "$NS_USED_SUDO" = 1 ]; then
+  sudo -n chown -R "$(id -u):$(id -g)" "$PKGROOT"
+  sudo -n chown "$(id -u):$(id -g)" "$OUT"
+  sudo -n chmod a+r "$OUT"
 fi
 
 echo ">> built $OUT ($(stat -c '%s' "$OUT") bytes)"
@@ -88,6 +121,9 @@ if [ -n "$BAD_OWN" ]; then
   echo "$BAD_OWN" | head -n 10 >&2
   exit 1
 fi
+HP="$WORK/check/etc/hotplug.d/iface/99-netsteer"
+HP_MODE=$(stat -c '%a' "$HP" 2>/dev/null || echo missing)
+[ "$HP_MODE" = "755" ] || { echo "ERROR: 99-netsteer mode is $HP_MODE, want 755" >&2; exit 1; }
 # sanity: js must be present and non-empty
 JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
 [ -s "$JS" ] || { echo "ERROR: package is missing netsteer.js — build is broken"; exit 1; }

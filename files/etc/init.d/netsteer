@@ -3,9 +3,11 @@
 START=70
 
 start() {
+	# 显式 start 才重新接管 packet_steering。stop 留下的标记必须先清掉。
+	rm -f "${NS_PS_STOPPED:-/etc/netsteer/service.stopped}" || return 1
 	# 无配置时自动探测接口生成 (已有配置则跳过)
 	/usr/bin/netsteer-detect >/dev/null 2>&1
-	/usr/bin/netsteer-apply >/dev/null 2>&1
+	/usr/bin/netsteer-apply >/dev/null 2>&1 || return 1
 	# 游戏通道标记规则 + 整形脚本一致性兜底 (内部自判 enabled, 关闭态零动作)
 	/usr/bin/netsteer-qos reapply >/dev/null 2>&1
 	# 不抢网设备标记规则兜底 (v1.19 D22, 内部自判列表非空)
@@ -25,23 +27,42 @@ ns_cron_file() {
 	printf '%s\n' "${IPKG_INSTROOT:-}/etc/crontabs/root"
 }
 
+ns_cron_has() { # $1=file $2=命令路径。自定义参数也算用户已经有自己的行。
+	grep -E "(^|[[:space:]])$2([[:space:]]|$)" "$1" >/dev/null 2>&1
+}
+
 ns_cron_ensure() {
-	local f line added=0
+	local f added=0
 	f=$(ns_cron_file)
-	mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
-	touch "$f" 2>/dev/null || return 0
-	line='* * * * * /usr/bin/netsteer-check'
-	grep -qxF "$line" "$f" 2>/dev/null || { echo "$line" >> "$f"; added=1; }
-	line='37 4 * * 1 /usr/bin/netsteer-feed auto'
-	grep -qxF "$line" "$f" 2>/dev/null || { echo "$line" >> "$f"; added=1; }
-	[ "$added" = 1 ] && { /etc/init.d/cron restart >/dev/null 2>&1 || true; }
+	mkdir -p "$(dirname "$f")" || return 1
+	touch "$f" || return 1
+	if ! ns_cron_has "$f" '/usr/bin/netsteer-check'; then
+		printf '%s\n' '* * * * * /usr/bin/netsteer-check' >> "$f" || return 1
+		added=1
+	fi
+	if ! ns_cron_has "$f" '/usr/bin/netsteer-feed'; then
+		printf '%s\n' '37 4 * * 1 /usr/bin/netsteer-feed auto' >> "$f" || return 1
+		added=1
+	fi
+	if [ "$added" = 1 ]; then
+		/etc/init.d/cron restart >/dev/null 2>&1 || true
+	fi
 }
 
 ns_cron_remove() {
-	local f
+	local f tmp
 	f=$(ns_cron_file)
 	[ -f "$f" ] || return 0
-	sed -i '\|/usr/bin/netsteer-check|d; \|/usr/bin/netsteer-feed|d' "$f" 2>/dev/null || true
+	tmp=$(mktemp "$(dirname "$f")/.crontab.XXXXXX") || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in
+			'* * * * * /usr/bin/netsteer-check'|'37 4 * * 1 /usr/bin/netsteer-feed auto')
+				continue
+				;;
+		esac
+		printf '%s\n' "$line" >> "$tmp" || { rm -f "$tmp"; return 1; }
+	done < "$f"
+	mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 	/etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
@@ -65,31 +86,29 @@ stop() {
 	fi
 	# 服务停掉后把原生 packet_steering 还回插件接管前的值。enable 不会调用 stop。
 	if [ -x /usr/bin/netsteer-apply ]; then
-		/usr/bin/netsteer-apply sync-packet-steering inactive >/dev/null 2>&1 || true
+		/usr/bin/netsteer-apply sync-packet-steering inactive || return 1
 	fi
 }
 
-# rc.common 的 enable() 会先调用 disable()。这里的 disable 若无条件删 cron,
-# enable 就会把刚挂上的 check/feed 行清掉。enable 自己补回链接和 cron。
+# OpenWrt 23.05 / 24.10 的 rc.common enable() 不会调用 disable()。
+# 这里自行维护 rc.d 链接, 并只增删插件自己的两条 cron, 不动用户自定义行。
 enable() {
-	NS_RC_FROM_ENABLE=1
-	disable
-	NS_RC_FROM_ENABLE=0
-	local name d
-	name=$(basename "${initscript:-$0}")
-	d="${IPKG_INSTROOT:-}/etc/rc.d"
-	mkdir -p "$d" 2>/dev/null || true
-	[ -n "${START:-}" ] && ln -sfn "../init.d/$name" "$d/S${START}${name}"
-	[ -n "${STOP:-}" ] && ln -sfn "../init.d/$name" "$d/K${STOP}${name}"
-	ns_cron_ensure
+	local err=1 name
+	name="$(basename "${initscript:-$0}")"
+	[ "${START:-}" ] && \
+		ln -sf "../init.d/$name" "${IPKG_INSTROOT:-}/etc/rc.d/S${START}${name##S[0-9][0-9]}" && \
+		err=0
+	[ "${STOP:-}" ] && \
+		ln -sf "../init.d/$name" "${IPKG_INSTROOT:-}/etc/rc.d/K${STOP}${name##K[0-9][0-9]}" && \
+		err=0
+	ns_cron_ensure || return 1
+	return $err
 }
 
 disable() {
-	local name d
-	name=$(basename "${initscript:-$0}")
-	d="${IPKG_INSTROOT:-}/etc/rc.d"
-	rm -f "$d"/S[0-9][0-9]"$name" "$d"/K[0-9][0-9]"$name"
-	if [ "${NS_RC_FROM_ENABLE:-0}" != 1 ]; then
-		ns_cron_remove
-	fi
+	local name
+	name="$(basename "${initscript:-$0}")"
+	rm -f "${IPKG_INSTROOT:-}"/etc/rc.d/S??$name
+	rm -f "${IPKG_INSTROOT:-}"/etc/rc.d/K??$name
+	ns_cron_remove || return 1
 }

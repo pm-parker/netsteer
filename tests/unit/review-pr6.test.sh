@@ -49,27 +49,53 @@ export NS_PS_ORIGIN="$WORK/ps.origin"
 mkdir -p "$UCI_ROOT"
 cat > "$WORK/bin/uci" <<'EOF'
 #!/bin/sh
+# 提交与暂存分开: get 先看暂存, 持久值在 UCI_ROOT 根上。
 [ "$1" = "-q" ] && shift
 cmd=$1; shift
+root="$UCI_ROOT"
+stage="$UCI_ROOT/.stage"
+mkdir -p "$root" "$stage"
 case "$cmd" in
   get)
-    [ -f "$UCI_ROOT/$1" ] || exit 1
-    cat "$UCI_ROOT/$1"
+    k=$1
+    if [ -f "$stage/$k.deleted" ]; then exit 1; fi
+    if [ -f "$stage/$k" ]; then cat "$stage/$k"; exit 0; fi
+    if [ -f "$root/$k" ]; then cat "$root/$k"; exit 0; fi
+    exit 1
     ;;
   set)
+    [ "$UCI_SET_FAIL" = 1 ] && exit 1
     spec=$1
     key=${spec%%=*}
     val=${spec#*=}
     val=${val#\'}; val=${val%\'}
-    mkdir -p "$UCI_ROOT"
-    printf '%s' "$val" > "$UCI_ROOT/$key"
-    printf 'set %s\n' "$key" >> "$UCI_ROOT/.log"
+    val=${val#\"}; val=${val%\"}
+    rm -f "$stage/$key.deleted"
+    printf '%s' "$val" > "$stage/$key"
+    printf 'set %s\n' "$key" >> "$root/.log"
     ;;
   delete)
-    rm -f "$UCI_ROOT/$1"
-    printf 'delete %s\n' "$1" >> "$UCI_ROOT/.log"
+    [ "$UCI_DELETE_FAIL" = 1 ] && exit 1
+    : > "$stage/$1.deleted"
+    rm -f "$stage/$1"
+    printf 'delete %s\n' "$1" >> "$root/.log"
     ;;
-  commit|show) ;;
+  commit)
+    [ "$UCI_COMMIT_FAIL" = 1 ] && exit 1
+    for t in "$stage"/*.deleted; do
+      [ -f "$t" ] || continue
+      base=$(basename "$t" .deleted)
+      rm -f "$root/$base"
+      rm -f "$t"
+    done
+    for s in "$stage"/*; do
+      [ -f "$s" ] || continue
+      base=$(basename "$s")
+      case "$base" in *.deleted) continue ;; esac
+      mv -f "$s" "$root/$base"
+    done
+    ;;
+  show) ;;
   *) exit 1 ;;
 esac
 EOF
@@ -117,46 +143,56 @@ sed -n '2p' "$NS_PS_ORIGIN" | grep -qx '0' && ok "原值 0 也被快照且保持
 "$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering inactive >/dev/null 2>&1 || true
 [ "$(ps_val)" = "0" ] && ok "原值 0 关闭后仍是 0" || nok "原值 0 关闭后变成 $(ps_val)"
 
-# ---------- 3. rc.common enable 会先 disable; enable 必须留下 cron, disable 必须去掉 ----------
+# ---------- 3. 官方 rc.common 的 enable 不调用 disable; cron 只按插件自己的行增删 ----------
+for fx in "$ROOT/tests/fixtures/openwrt-v24.10.4-rc.common" "$ROOT/tests/fixtures/openwrt-v23.05.5-rc.common"; do
+	awk '/^enable\(\)/,/^}/' "$fx" | grep -q 'disable' \
+		&& nok "官方 $(basename "$fx") enable 调用了 disable" \
+		|| ok "官方 $(basename "$fx") enable 不调用 disable"
+done
+awk '/^enable\(\)/,/^}/' "$ROOT/files/etc/init.d/netsteer" | grep -q '[[:space:]]disable' \
+	&& nok "init enable 仍调用 disable" \
+	|| ok "init enable 不调用 disable"
+
+rc_boot() {
+	fx=$1
+	act=$2
+	mkdir -p "$IPKG_INSTROOT/lib/functions" "$IPKG_INSTROOT/lib"
+	cat > "$IPKG_INSTROOT/lib/functions.sh" <<'EOF'
+list_contains() {
+	var=$1; str=$2; val=
+	eval "val=\"\${$var}\""
+	for i in $val; do [ "$i" = "$str" ] && return 0; done
+	return 1
+}
+EOF
+	: > "$IPKG_INSTROOT/lib/functions/service.sh"
+	mkdir -p "$IPKG_INSTROOT/lib/functions"
+	IPKG_INSTROOT="$IPKG_INSTROOT" sh "$fx" "$ROOT/files/etc/init.d/netsteer" "$act"
+}
 export IPKG_INSTROOT="$WORK/root"
-mkdir -p "$IPKG_INSTROOT/etc/crontabs" "$IPKG_INSTROOT/etc/rc.d" "$IPKG_INSTROOT/etc/init.d"
+mkdir -p "$IPKG_INSTROOT/etc/crontabs" "$IPKG_INSTROOT/etc/rc.d"
 CRON="$IPKG_INSTROOT/etc/crontabs/root"
 printf '%s\n' '0 1 * * * /usr/bin/other' > "$CRON"
-cat > "$WORK/rc.common" <<EOF
-#!/bin/sh
-initscript=\$1
-action=\${2:-}
-enable() {
-	disable
-	name=\$(basename "\$initscript")
-	[ -n "\$START" ] && ln -sfn "../init.d/\$name" "\$IPKG_INSTROOT/etc/rc.d/S\${START}\$name"
-	[ -n "\$STOP" ] && ln -sfn "../init.d/\$name" "\$IPKG_INSTROOT/etc/rc.d/K\${STOP}\$name"
-}
-disable() {
-	name=\$(basename "\$initscript")
-	rm -f "\$IPKG_INSTROOT/etc/rc.d"/S[0-9][0-9]"\$name" "\$IPKG_INSTROOT/etc/rc.d"/K[0-9][0-9]"\$name"
-}
-. "\$initscript"
-"\$action"
-EOF
-chmod 755 "$WORK/rc.common"
-sh "$WORK/rc.common" "$ROOT/files/etc/init.d/netsteer" enable
-grep -qxF '* * * * * /usr/bin/netsteer-check' "$CRON" && ok "enable 后保留 check cron" || nok "enable 后缺少 check cron: $(cat "$CRON")"
-grep -qxF '37 4 * * 1 /usr/bin/netsteer-feed auto' "$CRON" && ok "enable 后保留 feed cron" || nok "enable 后缺少 feed cron: $(cat "$CRON")"
-grep -qxF '0 1 * * * /usr/bin/other' "$CRON" && ok "enable 不删无关 cron" || nok "enable 动了无关 cron"
-[ -L "$IPKG_INSTROOT/etc/rc.d/S70netsteer" ] && ok "enable 建立 S70 链接" || nok "缺少 S70 链接"
-sh "$WORK/rc.common" "$ROOT/files/etc/init.d/netsteer" enable
-[ "$(grep -c '/usr/bin/netsteer-check' "$CRON")" = "1" ] && ok "重复 enable 不重复 check 行" || nok "check cron 重复: $(cat "$CRON")"
-[ "$(grep -c '/usr/bin/netsteer-feed' "$CRON")" = "1" ] && ok "重复 enable 不重复 feed 行" || nok "feed cron 重复: $(cat "$CRON")"
-sh "$WORK/rc.common" "$ROOT/files/etc/init.d/netsteer" disable
-grep -q '/usr/bin/netsteer-check' "$CRON" && nok "disable 后仍有 check cron" || ok "disable 移除 check cron"
-grep -q '/usr/bin/netsteer-feed' "$CRON" && nok "disable 后仍有 feed cron" || ok "disable 移除 feed cron"
+rc_boot "$ROOT/tests/fixtures/openwrt-v24.10.4-rc.common" enable
+grep -qxF '* * * * * /usr/bin/netsteer-check' "$CRON" && ok "enable 写入标准 check cron" || nok "enable 后缺少标准 check: $(cat "$CRON")"
+grep -qxF '37 4 * * 1 /usr/bin/netsteer-feed auto' "$CRON" && ok "enable 写入标准 feed cron" || nok "enable 后缺少标准 feed: $(cat "$CRON")"
+grep -qxF '0 1 * * * /usr/bin/other' "$CRON" && ok "enable 保留无关 cron" || nok "enable 动了无关 cron"
+[ -L "$IPKG_INSTROOT/etc/rc.d/S70netsteer" ] && ok "官方 enable 建立 S70 链接" || nok "缺少 S70 链接"
+rc_boot "$ROOT/tests/fixtures/openwrt-v23.05.5-rc.common" enable
+[ "$(grep -xcF '* * * * * /usr/bin/netsteer-check' "$CRON")" = "1" ] && ok "重复 enable 不重复标准 check" || nok "标准 check 重复: $(cat "$CRON")"
+[ "$(grep -xcF '37 4 * * 1 /usr/bin/netsteer-feed auto' "$CRON")" = "1" ] && ok "重复 enable 不重复标准 feed" || nok "标准 feed 重复: $(cat "$CRON")"
+rc_boot "$ROOT/tests/fixtures/openwrt-v24.10.4-rc.common" disable
+grep -qxF '* * * * * /usr/bin/netsteer-check' "$CRON" && nok "disable 后仍有标准 check" || ok "disable 移除标准 check"
+grep -qxF '37 4 * * 1 /usr/bin/netsteer-feed auto' "$CRON" && nok "disable 后仍有标准 feed" || ok "disable 移除标准 feed"
 grep -qxF '0 1 * * * /usr/bin/other' "$CRON" && ok "disable 保留无关 cron" || nok "disable 删了无关 cron"
-sh "$WORK/rc.common" "$ROOT/files/etc/init.d/netsteer" disable
-grep -qxF '0 1 * * * /usr/bin/other' "$CRON" && ok "重复 disable 仍保留无关 cron" || nok "重复 disable 损坏 crontab"
-sh "$WORK/rc.common" "$ROOT/files/etc/init.d/netsteer" enable
-[ "$(grep -c '/usr/bin/netsteer-check' "$CRON")" = "1" ] && [ "$(grep -c '/usr/bin/netsteer-feed' "$CRON")" = "1" ] \
-	&& ok "disable 后再 enable 恢复各一条 cron" || nok "再 enable 后 cron 异常: $(cat "$CRON")"
+printf '%s\n' '*/5 * * * * /usr/bin/netsteer-check --custom' '0 1 * * * /usr/bin/other' > "$CRON"
+rc_boot "$ROOT/tests/fixtures/openwrt-v24.10.4-rc.common" disable
+grep -qxF '*/5 * * * * /usr/bin/netsteer-check --custom' "$CRON" && ok "disable 保留用户自定义 check 行" || nok "disable 删了自定义 check: $(cat "$CRON")"
+rc_boot "$ROOT/tests/fixtures/openwrt-v24.10.4-rc.common" enable
+grep -qxF '*/5 * * * * /usr/bin/netsteer-check --custom' "$CRON" && ok "enable 保留用户自定义 check 行" || nok "enable 弄丢自定义 check: $(cat "$CRON")"
+grep -qxF '* * * * * /usr/bin/netsteer-check' "$CRON" && nok "已有自定义 check 时又加了标准行: $(cat "$CRON")" || ok "已有自定义 check 时不加标准 check"
+grep -qxF '37 4 * * 1 /usr/bin/netsteer-feed auto' "$CRON" && ok "没有自定义 feed 时仍写入标准 feed" || nok "缺少标准 feed: $(cat "$CRON")"
+[ "$(grep -c '/usr/bin/netsteer-check' "$CRON")" = "1" ] && ok "自定义场景只有一条 check" || nok "check 行数异常: $(cat "$CRON")"
 
 # ---------- 4. SQM 空项只在开启时补, 关闭时按缺失/空/显式值恢复 ----------
 export NS_SQM_ORIGIN="$WORK/sqm.origin"
@@ -210,6 +246,75 @@ awk '
   /^}/ {if(m){exit found?0:1}}
   m && /sqm_opts_restore/ {found=1}
 ' "$ROOT/files/usr/bin/netsteer-mode" && ok "throughput 关闭时走恢复" || nok "throughput 未调用 sqm_opts_restore"
+
+# ---------- 5. 提交失败不得丢掉快照; 目录/写失败不得改配置; stop 之后自动 apply 不再关 steering ----------
+export NS_PS_STOPPED="$WORK/svc.stopped"
+rm -f "$NS_PS_ORIGIN" "$NS_PS_STOPPED" "$UCI_ROOT/network.globals.packet_steering" "$UCI_ROOT/.log"
+rm -rf "$UCI_ROOT/.stage"
+printf '1' > "$UCI_ROOT/network.globals.packet_steering"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(ps_val)" = "0" ] && ok "失败注入前开启成功" || nok "失败注入前开启异常 rc=$RC val=$(ps_val)"
+export UCI_COMMIT_FAIL=1
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering inactive >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && ok "commit 失败时 inactive 非 0" || nok "commit 失败仍返回 0"
+[ "$(ps_val)" = "0" ] && ok "commit 失败时持久值仍是 0" || nok "commit 失败后持久值变成 $(ps_val)"
+sed -n '2p' "$NS_PS_ORIGIN" | grep -qx '1' && ok "commit 失败保留原值 1 的快照" || nok "commit 失败丢了快照: $(cat "$NS_PS_ORIGIN" 2>/dev/null)"
+unset UCI_COMMIT_FAIL
+export UCI_COMMIT_FAIL
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering inactive >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(ps_val)" = "1" ] && [ ! -f "$NS_PS_ORIGIN" ] \
+	&& ok "commit 恢复后重试写回 1 并删除快照" || nok "重试恢复失败 rc=$RC val=$(ps_val) snap=$(cat "$NS_PS_ORIGIN" 2>/dev/null)"
+
+# 服务停止后, 自动 apply 不再关掉 steering; 显式 active 才会再次接管
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1 || true
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering inactive >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(ps_val)" = "1" ] && [ -f "$NS_PS_STOPPED" ] \
+	&& ok "stop 恢复原值并留下停止标记" || nok "stop 状态异常 rc=$RC val=$(ps_val)"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering auto >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(ps_val)" = "1" ] && [ ! -f "$NS_PS_ORIGIN" ] \
+	&& ok "停止后 hotplug/apply/check 不再关闭 steering" || nok "停止后自动路径改了 steering val=$(ps_val) snap=$(ls "$NS_PS_ORIGIN" 2>/dev/null)"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(ps_val)" = "0" ] && [ ! -f "$NS_PS_STOPPED" ] \
+	&& ok "显式 start 后再次关闭 steering" || nok "显式 start 未重新接管 rc=$RC val=$(ps_val)"
+
+# 快照目录建不起来时不得改配置
+BLOCK="$WORK/not-a-dir"
+printf 'x' > "$BLOCK"
+export NS_PS_ORIGIN="$BLOCK/packet_steering.origin"
+rm -f "$NS_PS_STOPPED"
+printf '1' > "$UCI_ROOT/network.globals.packet_steering"
+rm -rf "$UCI_ROOT/.stage"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && [ "$(ps_val)" = "1" ] && [ ! -f "$NS_PS_ORIGIN" ] \
+	&& ok "快照目录失败时不改 packet_steering" || nok "目录失败仍改了配置 rc=$RC val=$(ps_val)"
+RODIR="$WORK/rodir"
+mkdir -p "$RODIR"
+chmod 555 "$RODIR"
+export NS_PS_ORIGIN="$RODIR/packet_steering.origin"
+"$ROOT/files/usr/bin/netsteer-apply" sync-packet-steering active >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && [ "$(ps_val)" = "1" ] \
+	&& ok "快照不可写时不改 packet_steering" || nok "不可写仍改了配置 rc=$RC val=$(ps_val)"
+chmod 755 "$RODIR"
+export NS_PS_ORIGIN="$WORK/ps.origin"
+
+# SQM: 开启期间改手动值, 关闭必须回到启用前, 而不是中间编辑
+export NS_SQM_ORIGIN="$WORK/sqm.origin"
+rm -f "$NS_SQM_ORIGIN" "$UCI_ROOT"/sqm.wan.* 
+rm -rf "$UCI_ROOT/.stage"
+sh "$ROOT/files/usr/bin/netsteer-mode" sqm-opts-sync on wan >/dev/null 2>&1 || true
+"$WORK/bin/uci" set "sqm.wan.iqdisc_opts=user-hack"
+"$WORK/bin/uci" commit
+sh "$ROOT/files/usr/bin/netsteer-mode" sqm-opts-sync on wan >/dev/null 2>&1 || true
+[ "$(cat "$UCI_ROOT/sqm.wan.iqdisc_opts" 2>/dev/null)" = "nat dual-dsthost" ] \
+	&& ok "SQM 开启期间托管项覆盖事后手动修改" || nok "托管项未覆盖手动修改: $(cat "$UCI_ROOT/sqm.wan.iqdisc_opts" 2>/dev/null)"
+export UCI_COMMIT_FAIL=1
+sh "$ROOT/files/usr/bin/netsteer-mode" sqm-opts-sync off wan >/dev/null 2>&1; RC=$?
+[ "$RC" -ne 0 ] && [ -f "$NS_SQM_ORIGIN" ] && ok "SQM commit 失败保留快照且非 0" || nok "SQM commit 失败丢快照或返回 0 rc=$RC"
+unset UCI_COMMIT_FAIL
+export UCI_COMMIT_FAIL
+sh "$ROOT/files/usr/bin/netsteer-mode" sqm-opts-sync off wan >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && [ ! -f "$UCI_ROOT/sqm.wan.iqdisc_opts" ] && [ ! -f "$NS_SQM_ORIGIN" ] \
+	&& ok "SQM 重试关闭后回到启用前的缺失" || nok "SQM 重试未回到缺失 rc=$RC"
 
 echo "# pass $pass  fail $fail"
 [ "$fail" -eq 0 ]

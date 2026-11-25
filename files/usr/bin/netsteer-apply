@@ -8,11 +8,13 @@
 #   preset <name>  先写回 uci 再应用 (uci 仍是唯一真相, 避免 netsteer-check 判漂移反复摆震)
 #                  name: all / balanced (=全核, 同义) / off (=清零)
 #   auto           同 preset all (首装探测默认)
-#   sync-packet-steering active|inactive
-#     插件接管时把原生 packet_steering 置 0, 退出接管时按第一次看到的原值恢复
-#     (原本没有这个选项和显式 0/1/2 要分开; 重复接管不得把强制的 0 当成原值)
+#   sync-packet-steering active|auto|inactive
+#     active: 显式 start, 清掉停止标记后把 packet_steering 置 0 并记住原值
+#     auto:   hotplug/check/apply, 服务已 stop 时不再改它
+#     inactive: 服务 stop, 提交成功后才按原值恢复并留下停止标记
 
 PS_ORIGIN="${NS_PS_ORIGIN:-/etc/netsteer/packet_steering.origin}"
+PS_STOPPED="${NS_PS_STOPPED:-/etc/netsteer/service.stopped}"
 
 ps_get() {
 	if uci -q get network.globals.packet_steering >/dev/null 2>&1; then
@@ -26,26 +28,39 @@ ps_get() {
 	return 1
 }
 
+ps_commit() {
+	uci commit network
+}
+
 ps_set() {
-	uci -q set network.globals.packet_steering="$1" 2>/dev/null \
-		|| uci -q set network.@globals[0].packet_steering="$1" 2>/dev/null
-	uci -q commit network >/dev/null 2>&1 || uci -q commit network
+	if ! uci set network.globals.packet_steering="$1"; then
+		uci set network.@globals[0].packet_steering="$1" || return 1
+	fi
+	ps_commit || return 1
 }
 
 ps_del() {
-	uci -q delete network.globals.packet_steering 2>/dev/null || true
-	uci -q delete network.@globals[0].packet_steering 2>/dev/null || true
-	uci -q commit network >/dev/null 2>&1 || uci -q commit network
+	uci delete network.globals.packet_steering 2>/dev/null
+	uci delete network.@globals[0].packet_steering 2>/dev/null
+	if ps_get >/dev/null 2>&1; then
+		return 1
+	fi
+	ps_commit || return 1
 }
 
 ps_save_once() {
-	[ -f "$PS_ORIGIN" ] && return 0
-	mkdir -p "$(dirname "$PS_ORIGIN")" 2>/dev/null || return 0
+	[ -s "$PS_ORIGIN" ] && return 0
+	dir=$(dirname "$PS_ORIGIN")
+	mkdir -p "$dir" || return 1
+	[ -d "$dir" ] || return 1
+	tmp=$(mktemp "$dir/.packet_steering.XXXXXX") || return 1
 	if cur=$(ps_get); then
-		printf 'set\n%s\n' "$cur" > "$PS_ORIGIN"
+		printf 'set\n%s\n' "$cur" > "$tmp" || { rm -f "$tmp"; return 1; }
 	else
-		printf 'absent\n' > "$PS_ORIGIN"
+		printf 'absent\n' > "$tmp" || { rm -f "$tmp"; return 1; }
 	fi
+	mv -f "$tmp" "$PS_ORIGIN" || { rm -f "$tmp"; return 1; }
+	[ -s "$PS_ORIGIN" ] || return 1
 }
 
 ps_restore() {
@@ -53,27 +68,47 @@ ps_restore() {
 	kind=$(sed -n '1p' "$PS_ORIGIN")
 	val=$(sed -n '2p' "$PS_ORIGIN")
 	if [ "$kind" = "absent" ]; then
-		ps_del
+		ps_del || return 1
 	else
-		ps_set "$val"
+		ps_set "$val" || return 1
 	fi
-	rm -f "$PS_ORIGIN"
+	rm -f "$PS_ORIGIN" || return 1
+}
+
+ps_mark_stopped() {
+	dir=$(dirname "$PS_STOPPED")
+	mkdir -p "$dir" || return 1
+	[ -d "$dir" ] || return 1
+	tmp=$(mktemp "$dir/.service.stopped.XXXXXX") || return 1
+	printf 'stopped\n' > "$tmp" || { rm -f "$tmp"; return 1; }
+	mv -f "$tmp" "$PS_STOPPED" || { rm -f "$tmp"; return 1; }
 }
 
 ps_force_off() {
-	ps_save_once
+	# 服务已 stop: 自动 apply/hotplug/check 不得再次关掉 packet_steering
+	[ -f "$PS_STOPPED" ] && return 0
+	ps_save_once || return 1
 	cur=$(ps_get 2>/dev/null || true)
 	if [ "$cur" != "0" ]; then
-		ps_set 0
+		ps_set 0 || return 1
 		logger -t netsteer "已关闭原生 packet_steering, 防止与 netsteer 互相覆写 RPS/IRQ" 2>/dev/null || true
 	fi
 }
 
 if [ "${1:-}" = "sync-packet-steering" ]; then
 	case "${2:-}" in
-		active) ps_force_off ;;
-		inactive) ps_restore ;;
-		*) echo "Usage: netsteer-apply sync-packet-steering active|inactive" >&2; exit 1 ;;
+		active)
+			rm -f "$PS_STOPPED" || exit 1
+			ps_force_off || exit 1
+			;;
+		auto)
+			ps_force_off || exit 1
+			;;
+		inactive)
+			ps_restore || exit 1
+			ps_mark_stopped || exit 1
+			;;
+		*) echo "Usage: netsteer-apply sync-packet-steering active|auto|inactive" >&2; exit 1 ;;
 	esac
 	exit 0
 fi
@@ -170,12 +205,14 @@ config_load netsteer
 [ -n "$PRESET" ] && { preset_to_uci; config_load netsteer; }   # 重载: 后续 apply 读新值
 
 config_get enabled state enabled 1
-# 接管态 (enabled 且不是 clear) 才把原生 packet_steering 压成 0, 并记住第一次看到的原值。
-# 禁用 / clear / off 把原值写回去。重复接管不得用已经写成的 0 覆盖快照。
-if [ "$enabled" = "1" ] && [ "$MODE" != "clear" ]; then
-	ps_force_off
+# 服务 stop 之后保持已恢复的 packet_steering, 直到 init start 明确清掉停止标记。
+# 接管态才压成 0; 快照写失败则不改配置。禁用 / clear 在服务仍运行时按快照恢复。
+if [ -f "$PS_STOPPED" ]; then
+	:
+elif [ "$enabled" = "1" ] && [ "$MODE" != "clear" ]; then
+	ps_force_off || exit 1
 else
-	ps_restore
+	ps_restore || exit 1
 fi
 # clear 模式不受 enabled 开关限制 (否则 off 模式在禁用态下静默不生效)
 [ "$enabled" = "1" ] || [ "$MODE" = "clear" ] || { log "disabled in uci, skip"; exit 0; }

@@ -447,7 +447,7 @@ grep -q 'netsteer-apply clear' "$WORK/snap_calls.log" \
 mkdir -p "$WORK/bench_dir"
 cat > "$MOCKBIN/fake-bench" <<'EOF'
 #!/bin/sh
-echo "run $$" >> "${MOCK_BENCH_LOG}"
+echo "run $$ ppid=$PPID t=$(date +%s.%N 2>/dev/null || date +%s) lock=$(ls -a "$(dirname "$MOCK_BENCH_LOG")/bench_dir/.bench.lock" 2>/dev/null | tr '\n' ',') pidf=$(cat "$(dirname "$MOCK_BENCH_LOG")/bench_dir/.bench.lock/pid" 2>/dev/null)" >> "${MOCK_BENCH_LOG}"
 sleep 0.5
 EOF
 chmod +x "$MOCKBIN/fake-bench"
@@ -461,7 +461,7 @@ sleep 0.8
 BENCH_CNT=$(wc -l < "$WORK/bench_runs.log" | tr -d ' ')
 [ "$BENCH_CNT" = "1" ] && [ ! -d "$WORK/bench_dir/.bench.lock" ] \
 	&& ok "bench bg 并发双调用仅执行 1 次且退出后自动释放目录锁" \
-	|| nok "bench bg 锁异常: runs=$BENCH_CNT lock_exists=$([ -e "$WORK/bench_dir/.bench.lock" ] && echo yes || echo no)"
+	|| nok "bench bg 锁异常: runs=$BENCH_CNT lock_exists=$([ -e "$WORK/bench_dir/.bench.lock" ] && echo yes || echo no) log=$(tr '\n' ';' < "$WORK/bench_runs.log")"
 
 # ==============================================================================
 # 8. init.d disable IPKG_INSTROOT 隔离 + 关键配置与构建门禁校验

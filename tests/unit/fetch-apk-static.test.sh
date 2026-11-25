@@ -1,5 +1,6 @@
 #!/bin/sh
 # fetch-apk-static 守卫: 当前包名解析、HTTP 错误必须失败、HTTP 200 的 HTML 不得当 gzip 解包。
+# 归档内的符号链接/硬链接不得被跟随, 也不得改动解压目录以外的内容或权限。
 # CI 的包校验与 release 校验都必须走 scripts/fetch-apk-static.sh, 不再钉死已下架的 edge URL。
 # 用法: sh tests/unit/fetch-apk-static.test.sh
 set -u
@@ -113,6 +114,10 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "ok" and path.endswith("apk-tools-static-3.0.11-r0.apk"):
             self._send(200, PKG, "application/octet-stream")
             return
+        if mode == "custom" and path.endswith("apk-tools-static-3.0.11-r0.apk"):
+            data = (port_path.parent / "custom.apk").read_bytes()
+            self._send(200, data, "application/octet-stream")
+            return
         if mode == "ok" and path.endswith("apk-tools-static-3.0.9-r0.apk"):
             self._send(200, PKG, "application/octet-stream")
             return
@@ -205,6 +210,141 @@ run_fetch "$DEST"
 printf '%s\n' "$OUT" | grep -q 'not a gzip' \
 	&& ok "HTTP 200 HTML 在解包前被拒绝" \
 	|| bad "HTTP 200 HTML 未被识别为非 gzip: $OUT"
+stop_server
+
+# 恶意 gzip tar。victim 在解压目录之外, 模式 0644, 内容固定。
+make_apk() {
+	python3 - "$1" "$2" "$WORK/custom.apk" <<'PY'
+import gzip, io, sys, tarfile
+kind, arg, out = sys.argv[1:]
+raw = io.BytesIO()
+with tarfile.open(fileobj=raw, mode="w") as tar:
+    if kind == "symlink":
+        info = tarfile.TarInfo("sbin/apk.static")
+        info.type = tarfile.SYMTYPE
+        info.linkname = arg
+        tar.addfile(info)
+    elif kind == "parent-symlink":
+        link = tarfile.TarInfo("sbin")
+        link.type = tarfile.SYMTYPE
+        link.linkname = arg
+        tar.addfile(link)
+        data = b"SHOULD-NOT-LAND\n"
+        reg = tarfile.TarInfo("sbin/apk.static")
+        reg.size = len(data)
+        reg.mode = 0o644
+        tar.addfile(reg, io.BytesIO(data))
+    elif kind == "hardlink":
+        info = tarfile.TarInfo("sbin/apk.static")
+        info.type = tarfile.LNKTYPE
+        info.linkname = arg
+        tar.addfile(info)
+    else:
+        sys.stderr.write("unknown kind\n")
+        sys.exit(2)
+with gzip.GzipFile(out, "wb", mtime=0) as gz:
+    gz.write(raw.getvalue())
+PY
+}
+
+victim_ok() {
+	V=$1
+	LABEL=$2
+	[ "$(stat -c '%a' "$V")" = "644" ] && ok "$LABEL 外部权限仍是 644" || bad "$LABEL 外部权限被改成 $(stat -c '%a' "$V")"
+	[ "$(stat -c '%h' "$V")" = "1" ] && ok "$LABEL 外部链接数仍是 1" || bad "$LABEL 外部链接数变成 $(stat -c '%h' "$V")"
+	cmp -s "$V" "$V.orig" && ok "$LABEL 外部内容未变" || bad "$LABEL 外部内容被改写"
+}
+
+# ---- 绝对符号链接: chmod 不得把外部文件 0644 改成 0755 ----
+V=$WORK/victim-abs
+printf 'SECRET-ABS\n' > "$V"
+cp "$V" "$V.orig"
+chmod 644 "$V"
+make_apk symlink "$V"
+start_server custom
+DEST=$WORK/link-abs
+run_fetch "$DEST"
+[ "$RC" -ne 0 ] && ok "绝对符号链接被拒绝" || bad "绝对符号链接应失败, rc=$RC out=$OUT"
+printf '%s\n' "$OUT" | grep -q 'refusing' \
+	&& ok "绝对符号链接有 refusing" \
+	|| bad "绝对符号链接未明确拒绝: $OUT"
+victim_ok "$V" "绝对符号链接"
+stop_server
+
+# ---- 指向父目录之外的相对符号链接 ----
+V=$WORK/victim-rel
+printf 'SECRET-REL\n' > "$V"
+cp "$V" "$V.orig"
+chmod 644 "$V"
+make_apk symlink "../../victim-rel"
+start_server custom
+DEST=$WORK/rel-dest
+run_fetch "$DEST"
+[ "$RC" -ne 0 ] && ok "父目录相对符号链接被拒绝" || bad "父目录相对符号链接应失败, rc=$RC out=$OUT"
+printf '%s\n' "$OUT" | grep -q 'refusing' \
+	&& ok "父目录相对符号链接有 refusing" \
+	|| bad "父目录相对符号链接未明确拒绝: $OUT"
+victim_ok "$V" "父目录相对符号链接"
+# 解压结果本身也不得是指向外部的符号链接
+if [ -L "$DEST/sbin/apk.static" ]; then
+	bad "父目录相对符号链接仍被物化到目标目录"
+else
+	ok "父目录相对符号链接未物化"
+fi
+stop_server
+
+# ---- 同路径父目录 sbin 本身是指向外部目录的符号链接, 且带普通文件成员 ----
+OUTDIR=$WORK/outside-parent
+mkdir -p "$OUTDIR"
+printf 'KEEP-PARENT\n' > "$OUTDIR/marker"
+cp "$OUTDIR/marker" "$OUTDIR/marker.orig"
+chmod 644 "$OUTDIR/marker"
+make_apk parent-symlink "$OUTDIR"
+start_server custom
+DEST=$WORK/parent-dest
+run_fetch "$DEST"
+[ "$RC" -ne 0 ] && ok "父目录符号链接归档被拒绝" || bad "父目录符号链接归档应失败, rc=$RC out=$OUT"
+printf '%s\n' "$OUT" | grep -q 'refusing' \
+	&& ok "父目录符号链接有 refusing" \
+	|| bad "父目录符号链接未明确拒绝: $OUT"
+[ "$(stat -c '%a' "$OUTDIR/marker")" = "644" ] && ok "父目录符号链接未改外部权限" || bad "父目录符号链接改了外部权限 $(stat -c '%a' "$OUTDIR/marker")"
+cmp -s "$OUTDIR/marker" "$OUTDIR/marker.orig" && ok "父目录符号链接未改外部内容" || bad "父目录符号链接改了外部内容"
+[ ! -e "$OUTDIR/apk.static" ] && ok "父目录符号链接未把文件写到外部" || bad "父目录符号链接把 apk.static 写到了外部目录"
+stop_server
+
+# ---- 硬链接成员: 不得连到外部 inode, 也不得改它的权限/内容 ----
+# GNU tar 1.35 会剥掉硬链接目标里的 / 和 ../ 并在对不上已有文件时失败;
+# 助手仍必须自己拒绝 LNKTYPE, 这样即使 tar 真的连上了也不会 chmod 外部文件。
+V=$WORK/victim-hard
+printf 'SECRET-HARD\n' > "$V"
+cp "$V" "$V.orig"
+chmod 644 "$V"
+make_apk hardlink "$V"
+start_server custom
+DEST=$WORK/hard-dest
+run_fetch "$DEST"
+[ "$RC" -ne 0 ] && ok "硬链接成员被拒绝" || bad "硬链接成员应失败, rc=$RC out=$OUT"
+printf '%s\n' "$OUT" | grep -q 'refusing' \
+	&& ok "硬链接成员有 refusing" \
+	|| bad "硬链接成员未明确拒绝: $OUT"
+victim_ok "$V" "硬链接"
+stop_server
+
+# ---- 目标目录里预先放好的 sbin 符号链接, 普通包也不得写穿 ----
+start_server ok
+OUTDIR=$WORK/outside-pre
+mkdir -p "$OUTDIR"
+printf 'KEEP-PRE\n' > "$OUTDIR/apk.static"
+cp "$OUTDIR/apk.static" "$OUTDIR/apk.static.orig"
+chmod 644 "$OUTDIR/apk.static"
+DEST=$WORK/pre-dest
+rm -rf "$DEST"
+mkdir -p "$DEST"
+ln -s "$OUTDIR" "$DEST/sbin"
+OUT=$("$FETCH" "$DEST" "http://127.0.0.1:$PORT" 2>&1) && RC=0 || RC=$?
+[ "$RC" -ne 0 ] && ok "预先存在的父目录符号链接被拒绝" || bad "预先存在的父目录符号链接应失败, rc=$RC out=$OUT"
+[ "$(stat -c '%a' "$OUTDIR/apk.static")" = "644" ] && ok "预先存在的符号链接未改外部权限" || bad "预先存在的符号链接改了外部权限"
+cmp -s "$OUTDIR/apk.static" "$OUTDIR/apk.static.orig" && ok "预先存在的符号链接未改外部内容" || bad "预先存在的符号链接改了外部内容"
 stop_server
 
 echo "# pass $PASS  fail $FAIL"

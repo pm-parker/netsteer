@@ -44,7 +44,7 @@ ns_cron_ensure() {
 		printf '%s\n' '37 4 * * 1 /usr/bin/netsteer-feed auto' >> "$f" || return 1
 		added=1
 	fi
-	if [ "$added" = 1 ]; then
+	if [ "$added" = 1 ] && [ -z "${IPKG_INSTROOT:-}" ]; then
 		/etc/init.d/cron restart >/dev/null 2>&1 || true
 	fi
 }
@@ -63,7 +63,7 @@ ns_cron_remove() {
 		printf '%s\n' "$line" >> "$tmp" || { rm -f "$tmp"; return 1; }
 	done < "$f"
 	mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
-	/etc/init.d/cron restart >/dev/null 2>&1 || true
+	[ -z "${IPKG_INSTROOT:-}" ] && /etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
 boot() {

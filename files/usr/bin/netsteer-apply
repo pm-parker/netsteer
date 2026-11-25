@@ -15,7 +15,13 @@
 
 PS_ORIGIN="${NS_PS_ORIGIN:-/etc/netsteer/packet_steering.origin}"
 PS_STOPPED="${NS_PS_STOPPED:-/etc/netsteer/service.stopped}"
-PS_LOCK="${NS_PS_LOCK:-$(dirname "$PS_ORIGIN")/packet_steering.lock}"
+if [ -n "${NS_PS_LOCK:-}" ]; then
+	PS_LOCK="$NS_PS_LOCK"
+elif [ -n "${NS_PS_ORIGIN:-}" ]; then
+	PS_LOCK="$(dirname "$PS_ORIGIN")/packet_steering.lock"
+else
+	PS_LOCK="/tmp/netsteer/packet_steering.lock"
+fi
 
 ps_get() {
 	if uci -q get network.globals.packet_steering >/dev/null 2>&1; then
@@ -209,6 +215,7 @@ ps_start() {
 }
 
 ps_with_lock() {
+	# 纯 POSIX 原子 mkdir 目录锁 (零 flock/-w/浮点 sleep 依赖, 兼容 OpenWrt BusyBox 与 Linux CI)
 	if [ -L "$PS_LOCK" ]; then
 		return 1
 	fi
@@ -218,15 +225,39 @@ ps_with_lock() {
 	fi
 	mkdir -p "$dir" || return 1
 	[ -d "$dir" ] || return 1
-	command -v flock >/dev/null 2>&1 || return 1
-	exec 9>>"$PS_LOCK" || return 1
-	if [ -L "$PS_LOCK" ]; then
-		return 1
-	fi
-	flock -w "${NS_PS_LOCK_WAIT:-20}" 9 || return 1
+	_wait="${NS_PS_LOCK_WAIT:-20}"
+	case "$_wait" in ''|*[!0-9]*) _wait=20 ;; esac
+	_elapsed=0
+	while ! mkdir "$PS_LOCK" 2>/dev/null; do
+		[ -L "$PS_LOCK" ] && return 1
+		if [ -f "$PS_LOCK" ]; then
+			# 兼容旧版遗留的普通锁文件
+			rm -f "$PS_LOCK" 2>/dev/null && continue
+			return 1
+		fi
+		_holder=$(cat "$PS_LOCK/pid" 2>/dev/null)
+		case "$_holder" in ''|*[!0-9]*) _holder='' ;; esac
+		if [ -n "$_holder" ] && ! kill -0 "$_holder" 2>/dev/null; then
+			mv "$PS_LOCK" "$PS_LOCK.stale.$$" 2>/dev/null && rm -rf "$PS_LOCK.stale.$$" 2>/dev/null
+			continue
+		fi
+		if [ -z "$_holder" ]; then
+			_ts=$(cat "$PS_LOCK/ts" 2>/dev/null)
+			_now=$(date +%s 2>/dev/null || echo 0)
+			if [ -n "$_ts" ] && [ "$(( _now - _ts ))" -ge 120 ] 2>/dev/null; then
+				mv "$PS_LOCK" "$PS_LOCK.stale.$$" 2>/dev/null && rm -rf "$PS_LOCK.stale.$$" 2>/dev/null
+				continue
+			fi
+		fi
+		[ "$_elapsed" -ge "$_wait" ] && return 1
+		sleep 1
+		_elapsed=$((_elapsed + 1))
+	done
+	printf '%s\n' "$$" > "$PS_LOCK/pid" 2>/dev/null || true
+	date +%s > "$PS_LOCK/ts" 2>/dev/null || true
 	"$@"
 	_rc=$?
-	flock -u 9 2>/dev/null || true
+	rm -rf "$PS_LOCK" 2>/dev/null || true
 	return $_rc
 }
 
@@ -275,8 +306,8 @@ _sec_for_dev() { # 已有节的 iface == $1 → 回节名; 否则回设备名转
 }
 _ensure_sec() { # 节不存在则建; 不覆盖已有选项
 	uci -q get "netsteer.$1" >/dev/null 2>&1 || uci -q set "netsteer.$1=interface"
-	uci -q set "netsteer.$1.iface='$2'"
-	[ -n "$(uci -q get "netsteer.$1.rfs_flow_cnt" 2>/dev/null)" ] || uci -q set "netsteer.$1.rfs_flow_cnt='4096'"
+	uci -q set "netsteer.$1.iface=$2"
+	[ -n "$(uci -q get "netsteer.$1.rfs_flow_cnt" 2>/dev/null)" ] || uci -q set "netsteer.$1.rfs_flow_cnt=4096"
 }
 preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-check 判漂移摆震)
 	local d n sec s vsec i=0 k changed=0
@@ -298,9 +329,9 @@ preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-ch
 				k=$(( NCPU - 1 - i ))
 				[ "$k" -lt 0 ] && k=$(( i % NCPU ))
 				_ensure_sec "$sec" "$n"
-				uci -q set "netsteer.$sec.rps_cpus='$FULL'"
-				uci -q set "netsteer.$sec.xps_cpus='$FULL'"
-				uci -q set "netsteer.$sec.irq_cpus='$(printf '%x' $(( 1 << k )))'"
+				uci -q set "netsteer.$sec.rps_cpus=$FULL"
+				uci -q set "netsteer.$sec.xps_cpus=$FULL"
+				uci -q set "netsteer.$sec.irq_cpus=$(printf '%x' $(( 1 << k )))"
 				i=$(( i + 1 )); changed=1
 				log "preset=$PRESET $sec($n) rps/xps=$FULL irq_cpu=$k"
 			done
@@ -308,7 +339,7 @@ preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-ch
 			for s in $(_sections); do
 				vsec=$(uci -q get "netsteer.$s.iface" 2>/dev/null)
 				[ -n "$vsec" ] && [ -d "/sys/class/net/$vsec" ] && [ ! -d "/sys/class/net/$vsec/device" ] || continue
-				uci -q set "netsteer.$s.rps_cpus='$FULL'"
+				uci -q set "netsteer.$s.rps_cpus=$FULL"
 				log "preset=$PRESET $s($vsec) rps=$FULL (虚拟口, IRQ 不动)"
 				changed=1
 			done
@@ -332,9 +363,9 @@ config_load netsteer
 [ -n "$PRESET" ] && { preset_to_uci; config_load netsteer; }   # 重载: 后续 apply 读新值
 
 config_get enabled state enabled 1
-# 服务 stop 之后保持已恢复的 packet_steering, 直到 init start 明确清掉停止标记。
-# 接管态才压成 0; 快照写失败则不改配置。禁用 / clear 在服务仍运行时按快照恢复。
-if [ "$enabled" = "1" ] && [ "$MODE" != "clear" ]; then
+# 服务 stop 之后保持已恢复的 packet_steering, 直到 init start / mode 切换明确清掉停止标记。
+# 接管态才压成 0; 快照写失败则不改配置。禁用 / clear / preset off 按快照恢复。
+if [ "$enabled" = "1" ] && [ "$MODE" != "clear" ] && [ "$PRESET" != "off" ]; then
 	ps_with_lock ps_force_off || exit 1
 else
 	ps_with_lock ps_stop || exit 1

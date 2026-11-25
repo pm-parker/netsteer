@@ -102,8 +102,8 @@ if [ -d "$FH" ]; then
 	fi
 fi
 
-# ---- feed 自动更新 cron 自愈 (v1.22.2 P2): hooks 不执行, 幂等挂载兜底 (uci netsteer.feed.auto=0 仍可在 auto 内退出) ----
-if [ -x /usr/bin/netsteer-feed ] && ! grep -q "netsteer-feed auto" /etc/crontabs/root 2>/dev/null; then
+# ---- feed 自动更新 cron 自愈 (v1.22.2 P2): hooks 不执行, 幂等挂载兜底 (与 init.d 同口径, 保留用户自定义参数行) ----
+if [ -x /usr/bin/netsteer-feed ] && ! grep -qE '(^|[[:space:]])/usr/bin/netsteer-feed([[:space:]]|$)' /etc/crontabs/root 2>/dev/null; then
 	echo "37 4 * * 1 /usr/bin/netsteer-feed auto" >> /etc/crontabs/root 2>/dev/null
 	/etc/init.d/cron restart 2>/dev/null
 fi

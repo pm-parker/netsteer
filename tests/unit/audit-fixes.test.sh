@@ -473,9 +473,40 @@ has "apply state.txt 原子替换" 'mv "\$STATE_TXT_TMP" "\$STATE_TXT"' "$FILES/
 has "apply IRQ 回读使用 norm_hex 归一化" 'norm_hex "\$after"' "$FILES/usr/bin/netsteer-apply"
 has "mode off 置 netsteer.state.enabled=0" "netsteer\.state\.enabled='0'" "$FILES/usr/bin/netsteer-mode"
 has "mode 保护游戏通道不被覆写" 'set_sqm_script_safe' "$FILES/usr/bin/netsteer-mode"
-has "mode 补齐 CAKE nat dual-dsthost" "iqdisc_opts='nat dual-dsthost'" "$FILES/usr/bin/netsteer-mode"
-has "mode 补齐 CAKE nat dual-srchost" "eqdisc_opts='nat dual-srchost'" "$FILES/usr/bin/netsteer-mode"
+has "mode 补齐 CAKE nat dual-dsthost (无字面单引号)" 'sqm\.\$1\.iqdisc_opts=nat dual-dsthost"' "$FILES/usr/bin/netsteer-mode"
+has "mode 补齐 CAKE nat dual-srchost (无字面单引号)" 'sqm\.\$1\.eqdisc_opts=nat dual-srchost"' "$FILES/usr/bin/netsteer-mode"
+has "mode 切回工作模式显式解除 packet_steering 停止态" 'sync-packet-steering active' "$FILES/usr/bin/netsteer-mode"
+has "mode apply_p2p 校验 apply_standard 返回码" 'apply_standard >/dev/null \|\| return 1' "$FILES/usr/bin/netsteer-mode"
 nhas "mode steering 不再硬编码 @queue[0]" 'sqm\.@queue\[0\]' "$FILES/usr/bin/netsteer-mode"
+nhas "apply 锁不再依赖 OpenWrt 缺失的 flock" 'command -v flock|flock -w' "$FILES/usr/bin/netsteer-apply"
+has "apply preset off 不压制原生 packet_steering" '\[ "\$PRESET" != "off" \]' "$FILES/usr/bin/netsteer-apply"
+
+# 实测: 无 flock 环境下 netsteer-apply sync-packet-steering (模拟原生 OpenWrt) + mode off -> mode standard 往返解除停止态
+mkdir -p "$WORK/noflock_bin" "$WORK/rt_mode"
+ln -s "$MOCKBIN/uci" "$WORK/noflock_bin/uci"
+ln -s "$MOCKBIN/logger" "$WORK/noflock_bin/logger"
+cat > "$WORK/noflock_bin/flock" <<'EOF'
+#!/bin/sh
+echo "flock should NOT be called" >&2
+exit 127
+EOF
+chmod +x "$WORK/noflock_bin/flock"
+printf 'network.globals.packet_steering=1\n' > "$WORK/rt_mode/uci.db"
+OUT_PS=$(PATH="$WORK/noflock_bin:$PATH" MOCK_UCI_DB="$WORK/rt_mode/uci.db" \
+	NS_PS_ORIGIN="$WORK/rt_mode/ps.origin" NS_PS_STOPPED="$WORK/rt_mode/svc.stopped" \
+	sh "$FILES/usr/bin/netsteer-apply" sync-packet-steering active 2>&1); RC1=$?
+V1=$(MOCK_UCI_DB="$WORK/rt_mode/uci.db" "$MOCKBIN/uci" -q get network.globals.packet_steering)
+OUT_PS2=$(PATH="$WORK/noflock_bin:$PATH" MOCK_UCI_DB="$WORK/rt_mode/uci.db" \
+	NS_PS_ORIGIN="$WORK/rt_mode/ps.origin" NS_PS_STOPPED="$WORK/rt_mode/svc.stopped" \
+	sh "$FILES/usr/bin/netsteer-apply" sync-packet-steering inactive 2>&1); RC2=$?
+V2=$(MOCK_UCI_DB="$WORK/rt_mode/uci.db" "$MOCKBIN/uci" -q get network.globals.packet_steering)
+OUT_PS3=$(PATH="$WORK/noflock_bin:$PATH" MOCK_UCI_DB="$WORK/rt_mode/uci.db" \
+	NS_PS_ORIGIN="$WORK/rt_mode/ps.origin" NS_PS_STOPPED="$WORK/rt_mode/svc.stopped" \
+	sh "$FILES/usr/bin/netsteer-apply" sync-packet-steering active 2>&1); RC3=$?
+V3=$(MOCK_UCI_DB="$WORK/rt_mode/uci.db" "$MOCKBIN/uci" -q get network.globals.packet_steering)
+[ "$RC1" -eq 0 ] && [ "$RC2" -eq 0 ] && [ "$RC3" -eq 0 ] && [ "$V1" = "0" ] && [ "$V2" = "1" ] && [ "$V3" = "0" ] && [ ! -f "$WORK/rt_mode/svc.stopped" ] \
+	&& ok "apply 零 flock 依赖完成 active->inactive->active 完整往返 (1->0->1->0)" \
+	|| nok "apply 零 flock 往返失败: rc=$RC1/$RC2/$RC3 v=$V1/$V2/$V3"
 nhas "doctor 不再读错误节 netsteer.game.*" 'netsteer\.game\.' "$FILES/usr/bin/netsteer-doctor"
 has "doctor 正确读 netsteer.qos.device" 'netsteer\.qos\.device' "$FILES/usr/bin/netsteer-doctor"
 has "doctor 检测 packet_steering 冲突" 'packet_steering' "$FILES/usr/bin/netsteer-doctor"

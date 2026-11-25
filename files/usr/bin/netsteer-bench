@@ -13,22 +13,31 @@ trap 'rm -f "$F1" "$F2"' EXIT
 
 MODE="$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)"
 
-# bg: 脱离会话后台测量 (供 netsteer-mode 调用, 不占 rpcd 管道; 原子 mkdir 目录锁防 TOCTOU 与异常残留)
+# bg: 脱离会话后台测量 (供 netsteer-mode 调用, 不占 rpcd 管道; 纯 POSIX 原子 mkdir 锁, 绝不强删刚建新锁)
 if [ "${1:-}" = "bg" ]; then
 	if ! mkdir "$LOCK" 2>/dev/null; then
 		old_pid=$(cat "$LOCK/pid" 2>/dev/null)
-		if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-			exit 0
+		case "$old_pid" in ''|*[!0-9]*) old_pid='' ;; esac
+		if [ -n "$old_pid" ]; then
+			if kill -0 "$old_pid" 2>/dev/null; then
+				exit 0
+			fi
+			# 持有进程已死, 原子移走死锁后重新抢锁 (防误删并发新建锁)
+			mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$" 2>/dev/null
+			mkdir "$LOCK" 2>/dev/null || exit 0
+		else
+			# pid 尚未写入: 可能是并发新锁刚建好, 仅当 ts 超过 120s 才视为崩溃残留回收
+			old_ts=$(cat "$LOCK/ts" 2>/dev/null)
+			now_ts=$(date +%s 2>/dev/null || echo 0)
+			if [ -n "$old_ts" ] && [ "$(( now_ts - old_ts ))" -ge 120 ] 2>/dev/null; then
+				mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$" 2>/dev/null
+				mkdir "$LOCK" 2>/dev/null || exit 0
+			else
+				exit 0
+			fi
 		fi
-		# 陈旧锁或刚创建尚未写 pid: 给 0.2s 窗口避免误删并发新锁, 再二次判定
-		[ -z "$old_pid" ] && sleep 0.2
-		old_pid=$(cat "$LOCK/pid" 2>/dev/null)
-		if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-			exit 0
-		fi
-		rm -rf "$LOCK" 2>/dev/null
-		mkdir "$LOCK" 2>/dev/null || exit 0
 	fi
+	date +%s > "$LOCK/ts" 2>/dev/null || true
 	setsid sh -c 'echo $$ > "$1/pid"; trap "rm -rf \"$1\"" EXIT INT TERM; "${NETSTEER_BENCH_BIN:-/usr/bin/netsteer-bench}" 8 >/dev/null 2>&1' _ "$LOCK" </dev/null >/dev/null 2>&1 &
 	exit 0
 fi

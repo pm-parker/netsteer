@@ -75,9 +75,9 @@ sqm_opts_fill() { # $1=sec  仅 SQM 开启时调用。原本为空的项持续�
 		if [ "$_kind" = "absent" ] || [ "$_kind" = "empty" ]; then
 			_fill=1
 			if [ "$_k" = "iqdisc_opts" ]; then
-				uci set "sqm.$1.iqdisc_opts='nat dual-dsthost'" || return 1
+				uci set "sqm.$1.iqdisc_opts=nat dual-dsthost" || return 1
 			else
-				uci set "sqm.$1.eqdisc_opts='nat dual-srchost'" || return 1
+				uci set "sqm.$1.eqdisc_opts=nat dual-srchost" || return 1
 			fi
 		fi
 	done
@@ -145,7 +145,7 @@ apply_standard() {
 
 apply_p2p() {
 	local ip="${2:-$(uci -q get netsteer.p2p.dest_ip 2>/dev/null || echo 192.168.11.175)}"
-	apply_standard >/dev/null
+	apply_standard >/dev/null || return 1
 	/usr/bin/netsteer-p2p on "$ip" >/dev/null 2>&1
 	echo "sqm:cake-on offload:off p2p:on($ip)"
 }
@@ -242,7 +242,7 @@ apply_off() { # 停用全部 netsteer 优化, 回到系统默认 (供 A/B 基线
 		fi
 	fi
 	# 分核清零 (RPS/XPS/IRQ 恢复全核默认)
-	if netsteer-apply clear >/dev/null 2>&1; then
+	if "${NS_APPLY:-/usr/bin/netsteer-apply}" clear >/dev/null 2>&1; then
 		acts="$acts rps-irq:default"
 	fi
 	# P2P 直通关
@@ -280,7 +280,8 @@ case "${1:-}" in
 		uci set netsteer.state='netsteer' 2>/dev/null
 		uci set netsteer.state.enabled='1' 2>/dev/null
 		uci commit netsteer 2>/dev/null
-		"${NS_APPLY:-netsteer-apply}" preset balanced >/dev/null 2>&1 || "${NS_APPLY:-netsteer-apply}" auto >/dev/null 2>&1 || exit 1
+		"${NS_APPLY:-/usr/bin/netsteer-apply}" sync-packet-steering active >/dev/null 2>&1 || exit 1
+		"${NS_APPLY:-/usr/bin/netsteer-apply}" preset balanced >/dev/null 2>&1 || "${NS_APPLY:-/usr/bin/netsteer-apply}" auto >/dev/null 2>&1 || exit 1
 		ACTS="$ACTS steering:balanced"
 		uci set netsteer.scenario='scenario' 2>/dev/null
 		uci set netsteer.scenario.mode='steering'
@@ -292,6 +293,7 @@ case "${1:-}" in
 		uci set netsteer.state='netsteer' 2>/dev/null
 		uci set netsteer.state.enabled='1' 2>/dev/null
 		uci commit netsteer 2>/dev/null
+		"${NS_APPLY:-/usr/bin/netsteer-apply}" sync-packet-steering active >/dev/null 2>&1 || exit 1
 		"${NS_APPLY:-/usr/bin/netsteer-apply}" >/dev/null 2>&1 || exit 1
 		case "$1" in
 			standard)   ACTS=$(apply_standard) || exit $? ;;

@@ -69,8 +69,6 @@ case "$cmd" in
     spec=$1
     key=${spec%%=*}
     val=${spec#*=}
-    val=${val#\'}; val=${val%\'}
-    val=${val#\"}; val=${val%\"}
     rm -f "$stage/$key.deleted"
     printf '%s' "$val" > "$stage/$key"
     printf 'set %s\n' "$key" >> "$root/.log"

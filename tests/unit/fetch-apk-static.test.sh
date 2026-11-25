@@ -218,7 +218,8 @@ make_apk() {
 import gzip, io, sys, tarfile
 kind, arg, out = sys.argv[1:]
 raw = io.BytesIO()
-with tarfile.open(fileobj=raw, mode="w") as tar:
+fmt = tarfile.USTAR_FORMAT if kind == "truncated" else tarfile.DEFAULT_FORMAT
+with tarfile.open(fileobj=raw, mode="w", format=fmt) as tar:
     if kind == "symlink":
         info = tarfile.TarInfo("sbin/apk.static")
         info.type = tarfile.SYMTYPE
@@ -239,11 +240,21 @@ with tarfile.open(fileobj=raw, mode="w") as tar:
         info.type = tarfile.LNKTYPE
         info.linkname = arg
         tar.addfile(info)
+    elif kind == "truncated":
+        # Complete ustar header, declared body longer than the bytes we keep.
+        payload = b"B" * 8192
+        info = tarfile.TarInfo("sbin/apk.static")
+        info.size = len(payload)
+        info.mode = 0o755
+        tar.addfile(info, io.BytesIO(payload))
     else:
         sys.stderr.write("unknown kind\n")
         sys.exit(2)
+blob = raw.getvalue()
+if kind == "truncated":
+    blob = blob[:512 + 64]
 with gzip.GzipFile(out, "wb", mtime=0) as gz:
-    gz.write(raw.getvalue())
+    gz.write(blob)
 PY
 }
 
@@ -345,6 +356,29 @@ OUT=$("$FETCH" "$DEST" "http://127.0.0.1:$PORT" 2>&1) && RC=0 || RC=$?
 [ "$RC" -ne 0 ] && ok "预先存在的父目录符号链接被拒绝" || bad "预先存在的父目录符号链接应失败, rc=$RC out=$OUT"
 [ "$(stat -c '%a' "$OUTDIR/apk.static")" = "644" ] && ok "预先存在的符号链接未改外部权限" || bad "预先存在的符号链接改了外部权限"
 cmp -s "$OUTDIR/apk.static" "$OUTDIR/apk.static.orig" && ok "预先存在的符号链接未改外部内容" || bad "预先存在的符号链接改了外部内容"
+stop_server
+
+# ---- 合法 gzip 包住的截断 tar: 成员头完整、正文被截断。gzip -t 能过, 读成员才失败 ----
+V=$WORK/victim-trunc
+printf 'SECRET-TRUNC\n' > "$V"
+cp "$V" "$V.orig"
+chmod 644 "$V"
+make_apk truncated x
+start_server custom
+DEST=$WORK/trunc-dest
+run_fetch "$DEST"
+[ "$RC" -ne 0 ] && ok "截断归档非 0 退出" || bad "截断归档应失败, rc=$RC out=$OUT"
+printf '%s\n' "$OUT" | grep -q 'Traceback' \
+	&& bad "截断归档打印了 traceback: $OUT" \
+	|| ok "截断归档无 traceback"
+printf '%s\n' "$OUT" | grep -q 'truncated' \
+	&& ok "截断归档有简短错误" \
+	|| bad "截断归档缺少 truncated 提示: $OUT"
+LINES=$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')
+[ "$LINES" -le 4 ] && ok "截断归档错误输出简短 ($LINES 行)" || bad "截断归档错误输出过长 ($LINES 行): $OUT"
+[ ! -e "$DEST/sbin/apk.static" ] && ok "截断归档未安装 apk.static" || bad "截断归档安装了 apk.static"
+[ ! -e "$DEST/sbin/.apk.static.partial" ] && ok "截断归档无临时残留" || bad "截断归档留下 .apk.static.partial"
+victim_ok "$V" "截断归档"
 stop_server
 
 echo "# pass $PASS  fail $FAIL"

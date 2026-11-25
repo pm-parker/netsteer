@@ -88,22 +88,28 @@ except (tarfile.TarError, OSError) as exc:
 
 member = None
 data = None
-with tf:
-    for info in tf.getmembers():
-        name = canonical(info.name)
-        if name == "sbin":
-            if info.issym() or info.islnk() or not info.isdir():
-                fail("unsafe archive link for sbin")
-        elif name == "sbin/apk.static":
-            if info.issym() or info.islnk() or not info.isreg():
-                fail("unsafe archive link for apk.static")
-            if member is not None:
-                fail("duplicate apk.static member")
-            payload = tf.extractfile(info)
-            if payload is None:
-                fail("unsafe archive link for apk.static")
-            member = info
-            data = payload.read()
+try:
+    # open() can succeed on a valid gzip of a short tar. getmembers()/read()
+    # then raise ReadError ("unexpected end of data") once the member body ends.
+    with tf:
+        for info in tf.getmembers():
+            name = canonical(info.name)
+            if name == "sbin":
+                if info.issym() or info.islnk() or not info.isdir():
+                    fail("unsafe archive link for sbin")
+            elif name == "sbin/apk.static":
+                if info.issym() or info.islnk() or not info.isreg():
+                    fail("unsafe archive link for apk.static")
+                if member is not None:
+                    fail("duplicate apk.static member")
+                payload = tf.extractfile(info)
+                if payload is None:
+                    fail("unsafe archive link for apk.static")
+                member = info
+                data = payload.read()
+except tarfile.ReadError as exc:
+    sys.stderr.write(f"ERROR: apk-tools archive is truncated ({exc})\n")
+    sys.exit(1)
 if member is None or data is None:
     sys.stderr.write("ERROR: archive has no regular sbin/apk.static\n")
     sys.exit(1)

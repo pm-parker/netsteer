@@ -88,11 +88,13 @@ preset_to_uci() { # 预设值写回 uci (uci 保持单一真相, 防 netsteer-ch
 
 STATE_DIR=/tmp/netsteer
 STATE_FILE=$STATE_DIR/state.json
-STATE_TMP=$STATE_DIR/.state.tmp
+STATE_TMP=$STATE_DIR/.state.json.$$
 STATE_TXT=$STATE_DIR/state.txt
+STATE_TXT_TMP=$STATE_DIR/.state.txt.$$
 mkdir -p "$STATE_DIR"
+trap 'rm -f "$STATE_TMP" "$STATE_TXT_TMP"' EXIT
 echo "{" > "$STATE_TMP"
-: > "$STATE_TXT"
+: > "$STATE_TXT_TMP"
 
 config_load netsteer
 [ -n "$PRESET" ] && { preset_to_uci; config_load netsteer; }   # 重载: 后续 apply 读新值
@@ -100,6 +102,17 @@ config_load netsteer
 config_get enabled state enabled 1
 # clear 模式不受 enabled 开关限制 (否则 off 模式在禁用态下静默不生效)
 [ "$enabled" = "1" ] || [ "$MODE" = "clear" ] || { log "disabled in uci, skip"; exit 0; }
+
+# 避免与 OpenWrt 原生 packet_steering 打架: 只要 netsteer 处于接管态 (非 clear),
+# 原生 packet_steering=1/2 会在每次 firewall/interface 事件覆写 RPS/IRQ 引发持续漂移
+if [ "$MODE" != "clear" ]; then
+	ps_cur=$(uci -q get network.globals.packet_steering 2>/dev/null || uci -q get network.@globals[0].packet_steering 2>/dev/null || echo "")
+	if [ -n "$ps_cur" ] && [ "$ps_cur" != "0" ]; then
+		uci -q set network.globals.packet_steering='0' 2>/dev/null || uci -q set network.@globals[0].packet_steering='0' 2>/dev/null
+		uci -q commit network 2>/dev/null
+		log "已关闭原生 network.globals.packet_steering (原值=$ps_cur), 防止与 netsteer 互相覆写 RPS/IRQ"
+	fi
+fi
 
 # 全局 RFS
 config_get entries global rfs_sock_flow_entries 32768
@@ -194,13 +207,14 @@ apply_iface() {
 	done
 
 	# 通用状态行 (netsteer-check 比对用; 无硬编码接口/IRQ)
-	printf 'netsteer %s %s rps %s' "$cfg" "$iface" "$rps" >> "$STATE_TXT"
-	[ -n "$first_irq_no" ] && printf ' irq %s %s' "$first_irq_no" "$first_aff" >> "$STATE_TXT"
-	echo >> "$STATE_TXT"
+	printf 'netsteer %s %s rps %s' "$cfg" "$iface" "$rps" >> "$STATE_TXT_TMP"
+	[ -n "$first_irq_no" ] && printf ' irq %s %s' "$first_irq_no" "$first_aff" >> "$STATE_TXT_TMP"
+	echo >> "$STATE_TXT_TMP"
 }
 
 config_foreach apply_iface interface
 
 echo "}" >> "$STATE_TMP"
 mv "$STATE_TMP" "$STATE_FILE"
+mv "$STATE_TXT_TMP" "$STATE_TXT"
 exit 0

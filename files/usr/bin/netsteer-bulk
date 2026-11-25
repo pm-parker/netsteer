@@ -55,6 +55,10 @@ devices_get() { # 输出空格分隔 IP 列表 (uci get 对 list 返回单行空
 }
 
 # ---- nft 规则生成 (纯函数: 输出到 stdout, 单测可断言) ----
+# 边界说明: NAT 路由下, WAN netdev ingress 钩子位于 conntrack/DNAT 还原之前,
+# 此时下行包 ip daddr 仍为 WAN 公网 IP, mark_ing 仅在无 NAT/直通路由下匹配内网目的地址;
+# NAT 下行按设备公平隔离由 SQM CAKE 的 `nat dual-dsthost` 承担。
+LOADERR=/tmp/netsteer/bulk-nft.err
 emit_rules() { # $1=空格分隔设备列表  $2=wan dev
 	local devs="$1" wan="$2"
 	echo "table inet $TABLE {"
@@ -65,9 +69,9 @@ emit_rules() { # $1=空格分隔设备列表  $2=wan dev
 	done
 	echo "	}"
 	echo "	chain mark_ing {"
-	echo "		type filter hook ingress priority -440; policy accept;"
+	echo "		type filter hook ingress device \"$wan\" priority -440; policy accept;"
 	for ip in $devs; do
-		echo "		iifname \"$wan\" ip daddr $ip ip dscp set cs1 counter comment \"netsteer bulk down\""
+		echo "		ip daddr $ip ip dscp set cs1 counter comment \"netsteer bulk down\""
 	done
 	echo "	}"
 	echo "}"
@@ -78,16 +82,22 @@ write_rules() {
 	local devs="$(devices_get)"
 	mkdir -p /tmp/netsteer
 	nft list table inet $TABLE >/dev/null 2>&1 && nft delete table inet $TABLE >/dev/null 2>&1
-	[ -n "$devs" ] || { rm -f "$RULES"; return 0; }
+	[ -n "$devs" ] || { rm -f "$RULES" "$LOADERR"; return 0; }
 	emit_rules "$devs" "$(wan_dev)" > "$RULES"
-	nft -f "$RULES" 2>/dev/null
+	if nft -f "$RULES" 2>"$LOADERR"; then
+		rm -f "$LOADERR"
+		return 0
+	else
+		log "ERR: nft 加载失败: $(head -1 "$LOADERR" 2>/dev/null)"
+		return 1
+	fi
 }
 remove_rules() {
 	nft delete table inet $TABLE >/dev/null 2>&1
-	rm -f "$RULES"
+	rm -f "$RULES" "$LOADERR"
 }
 rules_active() {
-	nft list table inet $TABLE >/dev/null 2>&1 && echo 1 || echo 0
+	nft list chain inet $TABLE mark_fwd >/dev/null 2>&1 && echo 1 || echo 0
 }
 
 # ---- 动作 ----
@@ -125,10 +135,8 @@ bulk_remove() { # $1=device ip
 
 bulk_off() {
 	ensure_section
-	while [ -n "$(devices_get)" ]; do
-		uci del_list netsteer.qos.bulk_devices="$(devices_get | awk '{print $1}')"
-		uci commit netsteer
-	done
+	uci -q delete netsteer.qos.bulk_devices 2>/dev/null
+	uci commit netsteer
 	remove_rules
 	log "OFF: 不抢网列表已清空"
 	echo "OK: off"
@@ -164,7 +172,9 @@ bulk_status() {
 		j="$j\"$ip\""; i=$((i+1))
 	done
 	j="$j]"
-	echo "{\"devices\":$j,\"active\":$(rules_active),\"count\":$i,\"pkts\":$pkts,\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"game_device\":\"$(qos_get device -)\",\"game_enabled\":$(qos_get enabled 0)}"
+	local nerr=""
+	[ -s "$LOADERR" ] && nerr="$(head -1 "$LOADERR" 2>/dev/null | sed 's/\\/\\\\/g; s/"/\\"/g')"
+	echo "{\"devices\":$j,\"active\":$(rules_active),\"nft_error\":\"$nerr\",\"count\":$i,\"pkts\":$pkts,\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"game_device\":\"$(qos_get device -)\",\"game_enabled\":$(qos_get enabled 0)}"
 }
 
 # ---- 存量手工规则迁移检测 (D22: 部署时检测 /etc/nftables.d/ 手工 CS1 规则) ----
@@ -207,9 +217,9 @@ bulk_migrate() { # 输出 JSON {found:[ip],files:[path]}; --apply 把 found 迁�
 	echo "{\"found\":$jf,\"files\":$jj}"
 }
 
-# v1.22.1: 设备列表写操作前自动快照
+# v1.22.1: 设备列表写操作前自动快照 (reapply 仅开机/重拨重放, 不拍重复快照)
 case "$1" in
-	add|remove|off|reapply) /usr/bin/netsteer-snapshot auto "bulk-$1" >/dev/null 2>&1 ;;
+	add|remove|off) /usr/bin/netsteer-snapshot auto "bulk-$1" >/dev/null 2>&1 ;;
 esac
 
 case "$1" in

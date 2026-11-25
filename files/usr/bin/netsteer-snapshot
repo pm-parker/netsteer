@@ -106,10 +106,15 @@ restore)
 	/etc/init.d/sqm restart >/dev/null 2>&1
 	# 运行态重对齐 (sysfs/分核/IRQ 从恢复后的 uci 重写)
 	/usr/bin/netsteer-apply >/dev/null 2>&1
-	# nft 规则层不在 uci 里, 按恢复后的状态重放: p2p 直通 + game 通道 (reapply 幂等, enabled=0 时 no-op)
+	# nft 规则层不在 uci 里, 按恢复后的状态重放: p2p 直通 + game 通道 + bulk 不抢网
 	rmode=$(cat "$dir/mode" 2>/dev/null)
-	[ "$rmode" = "p2p" ] && /usr/bin/netsteer-p2p on "$("$UCI" -q get netsteer.p2p.dest_ip 2>/dev/null)" >/dev/null 2>&1
+	if [ "$rmode" = "p2p" ]; then
+		/usr/bin/netsteer-p2p on "$("$UCI" -q get netsteer.p2p.dest_ip 2>/dev/null)" >/dev/null 2>&1
+	else
+		/usr/bin/netsteer-p2p off >/dev/null 2>&1
+	fi
 	/usr/bin/netsteer-qos reapply >/dev/null 2>&1
+	/usr/bin/netsteer-bulk reapply >/dev/null 2>&1
 	ph "snapshot restore $TARGET (pre=$pre)"
 	logger -t netsteer-snapshot "已回滚到 $TARGET (回滚前状态存为 $pre)"
 	echo "{\"restored\":\"$TARGET\",\"pre_restore\":\"$pre\",\"mode\":\"$(cat "$dir/mode" 2>/dev/null)\"}"

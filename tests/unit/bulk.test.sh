@@ -28,16 +28,17 @@ eq "invalid >255" "$(valid_ip 192.168.11.999 && echo y)" ""
 R1="$(emit_rules '192.168.11.175' 'pppoe-wan')"
 has "单设备 表名" "$R1" "table inet netsteer_bulk"
 has "单设备 上行" "$R1" 'ip saddr 192.168.11.175 ip dscp set cs1'
-has "单设备 下行" "$R1" 'iifname "pppoe-wan" ip daddr 192.168.11.175 ip dscp set cs1'
+has "单设备 下行" "$R1" 'ip daddr 192.168.11.175 ip dscp set cs1'
 has "上行钩子" "$R1" "hook forward priority -140"
-has "下行钩子" "$R1" "hook ingress priority -440"
+has "下行钩子" "$R1" 'hook ingress device "pppoe-wan" priority -440'
 has "counter" "$R1" "counter"
 
 # --- emit_rules: 多设备 ---
 R2="$(emit_rules '192.168.11.175 192.168.11.178' 'eth1')"
 eq "多设备 上行规则数" "$(echo "$R2" | grep -c 'saddr.*set cs1')" "2"
 eq "多设备 下行规则数" "$(echo "$R2" | grep -c 'daddr.*set cs1')" "2"
-nohas "多设备 无残留 pppoe" "$R2" 'iifname "pppoe-wan"'
+has "多设备 ingress 绑 eth1" "$R2" 'hook ingress device "eth1"'
+nohas "多设备 无残留 pppoe" "$R2" 'pppoe-wan'
 
 # --- emit_rules: 空列表 (防御: write_rules 空表已短路, emit 仍应产出合法空链) ---
 R3="$(emit_rules '' 'pppoe-wan')"
@@ -62,7 +63,7 @@ BEGIN { th = th_mb * 1024 * 1024 }
 END {
 	n = 0
 	for (ip in up) {
-		if (up[ip] < th && conns[ip] < 8) continue
+		if (up[ip] < th && !(conns[ip] >= 8 && up[ip] >= 4194304)) continue
 		ips[n] = ip; ups[n] = up[ip] + 0; n++
 	}
 	for (i = 1; i < n; i++) {
@@ -79,7 +80,7 @@ END {
 }
 AWKEOF
 # 脚本侧 suggest awk 存在性 (副本漂移防线: 关键断言字段必须在 qos 源码里)
-for TOKEN in 'conns\[ip\]++' 'up\[ip\] < th && conns\[ip\] < 8' 'ips\[n\] = ip'; do
+for TOKEN in 'conns\[ip\]++' 'up\[ip\] < th && !(conns\[ip\] >= 8 && up\[ip\] >= 4194304)' 'ips\[n\] = ip'; do
 	has "qos suggest awk 含 $TOKEN" "$(grep -c "$TOKEN" "$QOS")" "1"
 done
 # 用 tab 流直接测 awk 逻辑 (与脚本同构副本)
@@ -87,13 +88,23 @@ TAB='104857600	tcp	192.168.11.175	1.2.3.4	20000	104857600
 2048	tcp	192.168.11.175	1.2.3.4	20001	2048
 5242880	tcp	192.168.11.180	5.6.7.8	443	524288
 1024	udp	192.168.11.183	9.9.9.9	443	1024
+1024	tcp	192.168.11.194	1.1.1.1	443	20000
+1024	tcp	192.168.11.194	1.1.1.2	443	20000
+1024	tcp	192.168.11.194	1.1.1.3	443	20000
+1024	tcp	192.168.11.194	1.1.1.4	443	20000
+1024	tcp	192.168.11.194	1.1.1.5	443	20000
+1024	tcp	192.168.11.194	1.1.1.6	443	20000
+1024	tcp	192.168.11.194	1.1.1.7	443	20000
+1024	tcp	192.168.11.194	1.1.1.8	443	20000
+1024	tcp	192.168.11.194	1.1.1.9	443	20000
 99999999	tcp	192.168.11.178	7.7.7.7	20000	99999999'
 OUT=$(echo "$TAB" | awk -v th_mb=16 -v ex="" -v game_on=0 -v game_ip="" -v bulk="" -f /tmp/bulk_sugg.awk)
-# .175 上行 100MB+2KB → 命中; .178 95MB → 命中; .180 0.5MB+5MB下行 → 阈值下排除; .183 排除
+# .175 上行 100MB+2KB → 命中; .178 95MB → 命中; .180 0.5MB+5MB下行 → 阈值下排除; .183 排除; .194 9连接但仅180KB → 排除
 has "suggest 命中 .175" "$OUT" '192.168.11.175'
 has "suggest 命中 .178" "$OUT" '192.168.11.178'
 nohas "suggest 排除低流量 .180" "$OUT" '192.168.11.180'
 nohas "suggest 排除 .183" "$OUT" '192.168.11.183'
+nohas "suggest 排除多连接低上行手机 .194" "$OUT" '192.168.11.194'
 eq "suggest 排序 .175 在前" "$(echo "$OUT" | grep -o '192.168.11.175\|192.168.11.178' | head -1)" "192.168.11.175"
 # 排除表生效
 OUT2=$(echo "$TAB" | awk -v th_mb=16 -v ex="192.168.11.175" -v game_on=0 -v game_ip="" -v bulk="192.168.11.178" -f /tmp/bulk_sugg.awk)

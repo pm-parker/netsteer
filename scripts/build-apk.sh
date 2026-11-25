@@ -36,23 +36,43 @@ sed -i "s/var NS_VERSION = '[^']*';/var NS_VERSION = '$VERSION';/" \
   "$PKGROOT/www/luci-static/resources/view/netsteer.js"
 grep -q "var NS_VERSION = '$VERSION';" "$PKGROOT/www/luci-static/resources/view/netsteer.js" \
   || { echo "FATAL: NS_VERSION inject failed" >&2; exit 1; }
-chmod 755 "$PKGROOT"/usr/bin/netsteer-* "$PKGROOT"/etc/init.d/netsteer 2>/dev/null
+chmod 755 "$PKGROOT"/usr/bin/netsteer-* "$PKGROOT"/etc/init.d/netsteer "$PKGROOT"/etc/hotplug.d/iface/99-netsteer 2>/dev/null
 find "$PKGROOT" -name '*.js' -o -name '*.json' | xargs chmod 644
 
 # 3. install/upgrade hooks — 不使用。探针包实测 (v1.22.2): OpenWrt apk 3.0.5 对 scripts hooks
 #    完全不执行 (默认与显式 --commit-hooks --scripts 均不跑), 历史版本"安装侧修复"因此从未生效。
 #    P0 数据保护与 P2 cron 挂载改为运行时自愈: netsteer-check 每分钟裁决 (见 netsteer-check)。
 
-# 4. build
+# 4. build — 必须以 root 身份 (UID/GID 0) 打包: 静态链接的 apk.static 不受 fakeroot (LD_PRELOAD) 影响,
+#    非 root 直接打包会把构建机用户名写入包元数据, 在 OpenWrt 上安装后落成 nobody:nogroup (本地提权风险)。
+#    使用 Linux user namespace (unshare -r) 在内核层将当前用户映射为 0:0。
 OUT="$OUT_DIR/${NAME}-${VERSION}-${ARCH}.apk"
-"$MKPKG" mkpkg \
-  -F "$PKGROOT" \
-  -I "name:$NAME" -I "version:$VERSION" -I "arch:$ARCH" \
-  -I "description:NetSteer - steer network softirq/IRQ load across CPU cores with auto benchmark" \
-  -I "origin:$NAME" -I "maintainer:pm-parker" \
-  -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
-  -I "depends:luci-base" \
-  -o "$OUT"
+mkpkg_cmd() {
+  "$MKPKG" mkpkg \
+    -F "$PKGROOT" \
+    -I "name:$NAME" -I "version:$VERSION" -I "arch:$ARCH" \
+    -I "description:NetSteer - steer network softirq/IRQ load across CPU cores with auto benchmark" \
+    -I "origin:$NAME" -I "maintainer:pm-parker" \
+    -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
+    -I "depends:luci-base" \
+    -o "$OUT"
+}
+if [ "$(id -u)" -eq 0 ]; then
+  chown -R 0:0 "$PKGROOT"
+  mkpkg_cmd
+elif command -v unshare >/dev/null 2>&1 && unshare -r true 2>/dev/null; then
+  unshare -r "$MKPKG" mkpkg \
+    -F "$PKGROOT" \
+    -I "name:$NAME" -I "version:$VERSION" -I "arch:$ARCH" \
+    -I "description:NetSteer - steer network softirq/IRQ load across CPU cores with auto benchmark" \
+    -I "origin:$NAME" -I "maintainer:pm-parker" \
+    -I "url:https://github.com/pm-parker/netsteer" -I "license:MIT" \
+    -I "depends:luci-base" \
+    -o "$OUT"
+else
+  echo "ERROR: non-root build requires 'unshare -r' so packaged files are owned by root:root" >&2
+  exit 1
+fi
 
 echo ">> built $OUT ($(stat -c '%s' "$OUT") bytes)"
 echo ">> verify content:"
@@ -61,6 +81,13 @@ mkdir -p "$WORK/check"
 find "$WORK/check" -type f | sort | sed 's/^/   /'
 # integrity check — a package that fails verify must never be shipped
 "$MKPKG" verify --allow-untrusted "$OUT" >/dev/null || { echo "ERROR: apk verify failed"; exit 1; }
+# ownership check — refuse to ship packages with non-root user/group metadata (prevents nobody:nogroup install)
+BAD_OWN=$("$MKPKG" adbdump "$OUT" | grep -E '^[[:space:]]*(user|group):' | grep -vE '^[[:space:]]*(user|group): root$' || true)
+if [ -n "$BAD_OWN" ]; then
+  echo "ERROR: package contains non-root ownership metadata:" >&2
+  echo "$BAD_OWN" | head -n 10 >&2
+  exit 1
+fi
 # sanity: js must be present and non-empty
 JS="$WORK/check/www/luci-static/resources/view/netsteer.js"
 [ -s "$JS" ] || { echo "ERROR: package is missing netsteer.js — build is broken"; exit 1; }

@@ -37,15 +37,17 @@ has "restore 兜底备份 /etc/config" "pre-restore 2>/dev/null" "$SRC"
 has "不整包恢复 firewall (只 set offloading)" "flow_offloading" "$SRC"
 nhas "不整包 import firewall" "import firewall" "$SRC"
 has "恢复后重跑 apply 对齐运行态" "netsteer-apply" "$SRC"
+has "恢复后重放 bulk 规则" "netsteer-bulk reapply" "$SRC"
+has "非 p2p 恢复时清理旧 p2p 规则" "netsteer-p2p off" "$SRC"
 has "持久 history 滚动 (2000/800)" "tail -800" "$SRC"
 has "保留上限 KEEP=20" "KEEP=20" "$SRC"
 
-# --- 四通道挂载 (只读分支必须跳过) ---
+# --- 四通道挂载 (只读及 reapply 分支跳过, 避免开机/重拨刷重复快照) ---
 has "mode 挂载 auto 快照" "netsteer-snapshot auto \"mode-" "$MODE"
 has "mode 只读分支跳过 (list|status)" "list|status" "$MODE"
-has "qos 挂载 (on|off|device|reapply)" "qos-\$1" "$QOS"
+has "qos 挂载 (on|off|device)" "qos-\$1" "$QOS"
 has "wizard 挂载 (apply)" "wizard-apply" "$WIZ"
-has "bulk 挂载 (add|remove|off|reapply)" "bulk-\$1" "$BULK"
+has "bulk 挂载 (add|remove|off)" "bulk-\$1" "$BULK"
 
 # --- check 持久双写 ---
 has "check 变更双写到 /etc/netsteer/history.log" "/etc/netsteer/history.log" "$CHK"

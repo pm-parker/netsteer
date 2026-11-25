@@ -29,7 +29,30 @@ sqm_migrate() {
 	# v1.18 D13: 向导校准值覆盖 (环境变量 WIZ_DL/WIZ_UL, kbit 单位; 未设时不动现值)
 	[ -n "$WIZ_DL" ] && uci -q set sqm.$sec.download="$WIZ_DL"
 	[ -n "$WIZ_UL" ] && uci -q set sqm.$sec.upload="$WIZ_UL"
+	# CAKE NAT 感知按主机公平隔离: 仅在未自定义 iqdisc_opts/eqdisc_opts 时补齐默认项
+	if [ -z "$(uci -q get sqm.$sec.iqdisc_opts 2>/dev/null)" ]; then
+		uci set sqm.$sec.qdisc_advanced='1'
+		uci set sqm.$sec.qdisc_really_really_advanced='1'
+		uci set sqm.$sec.iqdisc_opts='nat dual-dsthost'
+	fi
+	if [ -z "$(uci -q get sqm.$sec.eqdisc_opts 2>/dev/null)" ]; then
+		uci set sqm.$sec.qdisc_advanced='1'
+		uci set sqm.$sec.qdisc_really_really_advanced='1'
+		uci set sqm.$sec.eqdisc_opts='nat dual-srchost'
+	fi
 	echo "$sec"
+}
+
+# 游戏通道保护: 若游戏通道开启, 不覆写 netsteer-gaming.qos, 仅更新 prev_script 供关闭时恢复
+set_sqm_script_safe() { # $1=sec $2=want_script
+	local sec="$1" want="$2"
+	if [ "$(uci -q get netsteer.qos.enabled 2>/dev/null)" = "1" ]; then
+		uci set netsteer.qos.prev_script="$want"
+		uci commit netsteer 2>/dev/null
+		uci set sqm.$sec.script='netsteer-gaming.qos'
+	else
+		uci set sqm.$sec.script="$want"
+	fi
 }
 
 apply_standard() {
@@ -37,7 +60,7 @@ apply_standard() {
 	local sec base_dl base_ul
 	sec=$(sqm_migrate)
 	uci set sqm.$sec.enabled='1'
-	uci set sqm.$sec.script='simple.qos'
+	set_sqm_script_safe "$sec" 'simple.qos'
 	uci set sqm.$sec.qdisc='cake'
 	# 带宽从存档恢复 (latency 降速过的值不得滞留)
 	base_dl=$(uci -q get netsteer.sqm_base.download 2>/dev/null)
@@ -82,7 +105,7 @@ apply_latency() {
 	local sec dl ul base_dl base_ul
 	sec=$(sqm_migrate)
 	uci set sqm.$sec.enabled='1'
-	uci set sqm.$sec.script='layer_cake.qos'
+	set_sqm_script_safe "$sec" 'layer_cake.qos'
 	uci set sqm.$sec.qdisc='cake'
 	# 带宽基值: 首次进 latency 时存档真实带宽, 之后永远以存档为基 (防 ×0.9 累乘腐蚀)
 	base_dl=$(uci -q get netsteer.sqm_base.download 2>/dev/null)
@@ -159,6 +182,8 @@ esac
 case "${1:-}" in
 	off)
 		ACTS=$(apply_off)
+		uci set netsteer.state='netsteer' 2>/dev/null
+		uci set netsteer.state.enabled='0' 2>/dev/null
 		uci set netsteer.scenario='scenario' 2>/dev/null
 		uci set netsteer.scenario.mode='off'
 		uci commit netsteer 2>/dev/null
@@ -167,10 +192,13 @@ case "${1:-}" in
 		;;
 	steering)
 		ACTS=""
-		if [ "$(uci -q get sqm.@queue[0].enabled 2>/dev/null)" != "0" ] && uci -q show sqm >/dev/null 2>&1; then
-			sec=$(uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d. -f2 | cut -d= -f1)
-			[ -n "$sec" ] && { uci set sqm.$sec.enabled='0'; uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1; ACTS="$ACTS sqm:off"; }
+		sec=$(uci -q show sqm 2>/dev/null | grep -E "=queue$|=sqm$" | head -1 | cut -d. -f2 | cut -d= -f1)
+		if [ -n "$sec" ] && [ "$(uci -q get sqm.$sec.enabled 2>/dev/null)" != "0" ]; then
+			uci set sqm.$sec.enabled='0'; uci commit sqm; /etc/init.d/sqm stop >/dev/null 2>&1; ACTS="$ACTS sqm:off"
 		fi
+		uci set netsteer.state='netsteer' 2>/dev/null
+		uci set netsteer.state.enabled='1' 2>/dev/null
+		uci commit netsteer 2>/dev/null
 		netsteer-apply preset balanced >/dev/null 2>&1 || netsteer-apply auto >/dev/null 2>&1
 		ACTS="$ACTS steering:balanced"
 		uci set netsteer.scenario='scenario' 2>/dev/null
@@ -180,6 +208,10 @@ case "${1:-}" in
 		echo "{\"mode\":\"steering\",\"actions\":\"$ACTS\"}"
 		;;
 	standard|p2p|throughput|latency)
+		uci set netsteer.state='netsteer' 2>/dev/null
+		uci set netsteer.state.enabled='1' 2>/dev/null
+		uci commit netsteer 2>/dev/null
+		/usr/bin/netsteer-apply >/dev/null 2>&1
 		case "$1" in
 			standard)   ACTS=$(apply_standard) ;;
 			p2p)        ACTS=$(apply_p2p "$@") ;;

@@ -27,6 +27,7 @@ if [ "$TMAX" -ge 95000 ]; then
 		INC_DIR=/etc/netsteer/incidents
 		mkdir -p "$INC_DIR"
 		{ echo "== $(date '+%m-%d %H:%M:%S') 过热降档: ${TMAX} (milli°C) → steering"; tail -30 "$HIST" 2>/dev/null; } > "$INC_DIR/thermal-$(date '+%m%d-%H%M%S').log"
+		ls -1t "$INC_DIR" 2>/dev/null | tail -n +21 | while read -r _old; do rm -f "$INC_DIR/$_old"; done
 		logger -t netsteer "过热保护: ${TMAX} (milli°C), 已自动降档 steering (温度回落后请在 UI 手动恢复)"
 	fi
 fi
@@ -61,7 +62,7 @@ if [ -d "$FH" ]; then
 			# 同日期: 保守不恢复 (快照与包内同日谁新不可判定, 升级场景包内是官方发布版, 回滚旧快照几乎必错)
 		fi
 		if [ "$_need" = "1" ]; then
-			for _f in "$FH/$_lat"/*.txt; do
+			for _f in "$FH/$_lat"/*.txt "$FH/$_lat/manifest.tsv"; do
 				[ -f "$_f" ] && cp -f "$_f" "$FD/${_f##*/}" 2>/dev/null
 			done
 			logger -t netsteer-feed "升级保护: 数据集恢复用户版 $_ov (包内 $_nv)"
@@ -76,6 +77,9 @@ if [ -x /usr/bin/netsteer-feed ] && ! grep -q "netsteer-feed auto" /etc/crontabs
 	/etc/init.d/cron restart 2>/dev/null
 fi
 
+# 总开关关闭 (netsteer.state.enabled=0 或 scenario.mode=off) 时不做漂移自愈, 防止 60s 后把 off 模式强行拉回
+[ "$(uci -q get netsteer.state.enabled 2>/dev/null || echo 1)" = "1" ] || exit 0
+[ "$(uci -q get netsteer.scenario.mode 2>/dev/null)" = "off" ] && exit 0
 [ -s "$STATE_TXT" ] || exit 0   # apply 未跑过, 无从比对
 
 now=$(date "+%m-%d %H:%M")
@@ -101,17 +105,21 @@ last=$(tail -1 "$HIST" 2>/dev/null | cut -d' ' -f3-)
 if [ "$cur" != "$last" ]; then
 	echo "$now $cur" >> "$HIST"
 	echo "$now $cur" >> /etc/netsteer/history.log 2>/dev/null
+	[ "$(wc -l < /etc/netsteer/history.log 2>/dev/null || echo 0)" -gt 2000 ] && \
+		tail -800 /etc/netsteer/history.log > /etc/netsteer/history.log.tmp 2>/dev/null && \
+		mv /etc/netsteer/history.log.tmp /etc/netsteer/history.log 2>/dev/null
 fi
 # 轮转: 超 3000 行留尾部 1000
 [ "$(wc -l < "$HIST" 2>/dev/null)" -gt 3000 ] && tail -1000 "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
 
 if [ -n "$drift" ]; then
 	logger -t netsteer "漂移:$drift — 存证+重应用"
-	# 现场证据写持久层 (/etc/netsteer/incidents): 路由器重启后仍可查 (logread 本身是内存的)
+	# 现场证据写持久层 (/etc/netsteer/incidents): 路由器重启后仍可查; 保留最近 20 份防止写满 flash
 	INC_DIR=/etc/netsteer/incidents
 	mkdir -p "$INC_DIR"
 	inc="$INC_DIR/incident-$(date "+%m%d-%H%M%S").log"
 	{ echo "== $now 漂移:$drift"; echo "== 同窗口系统日志 (找真凶)"; logread 2>/dev/null | tail -60; echo "== history 近 10 行"; tail -10 "$HIST"; } > "$inc"
+	ls -1t "$INC_DIR" 2>/dev/null | tail -n +21 | while read -r _old; do rm -f "$INC_DIR/$_old"; done
 	logger -t netsteer "现场已存 $inc"
 	/usr/bin/netsteer-apply >/dev/null 2>&1
 	logger -t netsteer "自愈完成"

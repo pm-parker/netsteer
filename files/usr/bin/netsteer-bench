@@ -7,13 +7,16 @@ SEC="${1:-8}"
 TARGET="223.5.5.5"
 DIR="/tmp/netsteer"
 mkdir -p "$DIR"
-F1="$DIR/.bench-snap1"; F2="$DIR/.bench-snap2"
+LOCK="$DIR/.bench.lock"
+F1="$DIR/.bench-snap1.$$"; F2="$DIR/.bench-snap2.$$"
+trap 'rm -f "$F1" "$F2"' EXIT
 
 MODE="$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)"
 
-# bg: 脱离会话后台测量 (供 netsteer-mode 调用, 不占 rpcd 管道)
+# bg: 脱离会话后台测量 (供 netsteer-mode 调用, 不占 rpcd 管道; 单实例防连点并发)
 if [ "${1:-}" = "bg" ]; then
-	setsid /usr/bin/netsteer-bench 8 </dev/null >/dev/null 2>&1 &
+	[ -e "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null && exit 0
+	setsid sh -c "echo \$\$ > '$LOCK'; /usr/bin/netsteer-bench 8 >/dev/null 2>&1; rm -f '$LOCK'" </dev/null >/dev/null 2>&1 &
 	exit 0
 fi
 

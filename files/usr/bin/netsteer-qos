@@ -53,6 +53,10 @@ wan_dev() {
 cake_have() { grep -q '^sch_cake' /proc/modules 2>/dev/null; }
 
 # ---- nft 标记规则 (绝对幂等: 整表删除重建) ----
+# 边界说明: NAT 路由下, WAN netdev ingress 钩子位于 conntrack/DNAT 还原之前,
+# 此时下行包 ip daddr 仍为 WAN 公网 IP, mark_ing 仅在无 NAT/路由直通模式下匹配内网目的地址;
+# NAT 下行按设备公平隔离由 SQM CAKE 的 `nat dual-dsthost` 承担。
+LOADERR=/tmp/netsteer/qos-nft.err
 write_rules() { # $1=device ip  $2=wan dev
 	mkdir -p /tmp/netsteer
 	nft list table inet $TABLE >/dev/null 2>&1 && nft delete table inet $TABLE >/dev/null 2>&1
@@ -65,19 +69,25 @@ table inet $TABLE {
 	}
 
 	chain mark_ing {
-		type filter hook ingress priority -450; policy accept;
-		iifname "$2" ip daddr $1 ip dscp set cs4 comment "netsteer game down"
+		type filter hook ingress device "$2" priority -450; policy accept;
+		ip daddr $1 ip dscp set cs4 comment "netsteer game down"
 	}
 }
 EOF
-	nft -f "$RULES" 2>/dev/null
+	if nft -f "$RULES" 2>"$LOADERR"; then
+		rm -f "$LOADERR"
+		return 0
+	else
+		log "ERR: nft 加载失败: $(head -1 "$LOADERR" 2>/dev/null)"
+		return 1
+	fi
 }
 remove_rules() {
 	nft delete table inet $TABLE >/dev/null 2>&1
-	rm -f "$RULES"
+	rm -f "$RULES" "$LOADERR"
 }
 rules_active() {
-	nft list table inet $TABLE >/dev/null 2>&1 && echo 1 || echo 0
+	nft list chain inet $TABLE mark_fwd >/dev/null 2>&1 && echo 1 || echo 0
 }
 
 # ---- 整形脚本切换 ----
@@ -175,7 +185,9 @@ qos_status() {
 	local wan="$(wan_dev)"
 	local up_mode="$(tc qdisc show dev "$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
 	local dn_mode="$(tc qdisc show dev "ifb4$wan" 2>/dev/null | grep -oE 'diffserv[0-9]|besteffort' | head -1)"
-	echo "{\"enabled\":$(qos_get enabled 0),\"device\":\"$(qos_get device -)\",\"active\":$(rules_active),\"script\":\"$(uci -q get sqm.$(sqm_section).script 2>/dev/null || echo '-')\",\"prev_script\":\"$(qos_get prev_script '-')\",\"sqm_enabled\":$(sqm_enabled && echo 1 || echo 0),\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"mode\":\"$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)\",\"dns_observer\":\"$(qos_get dns_observer mihomo)\",\"probe_target\":\"$(qos_get probe_target "$PROBE_TARGET")\"}"
+	local nerr=""
+	[ -s "$LOADERR" ] && nerr="$(head -1 "$LOADERR" 2>/dev/null | sed 's/\\/\\\\/g; s/"/\\"/g')"
+	echo "{\"enabled\":$(qos_get enabled 0),\"device\":\"$(qos_get device -)\",\"active\":$(rules_active),\"nft_error\":\"$nerr\",\"script\":\"$(uci -q get sqm.$(sqm_section).script 2>/dev/null || echo '-')\",\"prev_script\":\"$(qos_get prev_script '-')\",\"sqm_enabled\":$(sqm_enabled && echo 1 || echo 0),\"cake_up\":\"${up_mode:-none}\",\"cake_down\":\"${dn_mode:-none}\",\"wan\":\"$wan\",\"mode\":\"$(uci -q get netsteer.scenario.mode 2>/dev/null || echo off)\",\"dns_observer\":\"$(qos_get dns_observer mihomo)\",\"probe_target\":\"$(qos_get probe_target "$PROBE_TARGET")\"}"
 }
 
 qos_probe() { # 轻量延迟采样: 3 ping 取平均 (供游戏通道页 8s 轮询画曲线); busybox ping 只支持整数 -i
@@ -201,16 +213,20 @@ qos_tins() { # 原始 tc -s 双向输出 (前端 parseTinStats 解析, 指标行
 
 # ---- L1 平台识别观测面 (环境自适应, v1.14) ----
 # 探测顺序: nikki 生成配置 → openclash uci → 裸 clash 9090; 都没有 → dnsmasq 查询日志 (需开启)
-qos_api_ok() { # $1=port $2=secret → /version 可达?
-	local auth=""
-	[ -n "$2" ] && auth="-H 'Authorization: Bearer $2'"
-	eval "curl -sf --max-time 2 $auth http://127.0.0.1:$1/version" >/dev/null 2>&1
+qos_api_ok() { # $1=port $2=secret → /version 可达? (不用 eval, 防止 secret 含特殊字符注入)
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	if [ -n "$2" ]; then
+		curl -sf --max-time 2 -H "Authorization: Bearer $2" "http://127.0.0.1:$1/version" >/dev/null 2>&1
+	else
+		curl -sf --max-time 2 "http://127.0.0.1:$1/version" >/dev/null 2>&1
+	fi
 }
 qos_detect_proxy() { # 输出 "core|port|secret" 或 "|"
 	local cfg=/etc/nikki/run/config.yaml
 	if [ -f "$cfg" ]; then
-		local p=$(sed -n 's/^external-controller:[^:]*:\([0-9]*\)$/\1/p' "$cfg" 2>/dev/null | head -1)
-		local s=$(sed -n "s/^secret:[ \	]*[\"']\\?\\([^\"' \	]*\\)[\"']\\?$/\\1/p" "$cfg" 2>/dev/null | head -1)
+		# 兼容 '[::]:9090' / "0.0.0.0:9090" / 127.0.0.1:9090 等带引号与 IPv6 多冒号写法
+		local p=$(sed -n "s/^external-controller:.*:\([0-9][0-9]*\)[\"' 	]*$/\1/p" "$cfg" 2>/dev/null | head -1)
+		local s=$(sed -n "s/^secret:[ 	]*[\"']\?\([^\"' 	]*\)[\"']\?[ 	]*$/\1/p" "$cfg" 2>/dev/null | head -1)
 		qos_api_ok "${p:-9090}" "$s" && { echo "nikki|${p:-9090}|$s"; return; }
 	fi
 	if [ -d /etc/openclash ]; then
@@ -225,16 +241,22 @@ qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":
 	# q=sniffHost 优先回退 host, 可为空 (裸 IP 直连 — L2 IP 段/端口匹配的输入); dnsmasq 通道无 d/p/t/u/v
 	# u/v = mihomo 连接表 upload/download 字节计数 (场景感知 light/heavy 判据, D12)
 	local n="${1:-200}"
+	case "$n" in ''|*[!0-9]*) n=200 ;; esac
 	local api=$(qos_detect_proxy)
 	local port="${api#*|}"; port="${port%%|*}"
 	local secret="${api##*|}"
-	[ -n "$port" ] || return 1
-	local auth=""
-	[ -n "$secret" ] && auth="-H 'Authorization: Bearer $secret'"
-	eval "curl -sf --max-time 3 $auth http://127.0.0.1:$port/connections" 2>/dev/null | sed 's/{"id":/\n{"id":/g' | \
-	awk '
+	case "$port" in ''|*[!0-9]*) return 1 ;; esac
+	{
+		if [ -n "$secret" ]; then
+			curl -sf --max-time 3 -H "Authorization: Bearer $secret" "http://127.0.0.1:$port/connections" 2>/dev/null
+		else
+			curl -sf --max-time 3 "http://127.0.0.1:$port/connections" 2>/dev/null
+		fi
+	} | sed 's/{"id":/\n{"id":/g' | \
+	awk -v top="$n" '
 	BEGIN { printf "[" }
 	{
+		if (top > 0 && n >= top) exit
 		ip = ""
 		if (match($0, /"sourceIP":"[^"]*"/)) { ip = substr($0, RSTART + 12, RLENGTH - 13) }
 		if (ip !~ /^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[01])\./) next
@@ -415,7 +437,8 @@ qos_suggest() { # v1.19 D22: 疑似后台负载设备 — per-src 上行聚合, 
 	END {
 		n = 0
 		for (ip in up) {
-			if (up[ip] < th && conns[ip] < 8) continue
+			# 达阈值(默认16MB) 或 (高并发>=8连接 且 有实质上行>=4MB), 避免 0.2MB 普通手机误报
+			if (up[ip] < th && !(conns[ip] >= 8 && up[ip] >= 4194304)) continue
 			ips[n] = ip; ups[n] = up[ip] + 0; n++
 		}
 		# 按上行降序 (插入排序, n<20)
@@ -455,10 +478,10 @@ qos_sense() {
 	j=$(qos_dnslog "$top" | qos_json2tab | awk -v ex="$ex" -f /usr/share/netsteer/exclude.awk | awk -f "$awk_bin") || { log "sense: engine error"; return 1; }
 	scene=$(echo "$j" | sed 's/.*"scene":"\([a-z]*\)".*/\1/')
 	[ -n "$scene" ] || { log "sense: no scene"; return 1; }
-	# 防抖: state 三行 scene/cand/candn, 连续 2 窗同判定才切 (JS senseDebounce 同语义)
-	prev=""; cand=""; candn=0
+	# 防抖: state 四行 scene/cand/candn/linked_prev, 连续 2 窗同判定才切 (JS senseDebounce 同语义)
+	prev=""; cand=""; candn=0; linked_prev=""
 	if [ -f "$SENSE_STATE" ]; then
-		prev=$(sed -n 1p "$SENSE_STATE"); cand=$(sed -n 2p "$SENSE_STATE"); candn=$(sed -n 3p "$SENSE_STATE")
+		prev=$(sed -n 1p "$SENSE_STATE"); cand=$(sed -n 2p "$SENSE_STATE"); candn=$(sed -n 3p "$SENSE_STATE"); linked_prev=$(sed -n 4p "$SENSE_STATE" 2>/dev/null)
 	fi
 	if [ "$scene" = "$cand" ]; then
 		candn=$((candn + 1))
@@ -466,7 +489,7 @@ qos_sense() {
 		cand="$scene"; candn=1
 	fi
 	if [ "$candn" -ge 2 ]; then prev="$scene"; fi
-	printf "%s\n%s\n%s\n" "$prev" "$cand" "$candn" > "$SENSE_STATE.tmp" && mv "$SENSE_STATE.tmp" "$SENSE_STATE"	# 原子写: 前端轮询不会读到半截文件
+	printf "%s\n%s\n%s\n%s\n" "$prev" "$cand" "$candn" "$linked_prev" > "$SENSE_STATE.tmp" && mv "$SENSE_STATE.tmp" "$SENSE_STATE"	# 原子写且保留第 4 行 linked_prev
 	ts=$(date +%s)
 	iv=$(qos_get sense_interval); iv="${iv:-30}"
 	printf '{"scene":"%s","cand":"%s","confirmed":%d,"ts":%d,"interval":%d,"verdict":%s}\n' \
@@ -527,7 +550,7 @@ qos_sense_link() {
 	old_prev=$(sed -n 4p "$SENSE_STATE" 2>/dev/null)
 	[ "$candn" -ge 2 ] || return 0
 	[ -n "$prev" ] && [ "$prev" != "$old_prev" ] || return 0
-	echo "$prev" >> "$SENSE_STATE"
+	printf "%s\n%s\n%s\n%s\n" "$prev" "$cand" "$candn" "$prev" > "$SENSE_STATE.tmp" && mv "$SENSE_STATE.tmp" "$SENSE_STATE"
 	target=$(scene_mode "$prev")
 	case "$cur" in
 		standard|latency|"")
@@ -544,9 +567,9 @@ qos_sense_status() {
 	if [ -f "$SENSE_JSON" ]; then cat "$SENSE_JSON"; else echo "{}"; fi
 }
 
-# v1.22.1: 写操作前自动快照 (只读分支跳过; auto 同 label 5min 去重)
+# v1.22.1: 写操作前自动快照 (只读及开机/hotplug reapply 分支跳过, 避免无变更刷重复快照)
 case "$1" in
-	on|off|device|reapply) /usr/bin/netsteer-snapshot auto "qos-$1" >/dev/null 2>&1 ;;
+	on|off|device) /usr/bin/netsteer-snapshot auto "qos-$1" >/dev/null 2>&1 ;;
 esac
 
 case "$1" in

@@ -31,9 +31,9 @@ sed -e "s|DATA_DIR=\"/usr/share/netsteer\"|DATA_DIR=\"$WORK/installed\"|" \
 	"$ROOT/files/usr/bin/netsteer-feed" > "$WORK/feed"
 chmod +x "$WORK/feed"
 
-python3 -m http.server $PORT --directory "$WORK/data" >/dev/null 2>&1 &
+python3 -m http.server $PORT --bind 127.0.0.1 --directory "$WORK/data" >/dev/null 2>&1 &
 SRV=$!
-i=0; while [ $i -lt 20 ]; do curl -sf "http://127.0.0.1:$PORT/manifest.tsv" >/dev/null 2>&1 && break; i=$((i+1)); sleep 0.2; done
+i=0; while [ $i -lt 20 ]; do curl -sf --noproxy 127.0.0.1 "http://127.0.0.1:$PORT/manifest.tsv" >/dev/null 2>&1 && break; i=$((i+1)); sleep 0.2; done
 
 # ---- T1 check: 发现更新 ----
 OUT=$("$WORK/feed" check 2>/dev/null)
@@ -86,6 +86,17 @@ case "$T7OUT" in
 	LLLL) ok ;;
 	*) bad "T7 validate 组合异常 ($T7OUT): L=合法过/拒" ;;
 esac
+
+# ---- T7b gameips 分类名含 't' (steam/valorant 等) + 仓库真实 gameips.txt ----
+mkdir -p "$WORK/vtest/ips"
+printf 'steam\t1.2.3.0/24\nvalorant\t5.6.7.0/24\n' > "$WORK/vtest/ips/gameips.txt"
+( . "$WORK/vfn.sh"; validate_data "$WORK/vtest/ips/gameips.txt" >/dev/null 2>&1 ) \
+	&& ok || bad "T7b 含 t 分类名的 gameips 被误判非法"
+( . "$WORK/vfn.sh"; validate_data "$ROOT/data/gameips.txt" >/dev/null 2>&1 ) \
+	&& ok || bad "T7b 仓库真实 gameips.txt 校验未通过"
+printf 'steam\tnot-an-ip\n' > "$WORK/vtest/ips/gameips.txt"
+( . "$WORK/vfn.sh"; validate_data "$WORK/vtest/ips/gameips.txt" >/dev/null 2>&1 ) \
+	&& bad "T7b 非法 CIDR 未被拒" || ok
 
 # ---- T8 冒烟失败自动回滚 (v1.22.2): 坏引擎 → update rc=3 + 数据保持原状 ----
 # T5 篡改过源 streamdomains+manifest — 先恢复源一致性, 否则 update 在 sha 层就 rc=2

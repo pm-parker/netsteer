@@ -16,10 +16,19 @@ jobs:
           node-version: 20
       - name: Unit tests (multi-core logic)
         run: node tests/unit/core.test.js
+      - name: Unit tests (bulk / cfg / qos-awk / sense / tune)
+        run: |
+          sh tests/unit/bulk.test.sh
+          sh tests/unit/cfg.test.sh
+          sh tests/unit/qos-awk.test.sh
+          sh tests/unit/sense.test.sh
+          sh tests/unit/tune.test.sh
       - name: snapshot tests (rollback + audit)
         run: sh tests/unit/snapshot.test.sh
       - name: feed e2e tests (remote data update)
         run: sh tests/unit/feed.test.sh
+      - name: Audit regression tests
+        run: sh tests/unit/audit-fixes.test.sh
       - name: JS syntax check
         run: node --check files/www/luci-static/resources/view/netsteer.js
       - name: JS lint (oxlint — unused 归零门禁)

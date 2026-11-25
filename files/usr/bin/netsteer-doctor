@@ -69,7 +69,7 @@ echo "  当前判定: ${_sc:-无数据} / daemon 进程数: $_nd / 轮询: $(ech
 [ "$_nd" -gt 1 ] && warn "sense-daemon 存在 $_nd 个进程 (疑似泄漏, /etc/init.d/netsteer restart 可回收)"
 
 sect 8 "加速通道"
-_gip=$(uci -q get netsteer.game.ip); _gen=$(uci -q get netsteer.game.enabled)
+_gip=$(uci -q get netsteer.qos.device); _gen=$(uci -q get netsteer.qos.enabled)
 echo "  游戏通道: enabled=${_gen:-0} ip=${_gip:-未设置}"
 [ "$_gen" = "1" ] && [ -z "$_gip" ] && warn "游戏通道开启但未设 IP"
 _bulk=$(uci -q get netsteer.qos.bulk_devices 2>/dev/null)
@@ -83,6 +83,13 @@ if [ -s /tmp/netsteer/state.txt ]; then
 else
 	fail "state.txt 不存在 — netsteer-apply 从未成功运行"
 fi
+_ps_en=$(uci -q get network.globals.packet_steering 2>/dev/null || uci -q get network.@globals[0].packet_steering 2>/dev/null || echo 0)
+_ns_en=$(uci -q get netsteer.state.enabled 2>/dev/null || echo 1)
+if [ "$_ns_en" = "1" ] && [ -n "$_ps_en" ] && [ "$_ps_en" != "0" ]; then
+	warn "原生 network.globals.packet_steering=$_ps_en 与 netsteer 冲突 — 会反复覆写 RPS/IRQ 导致漂移"
+fi
+_inc_n=$(ls -1 /etc/netsteer/incidents 2>/dev/null | wc -l | tr -d ' ')
+[ "${_inc_n:-0}" -gt 25 ] && warn "/etc/netsteer/incidents 堆积 ${_inc_n} 个日志文件 (建议清理旧漂移记录)"
 [ -s /tmp/netsteer/history.log ] && echo "  最近调整: $(tail -2 /tmp/netsteer/history.log | tr '\n' ' | ')"
 
 sect 10 "配置与日志尾"

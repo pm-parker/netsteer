@@ -18,6 +18,14 @@ start() {
 	else
 		(/usr/bin/netsteer-qos sense-daemon >/dev/null 2>&1 &)
 	fi
+	# 幂等挂载 netsteer-check 每分钟 cron (apk 不执行安装 hooks, 由 init.d 负责兜底)
+	if [ -x /usr/bin/netsteer-check ]; then
+		mkdir -p /etc/crontabs
+		if ! grep -q '/usr/bin/netsteer-check' /etc/crontabs/root 2>/dev/null; then
+			echo '* * * * * /usr/bin/netsteer-check' >> /etc/crontabs/root 2>/dev/null
+			/etc/init.d/cron restart >/dev/null 2>&1
+		fi
+	fi
 }
 
 boot() {
@@ -37,5 +45,13 @@ stop() {
 		dp=$(cat /tmp/netsteer/sense.pid 2>/dev/null)
 		[ -n "$dp" ] && kill "$dp" 2>/dev/null
 		rm -f /tmp/netsteer/sense.pid
+	fi
+}
+
+disable() {
+	default_disable 2>/dev/null || rm -f /etc/rc.d/S*netsteer /etc/rc.d/K*netsteer
+	if [ -f /etc/crontabs/root ] && grep -qE '/usr/bin/netsteer-(check|feed)' /etc/crontabs/root 2>/dev/null; then
+		sed -i '\|/usr/bin/netsteer-check|d; \|/usr/bin/netsteer-feed|d' /etc/crontabs/root 2>/dev/null
+		/etc/init.d/cron restart >/dev/null 2>&1
 	fi
 }

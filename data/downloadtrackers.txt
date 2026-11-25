@@ -1,5 +1,5 @@
 # NetSteer BT tracker 域名数据集 (download scene evidence)
-# 来源: ngosang/trackerslist (Unlicense) 采集 2026-11-12; tracker URL 已归一化主域
+# 来源: ngosang/trackerslist (Unlicense) 采集 2026-11-23; tracker URL 已归一化主域
 # 格式: download	<域名后缀>; 命中=确定 P2P 下载信号 (强于端口判定)
 
 download	004430.xyz
@@ -8,8 +8,9 @@ download	23794.top
 download	52ywp.com
 download	7471.top
 download	abcvg.info
-download	aruku.ovh
+download	aburaya.live
 download	bittor.pw
+download	bluefrog.pw
 download	co.nz
 download	corbina.net
 download	corpscorp.online
@@ -22,6 +23,7 @@ download	dler.org
 download	duckdns.org
 download	ducks.party
 download	e-n-c-r-y-p-t.net
+download	edkj.club
 download	eu.org
 download	evan.im
 download	evergarden.uk
@@ -34,33 +36,39 @@ download	gaijinent.com
 download	gbitt.info
 download	gmi.gd
 download	highstar.shop
+download	hloli.org
 download	ilibr.org
 download	ip-51-222-82.net
+download	itrus.su
+download	ixuexi.click
 download	k.vu
+download	lain.moscow
 download	martin-gebhardt.eu
 download	mywaifu.best
 download	nekomi.cn
 download	nyaa.net
 download	nyaa.vc
 download	nyacat.pw
+download	okade.pro
 download	opentrackr.com
 download	opentrackr.org
 download	overflow.biz
 download	peerfect.org
 download	playground.ru
-download	pmman.tech
 download	qu.ax
 download	renfei.net
 download	seedpeer.net
 download	segso.net
 download	sktorrent.eu
+download	skynetcloud.site
 download	stealth.si
-download	therarbg.to
+download	t-rb.org
+download	theoks.net
 download	torrentonline.cc
 download	torrents.observer
+download	track3r.site
 download	tracker.cl
 download	tryhackx.org
 download	waaa.moe
 download	wildkat.net
-download	ysagin.top
 download	zhuqiy.com

@@ -24,12 +24,7 @@ APKTOOL="$WORK/apk-tools"
 if [ ! -x "$APKTOOL/sbin/apk.static" ]; then
   mkdir -p "$APKTOOL"
   echo ">> fetching apk-tools-static..."
-  URL=$(curl -s https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/ \
-    | grep -oE 'apk-tools-static-[^"<]*\.apk' | sort -u | tail -1)
-  [ -n "$URL" ] || { echo "ERROR: cannot resolve apk-tools-static URL"; exit 1; }
-  curl -s -o "$WORK/tools.apk" "https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/$URL"
-  tar xzf "$WORK/tools.apk" -C "$APKTOOL" sbin/apk.static 2>/dev/null
-  chmod +x "$APKTOOL/sbin/apk.static"
+  "$HERE/scripts/fetch-apk-static.sh" "$APKTOOL"
 fi
 MKPKG="$APKTOOL/sbin/apk.static"
 

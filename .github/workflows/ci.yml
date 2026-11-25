@@ -36,6 +36,8 @@ jobs:
           for f in files/usr/bin/netsteer-* files/etc/init.d/netsteer files/etc/hotplug.d/iface/99-netsteer; do
             sh -n "$f"
           done
+      - name: apk-tools fetch guard
+        run: sh tests/unit/fetch-apk-static.test.sh
 
   build:
     needs: test
@@ -57,9 +59,7 @@ jobs:
         run: |
           set -e
           TOOLS=$(mktemp -d)
-          curl -sL -o "$TOOLS/t.apk" https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/apk-tools-static-3.0.9-r0.apk
-          tar xzf "$TOOLS/t.apk" -C "$TOOLS" sbin/apk.static
-          chmod +x "$TOOLS/sbin/apk.static"
+          ./scripts/fetch-apk-static.sh "$TOOLS"
           "$TOOLS/sbin/apk.static" verify --allow-untrusted dist/*.apk
       - uses: actions/upload-artifact@v4
         with:
@@ -95,9 +95,7 @@ jobs:
         run: |
           set -e
           TOOLS=$(mktemp -d)
-          curl -sL -o "$TOOLS/t.apk" https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/apk-tools-static-3.0.9-r0.apk
-          tar xzf "$TOOLS/t.apk" -C "$TOOLS" sbin/apk.static
-          chmod +x "$TOOLS/sbin/apk.static"
+          ./scripts/fetch-apk-static.sh "$TOOLS"
           "$TOOLS/sbin/apk.static" verify --allow-untrusted release-dist/*.apk
       - name: Resolve release notes body
         run: |

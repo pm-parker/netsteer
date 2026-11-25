@@ -61,9 +61,6 @@
         "/usr/bin/netsteer-apply": [
           "exec"
         ],
-        "/usr/bin/netsteer-check": [
-          "exec"
-        ],
         "/usr/bin/netsteer-p2p": [
           "exec"
         ],

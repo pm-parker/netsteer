@@ -114,8 +114,13 @@ mkdir -p "$WORK/check"
 find "$WORK/check" -type f | sort | sed 's/^/   /'
 # integrity check — a package that fails verify must never be shipped
 "$MKPKG" verify --allow-untrusted "$OUT" >/dev/null || { echo "ERROR: apk verify failed"; exit 1; }
-# ownership check — refuse to ship packages with non-root user/group metadata (prevents nobody:nogroup install)
-BAD_OWN=$("$MKPKG" adbdump "$OUT" | grep -E '^[[:space:]]*(user|group):' | grep -vE '^[[:space:]]*(user|group): root$' || true)
+# ownership check — fail closed: adbdump must succeed, contain root metadata, and contain zero non-root entries
+ADB_DUMP="$("$MKPKG" adbdump "$OUT")"
+printf '%s\n' "$ADB_DUMP" | grep -qE '^[[:space:]]*user: root$' \
+  || { echo "ERROR: adbdump missing expected 'user: root' metadata" >&2; exit 1; }
+printf '%s\n' "$ADB_DUMP" | grep -qE '^[[:space:]]*group: root$' \
+  || { echo "ERROR: adbdump missing expected 'group: root' metadata" >&2; exit 1; }
+BAD_OWN="$(printf '%s\n' "$ADB_DUMP" | grep -E '^[[:space:]]*(user|group):' | grep -vE '^[[:space:]]*(user|group): root$' || true)"
 if [ -n "$BAD_OWN" ]; then
   echo "ERROR: package contains non-root ownership metadata:" >&2
   echo "$BAD_OWN" | head -n 10 >&2

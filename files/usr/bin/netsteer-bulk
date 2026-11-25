@@ -80,17 +80,32 @@ emit_rules() { # $1=空格分隔设备列表  $2=wan dev
 # ---- nft 标记规则 (绝对幂等: 整表删除重建) ----
 write_rules() {
 	local devs="$(devices_get)"
+	local wan="$(wan_dev)"
 	mkdir -p /tmp/netsteer
 	nft list table inet $TABLE >/dev/null 2>&1 && nft delete table inet $TABLE >/dev/null 2>&1
 	[ -n "$devs" ] || { rm -f "$RULES" "$LOADERR"; return 0; }
-	emit_rules "$devs" "$(wan_dev)" > "$RULES"
+	emit_rules "$devs" "$wan" > "$RULES"
 	if nft -f "$RULES" 2>"$LOADERR"; then
 		rm -f "$LOADERR"
 		return 0
-	else
-		log "ERR: nft 加载失败: $(head -1 "$LOADERR" 2>/dev/null)"
-		return 1
 	fi
+	# 兼容低版本内核 (<=6.6) 当 $wan 尚未就绪时 ingress 拖累整表回滚: 降级仅加载上行 mark_fwd, 同时保留 LOADERR
+	log "WARN: nft 双链加载失败 ($(head -1 "$LOADERR" 2>/dev/null)), 尝试降级仅加载上行 mark_fwd"
+	{
+		echo "table inet $TABLE {"
+		echo "	chain mark_fwd {"
+		echo "		type filter hook forward priority -140; policy accept;"
+		for ip in $devs; do
+			echo "		ip saddr $ip ip dscp set cs1 counter comment \"netsteer bulk up\""
+		done
+		echo "	}"
+		echo "}"
+	} > "$RULES"
+	if nft -f "$RULES" 2>/dev/null; then
+		return 0
+	fi
+	log "ERR: nft 加载彻底失败: $(head -1 "$LOADERR" 2>/dev/null)"
+	return 1
 }
 remove_rules() {
 	nft delete table inet $TABLE >/dev/null 2>&1
@@ -115,7 +130,12 @@ bulk_add() { # $1=device ip
 	cake_have || log "WARN: kmod-sch-cake 未加载, 标记暂无整形效果 (安装 SQM 后生效)"
 	uci add_list netsteer.qos.bulk_devices="$ip"
 	uci commit netsteer
-	write_rules
+	if ! write_rules; then
+		uci del_list netsteer.qos.bulk_devices="$ip"
+		uci commit netsteer
+		echo "ERR: nft load failed: $(head -1 "$LOADERR" 2>/dev/null)"
+		exit 1
+	fi
 	log "ADD: $ip → cs1 (up:forward + down:ingress), 设备数 $(echo $cur $ip | wc -w)"
 	echo "OK: add $ip"
 }
@@ -142,9 +162,12 @@ bulk_off() {
 	echo "OK: off"
 }
 
-bulk_reapply() { # boot/hotplug 兜底: 列表非空才动作, 静默
+bulk_reapply() { # boot/hotplug/restore 兜底: 空列表时幂等清表, 非空时重载
 	local devs="$(devices_get)"
-	[ -n "$devs" ] || exit 0
+	if [ -z "$devs" ]; then
+		remove_rules
+		exit 0
+	fi
 	write_rules
 	log "REAPPLY: $(echo $devs | wc -w) 台"
 }

@@ -347,6 +347,12 @@ config_get entries global rfs_sock_flow_entries 32768
 echo "$entries" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null \
 	&& log "rps_sock_flow_entries=$entries" || log "WARN: rps_sock_flow_entries 写入失败"
 
+norm_hex() {
+	local h
+	h=$(printf '%s' "$1" | tr 'A-F' 'a-f' | tr -d ',[:space:]' | sed 's/^0*//')
+	[ -n "$h" ] && printf '%s' "$h" || printf '0'
+}
+
 # 状态 JSON 追加: "iface":{"irq":"N","affinity":"X"} (逗号管理)
 state_add() {
 	local sep=""
@@ -413,9 +419,9 @@ apply_iface() {
 			before=$(cat "$aff_file" 2>/dev/null)
 			echo "$irq" > "$aff_file" 2>/dev/null
 			after=$(cat "$aff_file" 2>/dev/null)
-			# 写后回读判成败 (managed IRQ 可能拒写)
-			if [ "$after" = "$irq" ]; then
-				log "$iface irq$n irq=$irq"
+			# 写后回读判成败 (归一化比对, 兼容 >4 核内核前导零如 08 vs 8)
+			if [ "$(norm_hex "$after")" = "$(norm_hex "$irq")" ]; then
+				log "$iface irq$n irq=$after"
 			else
 				log "WARN: $iface irq$n 写入失败 (before=$before after=$after), 保持原值"
 			fi

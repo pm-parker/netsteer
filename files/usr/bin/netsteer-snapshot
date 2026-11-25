@@ -104,10 +104,15 @@ restore)
 	[ -n "$off" ] && "$UCI" -q set firewall.@defaults[0].flow_offloading="$off" && "$UCI" -q commit firewall
 	fw4 reload >/dev/null 2>&1
 	/etc/init.d/sqm restart >/dev/null 2>&1
-	# 运行态重对齐 (sysfs/分核/IRQ 从恢复后的 uci 重写)
-	/usr/bin/netsteer-apply >/dev/null 2>&1
-	# nft 规则层不在 uci 里, 按恢复后的状态重放: p2p 直通 + game 通道 + bulk 不抢网
+	# 运行态重对齐 (sysfs/分核/IRQ 从恢复后的 uci 重写; 恢复到 off/disabled 时主动 clear 清零 sysfs)
 	rmode=$(cat "$dir/mode" 2>/dev/null)
+	ren=$("$UCI" -q get netsteer.state.enabled 2>/dev/null || echo 1)
+	if [ "$rmode" = "off" ] || [ "$ren" = "0" ]; then
+		/usr/bin/netsteer-apply clear >/dev/null 2>&1
+	else
+		/usr/bin/netsteer-apply >/dev/null 2>&1
+	fi
+	# nft 规则层不在 uci 里, 按恢复后的状态重放: p2p 直通 + game 通道 + bulk 不抢网
 	if [ "$rmode" = "p2p" ]; then
 		/usr/bin/netsteer-p2p on "$("$UCI" -q get netsteer.p2p.dest_ip 2>/dev/null)" >/dev/null 2>&1
 	else

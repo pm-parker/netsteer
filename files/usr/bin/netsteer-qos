@@ -77,10 +77,23 @@ EOF
 	if nft -f "$RULES" 2>"$LOADERR"; then
 		rm -f "$LOADERR"
 		return 0
-	else
-		log "ERR: nft 加载失败: $(head -1 "$LOADERR" 2>/dev/null)"
-		return 1
 	fi
+	# 兼容低版本内核 (<=6.6) 当 $2 尚未就绪时 ingress 拖累整表回滚: 降级仅加载上行 mark_fwd, 同时保留 LOADERR
+	log "WARN: nft 双链加载失败 ($(head -1 "$LOADERR" 2>/dev/null)), 尝试降级仅加载上行 mark_fwd"
+	cat > "$RULES" <<EOF
+table inet $TABLE {
+
+	chain mark_fwd {
+		type filter hook forward priority -150; policy accept;
+		ip saddr $1 ip dscp set cs4 comment "netsteer game up"
+	}
+}
+EOF
+	if nft -f "$RULES" 2>/dev/null; then
+		return 0
+	fi
+	log "ERR: nft 加载彻底失败: $(head -1 "$LOADERR" 2>/dev/null)"
+	return 1
 }
 remove_rules() {
 	nft delete table inet $TABLE >/dev/null 2>&1
@@ -134,7 +147,11 @@ qos_on() { # $1=device ip
 
 	local wan="$(wan_dev)"
 	script_switch_on || exit 1
-	write_rules "$ip" "$wan"
+	if ! write_rules "$ip" "$wan"; then
+		script_switch_off
+		echo "ERR: nft load failed: $(head -1 "$LOADERR" 2>/dev/null)"
+		exit 1
+	fi
 	uci set netsteer.qos.enabled='1'
 	uci set netsteer.qos.device="$ip"
 	uci commit netsteer
@@ -165,10 +182,16 @@ qos_device() { # $1=device ip (enabled 时热切换)
 	echo "OK: device $ip"
 }
 
-qos_reapply() { # boot/hotplug 兜底: enabled 才动作, 静默
-	[ "$(qos_get enabled 0)" = "1" ] || exit 0
+qos_reapply() { # boot/hotplug/restore 兜底: 关闭态幂等清表, 开启态对齐脚本与规则
+	if [ "$(qos_get enabled 0)" != "1" ]; then
+		remove_rules
+		exit 0
+	fi
 	local ip="$(qos_get device "")"
-	[ -n "$ip" ] || exit 0
+	if [ -z "$ip" ]; then
+		remove_rules
+		exit 0
+	fi
 	# SQM 在跑但脚本被外部改走 → 拉回 gaming 脚本 (boot 时序竞态兜底)
 	if sqm_enabled; then
 		local sec=$(sqm_section)
@@ -222,11 +245,12 @@ qos_api_ok() { # $1=port $2=secret → /version 可达? (不用 eval, 防止 sec
 	fi
 }
 qos_detect_proxy() { # 输出 "core|port|secret" 或 "|"
-	local cfg=/etc/nikki/run/config.yaml
+	local cfg="${NIKKI_CFG:-/etc/nikki/run/config.yaml}"
 	if [ -f "$cfg" ]; then
 		# 兼容 '[::]:9090' / "0.0.0.0:9090" / 127.0.0.1:9090 等带引号与 IPv6 多冒号写法
-		local p=$(sed -n "s/^external-controller:.*:\([0-9][0-9]*\)[\"' 	]*$/\1/p" "$cfg" 2>/dev/null | head -1)
-		local s=$(sed -n "s/^secret:[ 	]*[\"']\?\([^\"' 	]*\)[\"']\?[ 	]*$/\1/p" "$cfg" 2>/dev/null | head -1)
+		# 注意: OpenWrt BusyBox sed (musl libc) BRE 不支持 GNU \?, 必须用 POSIX *
+		local p=$(sed -n 's/^external-controller:.*:\([0-9][0-9]*\)["'\'' 	]*$/\1/p' "$cfg" 2>/dev/null | head -1)
+		local s=$(sed -n 's/^secret:[ 	]*["'\'']*\([^"'\'' 	]*\)["'\'']*[ 	]*$/\1/p' "$cfg" 2>/dev/null | head -1)
 		qos_api_ok "${p:-9090}" "$s" && { echo "nikki|${p:-9090}|$s"; return; }
 	fi
 	if [ -d /etc/openclash ]; then
@@ -243,8 +267,9 @@ qos_dnslog_mihomo() { # 活跃连接采样 → [{"q":主机名,"c":来源IP,"d":
 	local n="${1:-200}"
 	case "$n" in ''|*[!0-9]*) n=200 ;; esac
 	local api=$(qos_detect_proxy)
-	local port="${api#*|}"; port="${port%%|*}"
-	local secret="${api##*|}"
+	local rest="${api#*|}"
+	local port="${rest%%|*}"
+	local secret="${rest#*|}"
 	case "$port" in ''|*[!0-9]*) return 1 ;; esac
 	{
 		if [ -n "$secret" ]; then
@@ -489,12 +514,12 @@ qos_sense() {
 		cand="$scene"; candn=1
 	fi
 	if [ "$candn" -ge 2 ]; then prev="$scene"; fi
-	printf "%s\n%s\n%s\n%s\n" "$prev" "$cand" "$candn" "$linked_prev" > "$SENSE_STATE.tmp" && mv "$SENSE_STATE.tmp" "$SENSE_STATE"	# 原子写且保留第 4 行 linked_prev
+	printf "%s\n%s\n%s\n%s\n" "$prev" "$cand" "$candn" "$linked_prev" > "$SENSE_STATE.tmp.$$" && mv "$SENSE_STATE.tmp.$$" "$SENSE_STATE"	# 原子写且保留第 4 行 linked_prev
 	ts=$(date +%s)
 	iv=$(qos_get sense_interval); iv="${iv:-30}"
 	printf '{"scene":"%s","cand":"%s","confirmed":%d,"ts":%d,"interval":%d,"verdict":%s}\n' \
-		"$prev" "$cand" "$candn" "$ts" "$iv" "$j" > "$SENSE_JSON.tmp"
-	mv "$SENSE_JSON.tmp" "$SENSE_JSON"
+		"$prev" "$cand" "$candn" "$ts" "$iv" "$j" > "$SENSE_JSON.tmp.$$"
+	mv "$SENSE_JSON.tmp.$$" "$SENSE_JSON"
 	return 0
 }
 
@@ -550,7 +575,7 @@ qos_sense_link() {
 	old_prev=$(sed -n 4p "$SENSE_STATE" 2>/dev/null)
 	[ "$candn" -ge 2 ] || return 0
 	[ -n "$prev" ] && [ "$prev" != "$old_prev" ] || return 0
-	printf "%s\n%s\n%s\n%s\n" "$prev" "$cand" "$candn" "$prev" > "$SENSE_STATE.tmp" && mv "$SENSE_STATE.tmp" "$SENSE_STATE"
+	printf "%s\n%s\n%s\n%s\n" "$prev" "$cand" "$candn" "$prev" > "$SENSE_STATE.tmp.$$" && mv "$SENSE_STATE.tmp.$$" "$SENSE_STATE"
 	target=$(scene_mode "$prev")
 	case "$cur" in
 		standard|latency|"")
